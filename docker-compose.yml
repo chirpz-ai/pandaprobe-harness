@@ -1,0 +1,46 @@
+# =============================================================================
+# PandaProbe Harness - local development Docker Compose.
+#
+# Mirrors the storage method used by the core `pandaprobe` project:
+#   - PostgreSQL data lives in a Docker-managed NAMED volume (survives
+#     `make down`; wiped only with `make clean`).
+#   - Credentials are env-var driven with safe local defaults, and can be
+#     overridden via a git-ignored `.env.development` file.
+#
+#   cp .env.example .env.development   # optional, to override defaults
+#   make up
+# =============================================================================
+
+services:
+  db:
+    container_name: pandaprobe-harness-db
+    image: postgres:16-alpine
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    env_file:
+      - path: ./.env.development
+        required: false
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-panda_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-panda_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-panda_harness}
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-panda_admin} -d $${POSTGRES_DB:-panda_harness}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pandaprobe
+
+networks:
+  pandaprobe:
+    driver: bridge
+
+# Named volume keyed to this compose project (pandaprobe-harness_postgres-data),
+# fully isolated from the core project's `pandaprobe_postgres-data` volume.
+volumes:
+  postgres-data:
