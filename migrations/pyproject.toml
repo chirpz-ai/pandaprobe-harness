@@ -1,0 +1,10 @@
+[project]
+name = "pandaprobe-migrations"
+version = "0.1.0"
+description = "Alembic migrations and SQLAlchemy schema for the PandaProbe Harness storage layer."
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.4",
+    "psycopg2-binary>=2.9.12",
+    "sqlalchemy>=2.0.50",
+]
