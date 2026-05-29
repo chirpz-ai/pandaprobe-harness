@@ -1,0 +1,28 @@
+# Local container data (legacy bind-mount path; DB now uses a named volume)
+.data/
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environment files (never commit real secrets)
+.env
+.env.development
+.env.staging
+.env.production
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+bin/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
