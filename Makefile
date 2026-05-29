@@ -1,9 +1,10 @@
 .DEFAULT_GOAL := help
 
 COMPOSE := docker-compose
+COMPOSE_TEST := $(COMPOSE) -f docker-compose.test.yml
 MIGRATIONS_DIR := migrations
 
-.PHONY: help up down clean db-migration db-migrate db-rollback db-check test
+.PHONY: help up down clean logs logs-db db-migration db-migrate db-rollback db-check test test-unit test-integration
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -18,6 +19,12 @@ down: ## Stop and remove containers and networks (data volume is preserved)
 clean: ## Stop everything AND delete the database volume (destroys all data)
 	$(COMPOSE) down -v
 
+logs: ## Tail logs from all running services (follow)
+	$(COMPOSE) logs -f
+
+logs-db: ## Tail database logs only (follow)
+	$(COMPOSE) logs -f db
+
 db-migration: ## Auto-generate a migration from model changes. Usage: make db-migration msg="add foo"
 	$(MAKE) -C $(MIGRATIONS_DIR) migration msg="$(msg)"
 
@@ -30,18 +37,15 @@ db-rollback: ## Roll back the most recently applied migration
 db-check: ## Fail if the SQLAlchemy models have drifted from the migrations
 	$(MAKE) -C $(MIGRATIONS_DIR) check
 
-test: ## Run unit and integration checks across workspace components
-	cd $(MIGRATIONS_DIR) && uv run python -c "import alembic, psycopg2; print('migrations toolchain OK')"
-	@if [ -d tests ] && ls tests/*.py >/dev/null 2>&1; then \
-		uv run --project $(MIGRATIONS_DIR) pytest tests; \
-	else \
-		echo "No Python integration tests found under tests/ yet; skipping."; \
-	fi
-	@for svc in services/memory-service services/harness-engine; do \
-		if [ -f $$svc/go.mod ]; then \
-			echo "Running Go tests in $$svc"; \
-			(cd $$svc && go test ./...); \
-		else \
-			echo "No Go module in $$svc yet; skipping."; \
-		fi; \
-	done
+test: test-unit test-integration ## Run the full test suite (unit + integration)
+
+test-unit: ## Run unit tests (no database required)
+	uv run --project $(MIGRATIONS_DIR) --group test pytest tests/unit -v
+
+test-integration: ## Run integration tests against a throwaway test database (port 5433)
+	$(COMPOSE_TEST) up -d --wait
+	POSTGRES_PORT=5433 POSTGRES_DB=panda_harness_test \
+		uv run --project $(MIGRATIONS_DIR) --group test pytest tests/integration -v; \
+	status=$$?; \
+	$(COMPOSE_TEST) down -v; \
+	exit $$status
