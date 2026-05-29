@@ -8,3 +8,8 @@ dependencies = [
     "psycopg2-binary>=2.9.12",
     "sqlalchemy>=2.0.50",
 ]
+
+[dependency-groups]
+test = [
+    "pytest>=9.0.3",
+]
