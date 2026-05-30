@@ -1,0 +1,41 @@
+# =============================================================================
+# PandaProbe Harness - throwaway test database.
+#
+# A disposable PostgreSQL instance used by the integration test suite. It runs
+# on host port 5433 (so it never collides with the dev DB on 5432) and stores
+# data in a DEDICATED named volume `postgres-test-data` -- completely separate
+# from the dev volume `postgres-data` declared in docker-compose.yml.
+#
+# `make test-integration` runs `... up -d --wait` (fresh volume) then
+# `... down -v`, which removes only the volumes declared in THIS file (i.e.
+# postgres-test-data). The dev volume is never referenced here and cannot be
+# touched. Mirrors the pattern used by the core pandaprobe project.
+# =============================================================================
+
+services:
+  postgres-test:
+    container_name: pandaprobe-harness-db-test
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: panda_admin
+      POSTGRES_PASSWORD: panda_secret
+      POSTGRES_DB: panda_harness_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U panda_admin -d panda_harness_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - pandaprobe-test
+
+networks:
+  pandaprobe-test:
+    driver: bridge
+
+volumes:
+  postgres-test-data:
+
