@@ -1,0 +1,42 @@
+# =============================================================================
+# PandaProbe Harness - diagnostic sandbox image.
+#
+# A restricted runtime where the agent runs its execution loop. The image
+# bundles:
+#   - the `pandaprobe` CLI binary on PATH (the agent calls it natively),
+#   - the harness package (the lifecycle hook + sandbox tooling),
+#   - a provisioned /harness diagnostic filesystem.
+# =============================================================================
+FROM python:3.13-slim AS base
+
+# --- uv (fast, reproducible Python env management) ---------------------------
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# --- PandaProbe CLI ----------------------------------------------------------
+# Installed onto PATH so the agent's restricted shell can invoke it directly.
+# Pin a release in production; the install script tracks latest.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates jq \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://cli.pandaprobe.com/install.sh | sh \
+    && pandaprobe version || true
+
+WORKDIR /app
+
+# --- Dependency layer (cached) ----------------------------------------------
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+
+# --- Diagnostic filesystem ---------------------------------------------------
+# Provisions /harness/{harness_rules.md, traces/}. The actual mount is a named
+# volume in docker-compose so learned rules persist across runs.
+RUN mkdir -p /harness/traces \
+    && uv run python -c "from pandaprobe_harness import HarnessConfig, HarnessFilesystem; HarnessFilesystem(HarnessConfig()).provision()"
+
+ENV PATH="/app/.venv/bin:${PATH}"
+WORKDIR /harness
+
+# Default entrypoint drops into the restricted bash environment; the real
+# deployment replaces this with the agent's execution-loop command.
+CMD ["bash"]
