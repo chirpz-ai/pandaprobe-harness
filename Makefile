@@ -1,51 +1,46 @@
 .DEFAULT_GOAL := help
 
-COMPOSE := docker-compose
+COMPOSE := docker compose
 COMPOSE_TEST := $(COMPOSE) -f docker-compose.test.yml
-MIGRATIONS_DIR := migrations
 
-.PHONY: help up down clean logs logs-db db-migration db-migrate db-rollback db-check test test-unit test-integration
+.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-up: ## Spin up the database and services in detached mode
+install: ## Sync the Python environment (uv)
+	uv sync
+
+build: ## Build the diagnostic sandbox image
+	$(COMPOSE) build
+
+up: ## Spin up the diagnostic sandbox in detached mode
 	$(COMPOSE) up -d
 
-down: ## Stop and remove containers and networks (data volume is preserved)
+down: ## Stop and remove the sandbox (harness volume is preserved)
 	$(COMPOSE) down
 
-clean: ## Stop everything AND delete the database volume (destroys all data)
+clean: ## Stop everything AND delete the /harness volume (destroys learned rules)
 	$(COMPOSE) down -v
 
-logs: ## Tail logs from all running services (follow)
+logs: ## Tail sandbox logs (follow)
 	$(COMPOSE) logs -f
 
-logs-db: ## Tail database logs only (follow)
-	$(COMPOSE) logs -f db
+harness-shell: ## Open the restricted bash shell inside the running sandbox
+	$(COMPOSE) exec sandbox bash
 
-db-migration: ## Auto-generate a migration from model changes. Usage: make db-migration msg="add foo"
-	$(MAKE) -C $(MIGRATIONS_DIR) migration msg="$(msg)"
+lint: ## Lint with ruff
+	uv run ruff check .
 
-db-migrate: ## Apply all pending database migrations
-	$(MAKE) -C $(MIGRATIONS_DIR) migrate
+typecheck: ## Type-check with mypy (strict)
+	uv run mypy src
 
-db-rollback: ## Roll back the most recently applied migration
-	$(MAKE) -C $(MIGRATIONS_DIR) rollback
+test: ## Run the full offline test suite (unit + e2e)
+	uv run pytest
 
-db-check: ## Fail if the SQLAlchemy models have drifted from the migrations
-	$(MAKE) -C $(MIGRATIONS_DIR) check
+test-unit: ## Run unit tests only
+	uv run pytest tests/unit -v
 
-test: test-unit test-integration ## Run the full test suite (unit + integration)
-
-test-unit: ## Run unit tests (no database required)
-	uv run --project $(MIGRATIONS_DIR) --group test pytest tests/unit -v
-
-test-integration: ## Run integration tests against a throwaway test database (port 5433)
-	$(COMPOSE_TEST) up -d --wait
-	POSTGRES_PORT=5433 POSTGRES_DB=panda_harness_test \
-		uv run --project $(MIGRATIONS_DIR) --group test pytest tests/integration -v; \
-	status=$$?; \
-	$(COMPOSE_TEST) down -v; \
-	exit $$status
+test-e2e: ## Run the end-to-end self-healing scenario
+	uv run pytest tests/e2e_harness_test.py -v
