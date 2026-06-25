@@ -1,34 +1,28 @@
 # =============================================================================
-# PandaProbe Harness - throwaway test database.
+# PandaProbe Harness - offline test sandbox.
 #
-# A disposable PostgreSQL instance used by the integration test suite. It runs
-# on host port 5433 (so it never collides with the dev DB on 5432) and stores
-# data in a DEDICATED named volume `postgres-test-data` -- completely separate
-# from the dev volume `postgres-data` declared in docker-compose.yml.
-#
-# `make test-integration` runs `... up -d --wait` (fresh volume) then
-# `... down -v`, which removes only the volumes declared in THIS file (i.e.
-# postgres-test-data). The dev volume is never referenced here and cannot be
-# touched. Mirrors the pattern used by the core pandaprobe project.
+# Runs the full pytest suite inside the sandbox image with the `pandaprobe`
+# binary shimmed to the in-repo fake CLI (tests/bin/fake_pandaprobe) so the
+# suite needs no network, no auth, and no live platform. Uses a DEDICATED
+# named volume `harness-test-data`, fully separate from the dev volume
+# `harness-data` declared in docker-compose.yml.
 # =============================================================================
 
 services:
-  postgres-test:
-    container_name: pandaprobe-harness-db-test
-    image: postgres:16-alpine
-    ports:
-      - "5433:5432"
+  sandbox-test:
+    container_name: pandaprobe-harness-sandbox-test
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
     volumes:
-      - postgres-test-data:/var/lib/postgresql/data
+      - harness-test-data:/harness
+      - ./tests:/app/tests:ro
     environment:
-      POSTGRES_USER: panda_admin
-      POSTGRES_PASSWORD: panda_secret
-      POSTGRES_DB: panda_harness_test
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U panda_admin -d panda_harness_test"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
+      # Point the harness at the fake CLI binary; no real credentials needed.
+      HARNESS_CLI_BINARY: /app/tests/bin/fake_pandaprobe
+      HARNESS_ROOT: /harness
+    working_dir: /app
+    command: ["uv", "run", "--frozen", "pytest", "-q"]
     networks:
       - pandaprobe-test
 
@@ -37,5 +31,4 @@ networks:
     driver: bridge
 
 volumes:
-  postgres-test-data:
-
+  harness-test-data:
