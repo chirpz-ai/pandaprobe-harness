@@ -1,4 +1,4 @@
-"""Component 3: the diagnostic filesystem provisioner.
+"""the diagnostic filesystem provisioner.
 
 Manages the persistent ``/harness`` workspace the agent reads and rewrites to
 self-heal:

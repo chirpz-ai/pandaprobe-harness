@@ -1,4 +1,4 @@
-"""Component 2: the restricted shell-execution tool exposed to the agent.
+"""the restricted shell-execution tool exposed to the agent.
 
 The agent's toolbelt is augmented with this tool so it can call the
 ``pandaprobe`` CLI natively (and read its workspace) while being prevented from

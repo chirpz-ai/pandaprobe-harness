@@ -1,4 +1,4 @@
-"""Component 1: the lifecycle hook and context injector.
+"""the lifecycle hook and context injector.
 
 ``PandaHarnessHook`` is non-blocking by design. ``on_turn_end`` schedules the
 evaluation as a detached ``asyncio.Task`` (the producing turn never waits).
