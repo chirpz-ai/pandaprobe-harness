@@ -35,6 +35,7 @@ async def test_stderr_noise_does_not_break_parsing(fake_bin: Path) -> None:
 
 
 async def test_auth_exit_code_maps(fake_bin: Path) -> None:
+    # Real CLI contract: exit 2 == Auth (401/403).
     client = _client(fake_bin, env={"FAKE_EXIT_CODE": "2", "FAKE_STDERR": "unauthorized"})
     with pytest.raises(CliAuthError) as info:
         await client.run("traces", "list")
@@ -42,7 +43,8 @@ async def test_auth_exit_code_maps(fake_bin: Path) -> None:
 
 
 async def test_not_found_exit_code_maps(fake_bin: Path) -> None:
-    client = _client(fake_bin, env={"FAKE_EXIT_CODE": "3"})
+    # Real CLI contract: exit 3 == NotFound (404).
+    client = _client(fake_bin, env={"FAKE_EXIT_CODE": "3", "FAKE_STDERR": "not found"})
     with pytest.raises(CliNotFoundError):
         await client.run("traces", "get", "nope")
 
