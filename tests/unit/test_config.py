@@ -38,6 +38,29 @@ def test_from_env_explicit_override_wins(monkeypatch) -> None:
     assert cfg.reliability_threshold == 0.2
 
 
+def test_active_metrics_default_and_selective() -> None:
+    cfg = HarnessConfig()
+    assert set(cfg.active_metrics()) == {"agent_reliability", "agent_consistency"}
+    only_rel = HarnessConfig(eval_consistency=False)
+    assert only_rel.active_metrics() == ("agent_reliability",)
+
+
+def test_threshold_resolution() -> None:
+    cfg = HarnessConfig(
+        reliability_threshold=0.6,
+        thresholds={"agent_consistency": 0.4},
+    )
+    assert cfg.threshold_for("agent_reliability") == 0.6  # scalar fallback
+    assert cfg.threshold_for("agent_consistency") == 0.4  # per-metric map wins
+    assert cfg.threshold_for("unknown_metric") == 0.5  # default
+
+
+def test_derived_state_paths() -> None:
+    cfg = HarnessConfig(harness_root=Path("/h"))
+    assert cfg.state_dir == Path("/h/state")
+    assert cfg.history_file == Path("/h/state/score_history.json")
+
+
 def test_frozen() -> None:
     import dataclasses
 
