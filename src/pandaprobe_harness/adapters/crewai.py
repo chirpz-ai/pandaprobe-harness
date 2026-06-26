@@ -1,46 +1,69 @@
-"""Thin, optional CrewAI adapter.
+"""CrewAI adapter (optional ``crewai`` extra).
 
-Install with the ``crewai`` extra. The adapter appends the alert to the next
-task's context list — it never mutates persisted crew memory.
+CrewAI is instrumented by monkey-patching ``Crew.kickoff`` (the SDK uses the same
+``wrapt`` approach) so a completed crew run fires ``hook.on_turn_end``; session
+identity comes from the SDK session ``ContextVar``.
+
+Injection is honest about CrewAI's constraints: there is no mid-crew message
+queue, so alerts and the startup rules preamble are exposed as text
+(:meth:`consume_context`, :meth:`startup_context_text`) for the developer to feed
+into the next ``kickoff(inputs=...)`` / task context.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableSequence
-from typing import TYPE_CHECKING, Any
+import logging
+from typing import Any
 
-from ..hook.turn import TurnContext
-
-if TYPE_CHECKING:
-    from ..hook.core import PandaHarnessHook
+from ._base import BaseSinkAdapter
 
 __all__ = ["CrewAIAdapter"]
 
+logger = logging.getLogger("pandaprobe_harness.adapters.crewai")
 
-class CrewAIAdapter:
-    """Bridge ``PandaHarnessHook`` to a CrewAI run.
 
-    ``context_sink`` is the mutable context sequence handed to the next task.
-    """
+class CrewAIAdapter(BaseSinkAdapter):
+    """Bridge ``PandaHarnessHook`` to a CrewAI run."""
 
-    def __init__(self, context_sink: MutableSequence[Any]) -> None:
-        self._sink = context_sink
-        self._hook: PandaHarnessHook | None = None
+    _id_keys = ("crew_id",)
 
-    def parse_turn(self, raw_turn: object) -> TurnContext:
-        if not isinstance(raw_turn, Mapping):
-            raise TypeError("CrewAI raw_turn must be a mapping (task output)")
-        session_id = raw_turn.get("session_id") or raw_turn.get("crew_id")
-        if not session_id:
-            raise ValueError("could not resolve session_id (crew_id) from task output")
-        return TurnContext(
-            session_id=str(session_id),
-            turn_index=int(raw_turn.get("turn_index", 0)),
-            end_state={"output": raw_turn.get("output")},
-        )
+    def __init__(self, *, session_id: str | None = None) -> None:
+        super().__init__(session_id=session_id)
+        self._instrumented = False
 
-    def inject_alert(self, alert: str) -> None:
-        self._sink.append(alert)
+    def consume_context(self) -> list[str]:
+        """Pop pending alerts to feed into the next ``kickoff`` inputs/context."""
 
-    def register(self, hook: PandaHarnessHook) -> None:
-        self._hook = hook
+        return self.consume_alerts()
+
+    def instrument(self) -> bool:
+        """Monkey-patch ``Crew.kickoff`` to fire the hook on completion.
+
+        Idempotent. Returns ``False`` (and logs) if the optional dependencies
+        are unavailable.
+        """
+
+        try:
+            import crewai  # noqa: F401
+            from wrapt import wrap_function_wrapper
+        except ImportError as exc:  # pragma: no cover - optional dep
+            logger.warning("CrewAIAdapter.instrument: missing dependency — %s", exc)
+            return False
+        if self._instrumented:
+            return True
+
+        adapter = self
+
+        def _after_kickoff(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+            result = wrapped(*args, **kwargs)
+            try:
+                adapter.notify_turn_end(end_state={"result": str(result)})
+            except RuntimeError:
+                # No running event loop (sync kickoff) — the harness hook
+                # requires an async context to schedule evaluation.
+                logger.debug("no running loop; on_turn_end skipped")
+            return result
+
+        wrap_function_wrapper("crewai", "Crew.kickoff", _after_kickoff)
+        self._instrumented = True
+        return True
