@@ -1,57 +1,33 @@
-"""Thin, optional LangGraph adapter.
+"""LangGraph adapter (optional ``langgraph`` extra).
 
-Install with the ``langgraph`` extra: ``pip install pandaprobe-harness[langgraph]``.
-The adapter injects a ``SystemMessage`` into the next graph state's ``messages``
-list — it never writes the checkpoint store directly.
+LangGraph is instrumented via a LangChain callback handler. Turn detection fires
+on the root chain end; alert/rules injection is state-level (the developer merges
+:meth:`consume_messages` / :meth:`startup_messages` into the next ``ainvoke``
+input's ``messages``). See :class:`LangChainCallbackAdapter` for the full
+contract — this subclass only sets the extra name for dependency hints.
+
+Wiring sketch::
+
+    adapter = LangGraphAdapter()
+    hook = PandaHarnessHook(adapter, SubprocessCliClient(), config=cfg)
+    adapter.register(hook)
+    handler = adapter.make_callback()
+    state = {"messages": adapter.startup_messages() + [user_message]}
+    # each turn (inside `with pandaprobe.session(session_id):`):
+    await hook.drain_pending(session_id)
+    adapter.drain_into(state["messages"])
+    await graph.ainvoke(state, config={"callbacks": [handler],
+                                        "configurable": {"thread_id": session_id}})
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableSequence
-from typing import TYPE_CHECKING, Any
-
-from ..hook.turn import TurnContext
-
-if TYPE_CHECKING:
-    from ..hook.core import PandaHarnessHook
+from ._langchain import LangChainCallbackAdapter
 
 __all__ = ["LangGraphAdapter"]
 
 
-class LangGraphAdapter:
-    """Bridge ``PandaHarnessHook`` to a LangGraph execution.
+class LangGraphAdapter(LangChainCallbackAdapter):
+    """Bridge ``PandaHarnessHook`` to a LangGraph (async) execution."""
 
-    ``message_sink`` is the mutable ``messages`` sequence of the state that the
-    next graph step will consume.
-    """
-
-    def __init__(self, message_sink: MutableSequence[Any]) -> None:
-        self._sink = message_sink
-        self._hook: PandaHarnessHook | None = None
-
-    def parse_turn(self, raw_turn: object) -> TurnContext:
-        if not isinstance(raw_turn, Mapping):
-            raise TypeError("LangGraph raw_turn must be a state mapping")
-        config = raw_turn.get("config", {})
-        configurable = config.get("configurable", {}) if isinstance(config, Mapping) else {}
-        session_id = configurable.get("thread_id") or raw_turn.get("session_id")
-        if not session_id:
-            raise ValueError("could not resolve session_id (thread_id) from state")
-        return TurnContext(
-            session_id=str(session_id),
-            turn_index=int(raw_turn.get("turn_index", 0)),
-            end_state={"messages": list(raw_turn.get("messages", []))},
-        )
-
-    def inject_alert(self, alert: str) -> None:
-        try:
-            from langchain_core.messages import SystemMessage
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise ImportError(
-                "LangGraphAdapter requires langchain-core; install the "
-                "'langgraph' extra."
-            ) from exc
-        self._sink.append(SystemMessage(content=alert))
-
-    def register(self, hook: PandaHarnessHook) -> None:
-        self._hook = hook
+    _extra = "langgraph"
