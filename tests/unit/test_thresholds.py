@@ -28,5 +28,6 @@ def test_metric_score_breached_property() -> None:
 
 
 def test_metric_targets() -> None:
-    assert Metric.RELIABILITY.target == "trace"
+    # Both agent_reliability and agent_consistency are session-level metrics.
+    assert Metric.RELIABILITY.target == "session"
     assert Metric.CONSISTENCY.target == "session"
