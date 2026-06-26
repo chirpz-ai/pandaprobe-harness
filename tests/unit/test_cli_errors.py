@@ -13,8 +13,8 @@ from pandaprobe_harness.cli.errors import (
 )
 
 
-def _result(exit_code: int) -> CliResult:
-    return CliResult(args=("traces", "list"), exit_code=exit_code, stdout="", stderr="err")
+def _result(exit_code: int, stderr: str = "boom") -> CliResult:
+    return CliResult(args=("evals", "runs", "list"), exit_code=exit_code, stdout="", stderr=stderr)
 
 
 def test_exit_zero_does_not_raise() -> None:
@@ -29,10 +29,25 @@ def test_exit_zero_does_not_raise() -> None:
         (3, CliNotFoundError),
         (4, CliValidationError),
         (5, CliApiError),
-        (99, CliGeneralError),  # unknown -> general
     ],
 )
-def test_exit_code_mapping(code: int, exc: type[Exception]) -> None:
+def test_exit_code_is_deterministic(code: int, exc: type[Exception]) -> None:
+    # Classification is driven by the exit code, NOT by stderr text.
     with pytest.raises(exc) as info:
-        raise_for_exit_code(_result(code))
+        raise_for_exit_code(_result(code, stderr="unrelated noise"))
     assert info.value.exit_code == code  # type: ignore[attr-defined]
+
+
+def test_exit_code_ignores_misleading_stderr() -> None:
+    # Exit 2 is always Auth even if stderr happens to mention "not found".
+    with pytest.raises(CliAuthError):
+        raise_for_exit_code(_result(2, "404 not found"))
+
+
+def test_unknown_code_falls_back_to_stderr_hints() -> None:
+    with pytest.raises(CliAuthError):
+        raise_for_exit_code(_result(7, "HTTP 401 unauthorized"))
+    with pytest.raises(CliNotFoundError):
+        raise_for_exit_code(_result(7, "resource 404 not found"))
+    with pytest.raises(CliGeneralError):
+        raise_for_exit_code(_result(7, "mystery"))
