@@ -5,19 +5,25 @@ description = "Meta-cognitive diagnostic sandbox harness for PandaProbe-instrume
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
-dependencies = [
-    # Reserved for a future direct-HTTP CliClient / platform connectors. The
-    # harness shells out to the `pandaprobe` CLI today and needs no runtime deps.
-    "httpx>=0.27",
-]
+# The harness core has NO runtime dependencies — it only shells out to the
+# `pandaprobe` CLI through a stdlib subprocess seam. Framework adapters add their
+# own optional deps via the extras below.
+dependencies = []
 
 [project.optional-dependencies]
 # Real-framework adapters are optional, import-guarded extras so the core
-# install and the test suite stay lean and fully offline.
-langgraph = ["langgraph>=0.2"]
-crewai = ["crewai>=0.41"]
-autogen = ["pyautogen>=0.2"]
-all = ["pandaprobe-harness[langgraph,crewai,autogen]"]
+# install and the test suite stay lean and fully offline. They depend on the
+# PandaProbe SDK to reuse its session ContextVar (harness/traces share a session).
+# Version pins mirror the SDK's own integration extras.
+langgraph = ["langgraph>=0.2", "langchain-core>=0.3", "pandaprobe>=0.4"]
+langchain = ["langchain>=1.0.0", "langchain-core>=0.3.0", "pandaprobe>=0.4"]
+deepagents = ["deepagents>=0.6.1", "langchain-core>=0.3.0", "pandaprobe>=0.4"]
+crewai = ["crewai>=0.100", "wrapt>=1.14", "pandaprobe>=0.4"]
+claude-agent-sdk = ["claude-agent-sdk>=0.1.0", "wrapt>=1.14.0", "pandaprobe>=0.4"]
+openai-agents = ["openai-agents>=0.13.0", "pandaprobe>=0.4"]
+all = [
+    "pandaprobe-harness[langgraph,langchain,deepagents,crewai,claude-agent-sdk,openai-agents]"
+]
 
 [dependency-groups]
 dev = [
