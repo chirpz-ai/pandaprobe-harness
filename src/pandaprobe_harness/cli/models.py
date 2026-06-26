@@ -14,7 +14,10 @@ from typing import Any
 __all__ = ["RunCreated", "ScoreRecord", "RunScores"]
 
 # Score statuses that mean the platform has finished computing (terminal).
-_TERMINAL_STATUSES = frozenset({"completed", "complete", "succeeded", "failed", "error"})
+# The backend uses SUCCESS / FAILED / PENDING; synonyms kept for tolerance.
+_TERMINAL_STATUSES = frozenset(
+    {"success", "completed", "complete", "succeeded", "failed", "error"}
+)
 
 
 def _as_float(value: Any) -> float | None:
