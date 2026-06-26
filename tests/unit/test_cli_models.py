@@ -20,14 +20,25 @@ def test_run_created_requires_id() -> None:
 
 def test_score_record_terminal_and_floats() -> None:
     rec = ScoreRecord.parse(
-        {"name": "agent_reliability", "value": "0.3", "status": "completed"}
+        {"name": "agent_reliability", "value": "0.3", "status": "SUCCESS"}
     )
     assert rec.value == 0.3
     assert rec.is_terminal
 
-    running = ScoreRecord.parse({"name": "x", "value": None, "status": "running"})
+    running = ScoreRecord.parse({"name": "x", "value": None, "status": "PENDING"})
     assert running.value is None
     assert not running.is_terminal
+
+
+def test_score_record_failed_is_terminal_with_null_value() -> None:
+    rec = ScoreRecord.parse({"name": "agent_reliability", "value": None, "status": "FAILED"})
+    assert rec.is_terminal  # FAILED is terminal — stops polling
+    assert rec.value is None
+
+
+def test_non_numeric_value_parses_to_none() -> None:
+    assert ScoreRecord.parse({"name": "m", "value": "N/A", "status": "SUCCESS"}).value is None
+    assert ScoreRecord.parse({"name": "m", "value": "", "status": "SUCCESS"}).value is None
 
 
 def test_run_scores_terminal_logic() -> None:
