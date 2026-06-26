@@ -12,22 +12,28 @@ __all__ = [
     "FrameworkAdapter",
     "RawLoopAdapter",
     "LangGraphAdapter",
+    "LangChainAdapter",
+    "DeepAgentsAdapter",
     "CrewAIAdapter",
-    "AutoGenAdapter",
+    "ClaudeAgentSDKAdapter",
+    "OpenAIAgentsAdapter",
 ]
+
+_LAZY = {
+    "LangGraphAdapter": (".langgraph", "LangGraphAdapter"),
+    "LangChainAdapter": (".langchain", "LangChainAdapter"),
+    "DeepAgentsAdapter": (".deepagents", "DeepAgentsAdapter"),
+    "CrewAIAdapter": (".crewai", "CrewAIAdapter"),
+    "ClaudeAgentSDKAdapter": (".claude_agent_sdk", "ClaudeAgentSDKAdapter"),
+    "OpenAIAgentsAdapter": (".openai_agents", "OpenAIAgentsAdapter"),
+}
 
 
 def __getattr__(name: str) -> object:  # pragma: no cover - thin lazy import
-    if name == "LangGraphAdapter":
-        from .langgraph import LangGraphAdapter
+    target = _LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
 
-        return LangGraphAdapter
-    if name == "CrewAIAdapter":
-        from .crewai import CrewAIAdapter
-
-        return CrewAIAdapter
-    if name == "AutoGenAdapter":
-        from .autogen import AutoGenAdapter
-
-        return AutoGenAdapter
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(target[0], __name__)
+    return getattr(module, target[1])
