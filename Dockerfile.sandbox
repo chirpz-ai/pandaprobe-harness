@@ -6,20 +6,35 @@
 #   - the `pandaprobe` CLI binary on PATH (the agent calls it natively),
 #   - the harness package (the lifecycle hook + sandbox tooling),
 #   - a provisioned /harness diagnostic filesystem.
+#
+# Reproducibility: uv and the PandaProbe CLI are PINNED to explicit versions
+# (build ARGs) and the CLI install is VERIFIED — the build fails loudly if the
+# binary is missing, rather than shipping a sandbox whose core tool is broken.
 # =============================================================================
+ARG UV_VERSION=0.6.16
+ARG PANDAPROBE_CLI_VERSION=v0.2.0
+
 FROM python:3.13-slim AS base
 
-# --- uv (fast, reproducible Python env management) ---------------------------
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# --- uv (pinned tag, not :latest) -------------------------------------------
+ARG UV_VERSION
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
 
-# --- PandaProbe CLI ----------------------------------------------------------
-# Installed onto PATH so the agent's restricted shell can invoke it directly.
-# Pin a release in production; the install script tracks latest.
+# --- PandaProbe CLI (pinned + verified) -------------------------------------
+# Install a specific release tag so builds are deterministic. `go install` of a
+# pinned tag (with module checksum verification) is preferred over `curl | sh`
+# of an unversioned install script. The final `pandaprobe version` is NOT
+# guarded by `|| true`: a failed install must fail the build.
+ARG PANDAPROBE_CLI_VERSION
+ENV PANDAPROBE_CLI_VERSION=${PANDAPROBE_CLI_VERSION}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates jq \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://cli.pandaprobe.com/install.sh | sh \
-    && pandaprobe version || true
+    && curl -fsSL "https://cli.pandaprobe.com/install.sh" | sh -s -- --version "${PANDAPROBE_CLI_VERSION}" \
+    && pandaprobe version
+
+LABEL org.pandaprobe.cli-version="${PANDAPROBE_CLI_VERSION}" \
+      org.pandaprobe.uv-version="${UV_VERSION}"
 
 WORKDIR /app
 
