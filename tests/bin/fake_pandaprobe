@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""A fake `pandaprobe` binary used ONLY to exercise SubprocessCliClient.
+
+Behaviour is driven entirely by environment variables so individual tests can
+shape it without rebuilding anything. No network, no auth.
+
+    FAKE_EXIT_CODE   exit with this code (and emit FAKE_STDERR to stderr)
+    FAKE_STDERR      stderr text to emit (default: "boom")
+    FAKE_SLEEP       sleep this many seconds before exiting (timeout testing)
+    FAKE_BAD_JSON    if set, print non-JSON to stdout (parse-error testing)
+    FAKE_ECHO_ENV    print the named env var's value inside the JSON payload
+
+By default it prints a JSON object echoing the argv it received, so tests can
+assert that base flags (e.g. `--format json`) were injected.
+"""
+
+import json
+import os
+import sys
+import time
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+
+    sleep_s = os.environ.get("FAKE_SLEEP")
+    if sleep_s:
+        time.sleep(float(sleep_s))
+
+    exit_code = os.environ.get("FAKE_EXIT_CODE")
+    if exit_code:
+        sys.stderr.write(os.environ.get("FAKE_STDERR", "boom"))
+        return int(exit_code)
+
+    if os.environ.get("FAKE_BAD_JSON"):
+        sys.stdout.write("this is not json <banner>")
+        return 0
+
+    payload = {"argv": argv}
+    echo_env = os.environ.get("FAKE_ECHO_ENV")
+    if echo_env:
+        payload["env"] = {echo_env: os.environ.get(echo_env)}
+
+    # Emit some harmless noise on stderr to prove stdout JSON parsing is robust.
+    sys.stderr.write("fake_pandaprobe: debug noise\n")
+    sys.stdout.write(json.dumps(payload))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,63 +1,75 @@
-"""Shared pytest configuration and fixtures for the PandaProbe Harness suite.
-
-The database code under test lives in the ``migrations`` uv project
-(``settings.py`` and ``models.py``). Tests run from the repository root via that
-project's environment, so this conftest puts ``migrations/`` on ``sys.path`` to
-make ``import settings`` / ``import models`` resolve cleanly.
-
-Integration fixtures assume the throwaway test database from
-``docker-compose.test.yml`` is reachable (see ``make test-integration``).
-"""
+"""Shared pytest fixtures for the harness test suite."""
 
 from __future__ import annotations
 
-import sys
+import os
+import stat
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-MIGRATIONS_DIR = REPO_ROOT / "migrations"
+from pandaprobe_harness import HarnessConfig, HarnessFilesystem, RawLoopAdapter
+from tests.fakes.fake_cli_client import FakeCliClient
 
-# Make the migrations project importable (settings, models, env).
-if str(MIGRATIONS_DIR) not in sys.path:
-    sys.path.insert(0, str(MIGRATIONS_DIR))
+FAKE_BIN = Path(__file__).parent / "bin" / "fake_pandaprobe"
 
 
-@pytest.fixture(scope="session")
-def database_url() -> str:
-    """Resolve the synchronous DB URL exactly as Alembic would at runtime."""
-    from settings import get_sync_database_url
+@pytest.fixture
+def config(tmp_path: Path) -> HarnessConfig:
+    """A HarnessConfig rooted at a temp dir with fast polling for tests."""
 
-    return get_sync_database_url()
-
-
-@pytest.fixture(scope="session")
-def alembic_config():
-    """An Alembic ``Config`` pinned to the migrations project (absolute paths)."""
-    from alembic.config import Config
-
-    cfg = Config(str(MIGRATIONS_DIR / "alembic.ini"))
-    # Resolve script location absolutely so migrations are found regardless of
-    # the current working directory.
-    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
-    return cfg
+    return HarnessConfig(
+        harness_root=tmp_path / "harness",
+        poll_interval_s=0.0,
+        poll_max_attempts=5,
+        drain_timeout_s=5.0,
+    )
 
 
-@pytest.fixture()
-def migrated_engine(alembic_config, database_url):
-    """Upgrade the test DB to head, yield an Engine, then downgrade to base.
+@pytest.fixture
+def fs(config: HarnessConfig) -> HarnessFilesystem:
+    """A provisioned diagnostic filesystem."""
 
-    Each test that requests this fixture runs against a freshly-migrated schema
-    and leaves the database empty afterwards.
+    filesystem = HarnessFilesystem(config)
+    filesystem.provision()
+    return filesystem
+
+
+@pytest.fixture
+def fake_cli() -> FakeCliClient:
+    return FakeCliClient()
+
+
+@pytest.fixture
+def adapter() -> RawLoopAdapter:
+    return RawLoopAdapter()
+
+
+@pytest.fixture
+def fake_bin() -> Path:
+    return FAKE_BIN
+
+
+@pytest.fixture
+def pandaprobe_path(tmp_path: Path) -> dict[str, str]:
+    """An env exposing the fake binary on PATH under the name ``pandaprobe``.
+
+    Lets the agent's RestrictedShellTool invoke ``pandaprobe ...`` offline.
     """
-    import sqlalchemy as sa
-    from alembic import command
 
-    command.upgrade(alembic_config, "head")
-    engine = sa.create_engine(database_url, future=True)
-    try:
-        yield engine
-    finally:
-        engine.dispose()
-        command.downgrade(alembic_config, "base")
+    bin_dir = tmp_path / "shim-bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "pandaprobe"
+    shim.write_text(FAKE_BIN.read_text(encoding="utf-8"), encoding="utf-8")
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
+@pytest.fixture
+def harness_data_dir() -> Iterator[None]:
+    """Placeholder for symmetry; tests use tmp_path-based roots."""
+
+    yield None
