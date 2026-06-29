@@ -47,7 +47,7 @@ Scores are `0.0–1.0` (higher is better). An **absolute breach** is `score <
 threshold` (default `0.5`). Trace ingestion lags turn-end, so runs are retried
 with backoff while transiently empty.
 
-## Trend alerting (low-latency, EWMA)
+## Trend alerting
 
 Beyond absolute breaches, the harness flags **gradual decline** even while a
 score is still above its floor. The detector is a local **dual-EWMA crossover**
