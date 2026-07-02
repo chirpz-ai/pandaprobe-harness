@@ -3,14 +3,8 @@
 Instrumented by monkey-patching ``ClaudeSDKClient.receive_response`` (the SDK uses
 the same ``wrapt`` approach): a completed ``receive_response`` stream is one agent
 turn, after which the hook fires. Session identity comes from the SDK session
-``ContextVar``.
-
-Unlike the LangChain/OpenAI integrations, the Claude SDK integration maintains a
-mutable conversation history on the client (``client._pandaprobe_history``), which
-gives a **real** injection surface: :meth:`inject_into_history` appends buffered
-alerts as system messages that the next ``receive_response`` will see, and
-:meth:`prime_startup` seeds the living rules once at startup. (This requires the
-SDK's own Claude integration to be instrumented too, since it owns that history.)
+``ContextVar``. Diagnostics reach the agent through the workspace mailbox +
+harness toolset (register them via ``as_anthropic_tools``).
 """
 
 from __future__ import annotations
@@ -24,6 +18,12 @@ __all__ = ["ClaudeAgentSDKAdapter"]
 
 logger = logging.getLogger("pandaprobe_harness.adapters.claude_agent_sdk")
 
+# ``ClaudeSDKClient.receive_response`` is patched process-globally, so patch it
+# once and route to the most recently instrumented adapter (last-wins), so
+# rebuilding a harness never stacks wrappers or keeps a retired hook firing.
+_patched = False
+_active: ClaudeAgentSDKAdapter | None = None
+
 
 class ClaudeAgentSDKAdapter(BaseSinkAdapter):
     """Bridge ``PandaHarnessHook`` to a Claude Agent SDK client."""
@@ -32,62 +32,39 @@ class ClaudeAgentSDKAdapter(BaseSinkAdapter):
         super().__init__(session_id=session_id)
         self._instrumented = False
 
-    # -- injection (via the SDK-maintained client history) -------------------
-
-    @staticmethod
-    def _history(client: Any) -> list[dict[str, Any]]:
-        history = getattr(client, "_pandaprobe_history", None)
-        if history is None:
-            history = []
-            client._pandaprobe_history = history
-        return history
-
-    def inject_into_history(self, client: Any) -> int:
-        """Append buffered alerts as system messages to the client's history.
-
-        Returns the number of alerts injected. Call between turns (after
-        ``hook.drain_pending``) so the next ``receive_response`` sees them.
-        """
-
-        history = self._history(client)
-        alerts = self.consume_alerts()
-        for alert in alerts:
-            history.append({"role": "system", "content": alert})
-        return len(alerts)
-
-    def prime_startup(self, client: Any) -> None:
-        """Seed the living harness rules as a leading system message (once)."""
-
-        preamble = self.startup_context_text()
-        if preamble:
-            self._history(client).insert(0, {"role": "system", "content": preamble})
-
     # -- turn detection ------------------------------------------------------
 
     def instrument(self) -> bool:
         """Monkey-patch ``receive_response`` to fire the hook at turn end.
 
-        Idempotent. Returns ``False`` (and logs) if dependencies are missing.
+        Idempotent and safe across many adapters: the global patch is applied
+        once and always routes to the most recently instrumented adapter.
+        Returns ``False`` (and logs) if dependencies are missing.
         """
 
+        global _patched, _active
         try:
             import claude_agent_sdk  # noqa: F401
             from wrapt import wrap_function_wrapper
         except ImportError as exc:  # pragma: no cover - optional dep
             logger.warning("ClaudeAgentSDKAdapter.instrument: missing dependency — %s", exc)
             return False
-        if self._instrumented:
+
+        _active = self
+        self._instrumented = True
+        if _patched:
             return True
 
-        adapter = self
-
         def _wrap(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+            adapter = _active
+            if adapter is None:
+                return wrapped(*args, **kwargs)
             return adapter._instrument_stream(wrapped(*args, **kwargs))
 
         wrap_function_wrapper(
             "claude_agent_sdk", "ClaudeSDKClient.receive_response", _wrap
         )
-        self._instrumented = True
+        _patched = True
         return True
 
     async def _instrument_stream(self, stream: Any) -> Any:
