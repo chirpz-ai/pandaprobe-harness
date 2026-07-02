@@ -17,13 +17,14 @@ the real CLI's **session-scoped** evaluation surface:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from pandaprobe_harness.cli.client import CliResult
-from pandaprobe_harness.cli.errors import CliError
+from pandaprobe_harness.cli.errors import CliAuthError, CliError, CliGeneralError
 
 
 @dataclass
@@ -55,6 +56,19 @@ class FakeCliClient:
     scores_get_payload: dict[str, Any] | None = None
     # Optional canned series for `evals scores list` (history cold-start).
     scores_list_payload: list[dict[str, Any]] | None = None
+    # Per-session canned series for `evals scores list --session-id <id>`
+    # (backend trend hydration / harness_history).
+    session_scores_list: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Optional canned payload for `traces spans`.
+    traces_spans_payload: dict[str, Any] | None = None
+    # Health-check knobs: `version` / `auth status` raise when flipped off.
+    version_ok: bool = True
+    auth_ok: bool = True
+    # Concurrency instrumentation: each run() sleeps `latency_s` and the peak
+    # number of simultaneously in-flight calls is recorded in `max_inflight`.
+    latency_s: float = 0.0
+    inflight: int = 0
+    max_inflight: int = 0
 
     calls: list[tuple[str, ...]] = field(default_factory=list)
     _runs: dict[str, _Run] = field(default_factory=dict)
@@ -66,7 +80,18 @@ class FakeCliClient:
     async def run(self, *args: str, timeout: float | None = None) -> CliResult:
         self.calls.append(args)
         self._maybe_raise(args)
-        payload = self._dispatch(args)
+        if args[:1] == ("version",) and not self.version_ok:
+            raise CliGeneralError("fake: pandaprobe binary unavailable")
+        if args[:2] == ("auth", "status") and not self.auth_ok:
+            raise CliAuthError("fake: not authenticated")
+        self.inflight += 1
+        self.max_inflight = max(self.max_inflight, self.inflight)
+        try:
+            if self.latency_s > 0:
+                await asyncio.sleep(self.latency_s)
+            payload = self._dispatch(args)
+        finally:
+            self.inflight -= 1
         return CliResult(args=args, exit_code=0, stdout=json.dumps(payload), stderr="")
 
     # -- helpers --------------------------------------------------------------
@@ -87,11 +112,18 @@ class FakeCliClient:
 
     def _dispatch(self, args: Sequence[str]) -> Any:
         prefix = tuple(args[:3])
+        if args[:1] == ("version",):
+            return {"version": "v0.2.0-fake"}
+        if args[:2] == ("auth", "status"):
+            return {"authenticated": True}
         if prefix == ("evals", "runs", "batch"):
             return self._create_run(args)
         if prefix == ("evals", "runs", "scores"):
             return self._scores(args)
         if prefix == ("evals", "scores", "list"):
+            session_id = _flag_value(args, "--session-id")
+            if session_id and session_id in self.session_scores_list:
+                return {"items": self.session_scores_list[session_id]}
             return {"items": self.scores_list_payload or []}
         if prefix == ("evals", "scores", "get"):
             return self.scores_get_payload or {
@@ -100,6 +132,11 @@ class FakeCliClient:
                     {"name": m, "value": str(v), "status": "SUCCESS"}
                     for m, v in self.metric_values.items()
                 ],
+            }
+        if prefix[:2] == ("traces", "spans"):
+            return self.traces_spans_payload or {
+                "trace_id": _positional(args, 2),
+                "spans": [],
             }
         if prefix[:2] == ("traces", "get"):
             return {"trace_id": _positional(args, 2), "spans": []}

@@ -1,9 +1,8 @@
 """DeepAgents adapter (optional ``deepagents`` extra).
 
-DeepAgents (by LangChain) is instrumented via a LangChain callback handler, so it
-shares the LangChain-family contract: turn detection on the root chain end, and
-state-level alert/rules injection (merge :meth:`consume_messages` /
-:meth:`startup_messages` into the next ``agent.invoke`` input's ``messages``).
+DeepAgents (by LangChain) is instrumented via a LangChain callback handler, so
+it shares the LangChain-family contract: turn detection on the root chain end;
+self-healing is delivered through the workspace mailbox + harness toolset.
 See :class:`LangChainCallbackAdapter`.
 """
 

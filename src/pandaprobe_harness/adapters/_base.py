@@ -1,12 +1,11 @@
-"""Shared base for framework adapters: the contract + an alert buffer.
+"""Shared base for framework adapters: turn detection + session bridging.
 
 Holds the common ``FrameworkAdapter`` contract (``parse_turn`` with a session
-bridge, ``inject_alert`` into a pending buffer, ``register``) plus a
-``notify_turn_end`` convenience that framework-specific instrumentation
-(callbacks, monkeypatch wrappers) calls to fire ``hook.on_turn_end`` for one
-completed turn. Concrete adapters add their framework-appropriate *delivery* of
-the buffered alerts (LangChain ``SystemMessage``s, a CrewAI context list, the
-Claude SDK history, etc.).
+bridge, ``register``) plus a ``notify_turn_end`` convenience that
+framework-specific instrumentation (callbacks, monkeypatch wrappers) calls to
+fire ``hook.on_turn_end`` for one completed turn. That is the adapter's whole
+job in the pull model — diagnostic delivery happens through the workspace
+mailbox and the agent's harness toolset, never through the adapter.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ __all__ = ["BaseSinkAdapter"]
 
 
 class BaseSinkAdapter:
-    """Common adapter contract + a pending-alert buffer."""
+    """Common adapter contract: session resolution + turn-end firing."""
 
     #: Extra mapping keys (besides ``session_id``) a turn payload may carry the
     #: session under (e.g. ``crew_id``, ``chat_id``). Tried in order.
@@ -33,7 +32,6 @@ class BaseSinkAdapter:
     def __init__(self, *, session_id: str | None = None) -> None:
         self._session_id = session_id
         self._hook: PandaHarnessHook | None = None
-        self._pending: list[str] = []
         self._turn_index = 0
 
     # -- FrameworkAdapter contract -------------------------------------------
@@ -62,23 +60,10 @@ class BaseSinkAdapter:
             session_id=str(session_id), turn_index=turn_index, end_state=dict(end_state)
         )
 
-    def inject_alert(self, alert: str) -> None:
-        self._pending.append(alert)
-
-    # -- buffer + helpers -----------------------------------------------------
-
-    @property
-    def pending_alerts(self) -> tuple[str, ...]:
-        return tuple(self._pending)
-
-    def consume_alerts(self) -> list[str]:
-        """Pop and return all buffered alerts."""
-
-        alerts, self._pending = self._pending, []
-        return alerts
+    # -- helpers -----------------------------------------------------------------
 
     def startup_context_text(self) -> str:
-        """The living harness rules as text (empty if none / no hook)."""
+        """The harness system context (rules + protocol + mailbox banner)."""
 
         if self._hook is None:
             return ""

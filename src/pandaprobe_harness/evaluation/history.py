@@ -20,6 +20,7 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -123,6 +124,53 @@ class ScoreHistoryStore:
 
             self._persist()
             return state
+
+    def seed(
+        self,
+        session_id: str,
+        metric: str,
+        samples: Sequence[tuple[float, str, str | None]],
+    ) -> None:
+        """Bulk-insert backend samples ``(value, ts, run_id)`` for cold-start.
+
+        Samples whose ``run_id`` is already present are skipped (idempotent
+        hydration), the EWMA state is advanced for each new sample, and the
+        file is persisted once.
+        """
+
+        with self._lock:
+            data = self._load()
+            key = self._key(session_id, metric)
+            entry = data.setdefault(key, {"series": [], "ewma": None})
+            series: list[dict[str, Any]] = entry["series"]
+            known_runs = {s.get("run_id") for s in series if s.get("run_id")}
+
+            inserted = False
+            for value, ts, run_id in samples:
+                if run_id and run_id in known_runs:
+                    continue
+                prev = entry.get("ewma")
+                if prev is None:
+                    state = EwmaState(fast=value, slow=value, count=1)
+                else:
+                    fast = self._alpha_fast * value + (1.0 - self._alpha_fast) * prev["fast"]
+                    slow = self._alpha_slow * value + (1.0 - self._alpha_slow) * prev["slow"]
+                    state = EwmaState(fast=fast, slow=slow, count=int(prev["count"]) + 1)
+                entry["ewma"] = {"fast": state.fast, "slow": state.slow, "count": state.count}
+                series.append(
+                    {
+                        "value": value,
+                        "ts": ts or datetime.now(UTC).isoformat(),
+                        "run_id": run_id,
+                    }
+                )
+                if run_id:
+                    known_runs.add(run_id)
+                inserted = True
+            if len(series) > _MAX_SAMPLES:
+                del series[: len(series) - _MAX_SAMPLES]
+            if inserted:
+                self._persist()
 
     def ewma(self, session_id: str, metric: str) -> EwmaState | None:
         with self._lock:

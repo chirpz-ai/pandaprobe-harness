@@ -1,15 +1,16 @@
 """The contract every framework adapter implements.
 
-An adapter has exactly two jobs:
+In the pull model an adapter is a **pure turn-detector** with exactly two
+jobs:
 
 1. ``parse_turn`` — translate a framework's turn-end payload into a normalized
-   ``TurnContext``.
-2. ``inject_alert`` — append an alert string to the agent's *next-turn* inbound
-   message queue (never mutating any checkpoint/state store).
+   ``TurnContext`` (resolving the session id).
+2. ``register`` — wire the hook into the framework's event system so a
+   completed turn fires ``hook.on_turn_end``.
 
-``register`` wires the hook into the framework's event system; sync frameworks
-should schedule ``hook.on_turn_end`` and call ``hook.drain_pending`` at the
-start of each turn.
+Self-healing delivery is framework-agnostic and lives elsewhere: the hook
+posts diagnostic notices to the workspace mailbox, and the agent pulls them
+through its harness toolset. Adapters expose no injection surface.
 """
 
 from __future__ import annotations
@@ -30,10 +31,6 @@ class FrameworkAdapter(Protocol):
 
     def parse_turn(self, raw_turn: object) -> TurnContext:
         """Normalize a framework turn-end payload into a ``TurnContext``."""
-        ...
-
-    def inject_alert(self, alert: str) -> None:
-        """Queue ``alert`` for the agent's next turn."""
         ...
 
     def register(self, hook: PandaHarnessHook) -> None:

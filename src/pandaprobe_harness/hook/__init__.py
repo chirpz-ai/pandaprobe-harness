@@ -1,14 +1,12 @@
-"""Component 1: lifecycle hook, turn context, and alert builders."""
+"""Component 1: lifecycle hook, turn context, and system-context composition."""
 
-from .alert import build_system_alert, build_trend_alert
 from .context import compose_system_preamble
 from .core import PandaHarnessHook
-from .turn import TurnContext
+from .turn import TurnContext, parse_turn_payload
 
 __all__ = [
     "PandaHarnessHook",
     "TurnContext",
-    "build_system_alert",
-    "build_trend_alert",
     "compose_system_preamble",
+    "parse_turn_payload",
 ]

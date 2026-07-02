@@ -2,9 +2,8 @@
 
 Works with ``langchain.agents.create_agent`` agents and LCEL chains — anything
 that accepts a LangChain callback via ``config={"callbacks": [...]}``. Turn
-detection fires on the root chain end; alert/rules injection is state-level (the
-developer merges :meth:`consume_messages` / :meth:`startup_messages` into the
-next ``invoke`` input's ``messages``). See :class:`LangChainCallbackAdapter`.
+detection fires on the root chain end; self-healing is delivered through the
+workspace mailbox + harness toolset. See :class:`LangChainCallbackAdapter`.
 """
 
 from __future__ import annotations

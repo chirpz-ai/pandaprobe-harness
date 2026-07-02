@@ -45,13 +45,14 @@ def test_session_bridge(
 
 
 @pytest.mark.parametrize("cls", _NEW)
-def test_inject_and_consume(cls: type[LangChainCallbackAdapter]) -> None:
+def test_no_injection_surface_and_guarded_callback(
+    cls: type[LangChainCallbackAdapter],
+) -> None:
     adapter = cls()
-    adapter.inject_alert("A")
-    assert adapter.pending_alerts == ("A",)
+    for legacy in ("inject_alert", "consume_alerts", "consume_messages", "startup_messages"):
+        assert not hasattr(adapter, legacy)
     if _HAS_LANGCHAIN:
-        assert len(adapter.consume_messages()) == 1
+        assert hasattr(adapter.make_callback(), "on_chain_end")
     else:
         with pytest.raises(ImportError):
-            adapter.consume_messages()
-        assert adapter.consume_alerts() == ["A"]  # raw alerts still drainable
+            adapter.make_callback()

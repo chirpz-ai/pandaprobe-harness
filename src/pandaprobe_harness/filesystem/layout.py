@@ -3,8 +3,10 @@
 Manages the persistent ``/harness`` workspace the agent reads and rewrites to
 self-heal:
 
-- ``harness_rules.md`` — the living rules (never clobbered once it exists).
-- ``traces/latest_eval.json`` — the most recent failure dump (written atomically).
+- ``harness_rules.md`` — the living rules (seeded from the template; rendered
+  by ``workspace.RulesStore`` once structured rules exist).
+- ``traces/latest_eval.json`` — the most recent eval dump (written atomically).
+- ``traces/<notice_id>.json`` — one immutable dump per diagnostic notice.
 
 All methods here perform blocking I/O; async callers wrap them in
 ``asyncio.to_thread``.
@@ -13,13 +15,12 @@ All methods here perform blocking I/O; async callers wrap them in
 from __future__ import annotations
 
 import importlib.resources
-import json
-import os
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..config import HarnessConfig
+from ..workspace._io import atomic_write_json, load_json
 
 __all__ = ["HarnessFilesystem"]
 
@@ -45,6 +46,7 @@ class HarnessFilesystem:
         cfg = self._config
         cfg.harness_root.mkdir(parents=True, exist_ok=True)
         cfg.traces_dir.mkdir(parents=True, exist_ok=True)
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
         if not cfg.rules_file.exists():
             cfg.rules_file.write_text(self._default_rules_template(), encoding="utf-8")
 
@@ -58,41 +60,30 @@ class HarnessFilesystem:
     def read_rules(self) -> str:
         return self._config.rules_file.read_text(encoding="utf-8")
 
-    def append_rule(
-        self,
-        rule: str,
-        *,
-        source: str = "self-heal",
-        timestamp: datetime | None = None,
-    ) -> None:
-        """Append a timestamped, attributed mitigation rule to the rules file.
-
-        This is the permanent self-healing artifact: a learned directive that
-        will be read into context on every subsequent run.
-        """
-
-        when = (timestamp or datetime.now(UTC)).isoformat()
-        block = f"\n- _[{when}] ({source})_ {rule.strip()}\n"
-        with self._config.rules_file.open("a", encoding="utf-8") as handle:
-            handle.write(block)
-
     # -- eval dumps -----------------------------------------------------------
 
     def write_latest_eval(self, payload: Mapping[str, Any]) -> None:
         """Atomically write the latest eval dump.
 
-        Writes to a temp file in the same directory then ``os.replace`` so a
-        concurrent reader (the agent) never observes a half-written file.
+        Writes to a unique temp file in the same directory then ``os.replace``
+        so a concurrent reader (the agent) never observes a half-written file
+        and concurrent writers never collide on the temp path.
         """
 
-        target = self._config.latest_eval_file
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, target)
+        atomic_write_json(self._config.latest_eval_file, dict(payload))
 
     def read_latest_eval(self) -> dict[str, Any]:
-        data: dict[str, Any] = json.loads(
-            self._config.latest_eval_file.read_text(encoding="utf-8")
-        )
+        data = load_json(self._config.latest_eval_file)
+        if data is None:
+            raise FileNotFoundError(str(self._config.latest_eval_file))
         return data
+
+    def write_trace_dump(self, name: str, payload: Mapping[str, Any]) -> Path:
+        """Atomically write an immutable per-notice dump under ``traces/``."""
+
+        target = self._config.traces_dir / f"{name}.json"
+        atomic_write_json(target, dict(payload))
+        return target
+
+    def read_trace_dump(self, name: str) -> dict[str, Any] | None:
+        return load_json(self._config.traces_dir / f"{name}.json")

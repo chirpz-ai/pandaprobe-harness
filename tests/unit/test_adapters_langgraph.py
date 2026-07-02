@@ -33,20 +33,17 @@ def test_session_bridge_from_contextvar(monkeypatch: pytest.MonkeyPatch) -> None
     assert LangGraphAdapter().parse_turn({}).session_id == "ctx-sid"
 
 
-def test_inject_and_consume_alerts() -> None:
+def test_adapter_exposes_no_injection_surface() -> None:
     adapter = LangGraphAdapter()
-    adapter.inject_alert("ALERT")
-    assert adapter.pending_alerts == ("ALERT",)
-    assert adapter.consume_alerts() == ["ALERT"]
-    assert adapter.pending_alerts == ()
+    for legacy in ("inject_alert", "consume_alerts", "consume_messages", "drain_into"):
+        assert not hasattr(adapter, legacy)
 
 
-def test_consume_messages_respects_langchain_availability() -> None:
+def test_make_callback_respects_langchain_availability() -> None:
     adapter = LangGraphAdapter()
-    adapter.inject_alert("X")
     if _HAS_LANGCHAIN:
-        messages = adapter.consume_messages()
-        assert len(messages) == 1
+        handler = adapter.make_callback()
+        assert hasattr(handler, "on_chain_end")
     else:
         with pytest.raises(ImportError):
-            adapter.consume_messages()
+            adapter.make_callback()

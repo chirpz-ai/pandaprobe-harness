@@ -34,12 +34,10 @@ def test_session_bridge_from_contextvar(monkeypatch: pytest.MonkeyPatch) -> None
     assert CrewAIAdapter().parse_turn({}).session_id == "ctx-sid"
 
 
-def test_inject_and_consume_context() -> None:
+def test_adapter_exposes_no_injection_surface() -> None:
     adapter = CrewAIAdapter(session_id="s")
-    adapter.inject_alert("X")
-    assert adapter.pending_alerts == ("X",)
-    assert adapter.consume_context() == ["X"]
-    assert adapter.pending_alerts == ()
+    for legacy in ("inject_alert", "pending_alerts", "consume_alerts", "consume_context"):
+        assert not hasattr(adapter, legacy)
 
 
 def test_startup_context_text_empty_without_hook() -> None:

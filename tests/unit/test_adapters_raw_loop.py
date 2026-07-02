@@ -26,13 +26,7 @@ def test_parse_turn_rejects_non_mapping() -> None:
         adapter.parse_turn(["not", "a", "mapping"])
 
 
-def test_inject_and_consume_alerts() -> None:
+def test_adapter_exposes_no_injection_surface() -> None:
     adapter = RawLoopAdapter()
-    adapter.inject_alert("ALERT-1")
-    adapter.inject_alert("ALERT-2")
-    assert adapter.pending_alerts == ("ALERT-1", "ALERT-2")
-    consumed = adapter.consume_alerts()
-    assert consumed == ["ALERT-1", "ALERT-2"]
-    # consuming drains the queue
-    assert adapter.pending_alerts == ()
-    assert adapter.consume_alerts() == []
+    for legacy in ("inject_alert", "pending_alerts", "consume_alerts"):
+        assert not hasattr(adapter, legacy)

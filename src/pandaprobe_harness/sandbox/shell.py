@@ -50,12 +50,15 @@ class RestrictedShellTool:
         argv = shlex.split(command)
         self._policy.validate(argv)
 
+        # Credential scoping: sensitive variables never reach the subprocess
+        # unless the policy explicitly passes them through for this binary.
+        env = self._policy.scrubbed_env(argv[0], self._env)
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._policy.workdir),
-            env=self._env,
+            env=env,
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
