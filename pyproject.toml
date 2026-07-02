@@ -1,6 +1,6 @@
 [project]
 name = "pandaprobe-harness"
-version = "0.3.0"
+version = "0.5.0"
 description = "Meta-cognitive diagnostic sandbox harness for PandaProbe-instrumented agents."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -9,6 +9,11 @@ license = { text = "Apache-2.0" }
 # `pandaprobe` CLI through a stdlib subprocess seam. Framework adapters add their
 # own optional deps via the extras below.
 dependencies = []
+
+[project.scripts]
+# The agent-facing companion CLI (allow-listed in the sandbox shell policy so
+# sandboxed agents can self-diagnose without allow-listing `python`).
+pandaprobe-harness-agent = "pandaprobe_harness.agent_tools.companion:main"
 
 [project.optional-dependencies]
 # Real-framework adapters are optional, import-guarded extras so the core
@@ -58,6 +63,10 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # ASYNC109: `timeout` parameters are an intentional part of the CliClient API
 # (they mirror subprocess timeout semantics), not a misuse of asyncio.
 ignore = ["ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+# Async tests assert on files synchronously by design — nothing to unblock.
+"tests/**" = ["ASYNC230", "ASYNC240"]
 
 [tool.mypy]
 python_version = "3.13"
