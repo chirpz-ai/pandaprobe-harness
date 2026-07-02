@@ -43,11 +43,11 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
-# --- Diagnostic filesystem ---------------------------------------------------
-# Provisions /harness/{harness_rules.md, traces/}. The actual mount is a named
-# volume in docker-compose so learned rules persist across runs.
+# --- Diagnostic workspace ------------------------------------------------------
+# Provisions /harness/{harness_rules.md, traces/, state/, mailbox/}. The actual
+# mount is a named volume in docker-compose so learned rules persist across runs.
 RUN mkdir -p /harness/traces \
-    && uv run python -c "from pandaprobe_harness import HarnessConfig, HarnessFilesystem; HarnessFilesystem(HarnessConfig()).provision()"
+    && uv run python -c "from pandaprobe_harness import HarnessConfig, HarnessFilesystem, Mailbox; cfg = HarnessConfig(); HarnessFilesystem(cfg).provision(); Mailbox(cfg).provision()"
 
 ENV PATH="/app/.venv/bin:${PATH}"
 WORKDIR /harness
