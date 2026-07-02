@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-from types import SimpleNamespace
 
 import pytest
 
@@ -14,11 +13,6 @@ _HAS_CLAUDE = (
 )
 
 
-class _Hook:
-    def startup_context(self) -> str:
-        return "RULES: never double-charge"
-
-
 def test_parse_turn_and_session(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ClaudeAgentSDKAdapter(session_id="s").parse_turn({}).session_id == "s"
     with pytest.raises(ValueError):
@@ -27,29 +21,10 @@ def test_parse_turn_and_session(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ClaudeAgentSDKAdapter().parse_turn({}).session_id == "ctx"
 
 
-def test_inject_into_history_appends_system_messages() -> None:
+def test_adapter_exposes_no_injection_surface() -> None:
     adapter = ClaudeAgentSDKAdapter(session_id="s")
-    adapter.inject_alert("ALERT-1")
-    adapter.inject_alert("ALERT-2")
-    client = SimpleNamespace()  # no _pandaprobe_history yet
-    n = adapter.inject_into_history(client)
-    assert n == 2
-    assert client._pandaprobe_history == [
-        {"role": "system", "content": "ALERT-1"},
-        {"role": "system", "content": "ALERT-2"},
-    ]
-    assert adapter.pending_alerts == ()  # drained
-
-
-def test_prime_startup_inserts_rules_first() -> None:
-    adapter = ClaudeAgentSDKAdapter(session_id="s")
-    adapter.register(_Hook())
-    client = SimpleNamespace(_pandaprobe_history=[{"role": "user", "content": "hi"}])
-    adapter.prime_startup(client)
-    assert client._pandaprobe_history[0] == {
-        "role": "system",
-        "content": "RULES: never double-charge",
-    }
+    for legacy in ("inject_alert", "consume_alerts", "inject_into_history", "prime_startup"):
+        assert not hasattr(adapter, legacy)
 
 
 def test_instrument_returns_false_when_dep_absent() -> None:
