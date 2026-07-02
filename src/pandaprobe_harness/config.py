@@ -42,8 +42,9 @@ class HarnessConfig:
     """Immutable harness configuration.
 
     Path fields ``traces_dir``, ``rules_file``, ``latest_eval_file``,
-    ``state_dir`` and ``history_file`` are derived from ``harness_root`` in
-    ``__post_init__`` and should not be passed explicitly.
+    ``state_dir``, ``history_file`` and the mailbox/journal/rules-store paths
+    are derived from ``harness_root`` in ``__post_init__`` and should not be
+    passed explicitly.
     """
 
     harness_root: Path = Path("/harness")
@@ -54,6 +55,12 @@ class HarnessConfig:
     latest_eval_file: Path = field(init=False)
     state_dir: Path = field(init=False)
     history_file: Path = field(init=False)
+    mailbox_dir: Path = field(init=False)
+    mailbox_pending_dir: Path = field(init=False)
+    mailbox_processed_dir: Path = field(init=False)
+    mailbox_status_file: Path = field(init=False)
+    journal_file: Path = field(init=False)
+    rules_store_file: Path = field(init=False)
 
     # CLI invocation.
     cli_binary: str = "pandaprobe"
@@ -100,12 +107,42 @@ class HarnessConfig:
     percentile_window: int = 0
     percentile_floor: float = 0.25
 
-    # -- alerting -------------------------------------------------------------
-    # Suppress re-injecting an identical alert signature for this many turns.
+    # -- noticing (the pull-model mailbox) ------------------------------------
+    # Suppress re-posting an identical notice signature for this many turns.
     # 0 means "suppress until the condition recovers".
     alert_cooldown_turns: int = 0
     # Optionally enrich the dump with the worst flagged trace's tool spans.
     enrich_flagged_traces: bool = False
+    # Shadow mode: evaluate + journal, but never post mailbox notices.
+    observe_only: bool = False
+    # Escalate to a single `needs_human` notice when this many notices are
+    # posted within the window (0 disables the circuit breaker).
+    circuit_breaker_max_notices: int = 5
+    circuit_breaker_window_s: float = 600.0
+
+    # -- cost / latency / sampling controls -----------------------------------
+    # Evaluate every Nth turn per session (1 = every turn).
+    eval_sample_every: int = 1
+    # Minimum seconds between eval launches for one session (0 disables).
+    session_min_eval_interval_s: float = 0.0
+    # Global cap on concurrently-running evaluations across all sessions.
+    max_concurrent_evals: int = 4
+    # Hard budget of eval launches for this process (0 = unlimited). A cheap
+    # cost proxy: each launch is one platform eval run.
+    max_evals_per_run: int = 0
+
+    # -- self-heal rules -------------------------------------------------------
+    # Cap on concurrently-active structured rules (agent must retire to add).
+    max_active_rules: int = 50
+    # Length cap applied when sanitizing eval-derived free text.
+    sanitize_max_len: int = 2000
+
+    # -- robustness / scale ----------------------------------------------------
+    # Verify the CLI is present and authenticated before the first eval.
+    health_check: bool = True
+    # Seed local trend history from the backend once per session (shared state
+    # for horizontally-scaled agents).
+    hydrate_history_from_backend: bool = False
 
     def __post_init__(self) -> None:
         root = Path(self.harness_root)
@@ -116,6 +153,12 @@ class HarnessConfig:
         object.__setattr__(self, "latest_eval_file", root / "traces" / "latest_eval.json")
         object.__setattr__(self, "state_dir", root / "state")
         object.__setattr__(self, "history_file", root / "state" / "score_history.json")
+        object.__setattr__(self, "mailbox_dir", root / "mailbox")
+        object.__setattr__(self, "mailbox_pending_dir", root / "mailbox" / "pending")
+        object.__setattr__(self, "mailbox_processed_dir", root / "mailbox" / "processed")
+        object.__setattr__(self, "mailbox_status_file", root / "mailbox" / "status.json")
+        object.__setattr__(self, "journal_file", root / "journal.jsonl")
+        object.__setattr__(self, "rules_store_file", root / "rules.jsonl")
 
     # -- helpers --------------------------------------------------------------
 
@@ -173,6 +216,21 @@ class HarnessConfig:
             "percentile_floor": _env_float("HARNESS_PERCENTILE_FLOOR", 0.25),
             "alert_cooldown_turns": _env_int("HARNESS_ALERT_COOLDOWN_TURNS", 0),
             "enrich_flagged_traces": _env_bool("HARNESS_ENRICH_FLAGGED_TRACES", False),
+            "observe_only": _env_bool("HARNESS_OBSERVE_ONLY", False),
+            "circuit_breaker_max_notices": _env_int("HARNESS_CIRCUIT_BREAKER_MAX_NOTICES", 5),
+            "circuit_breaker_window_s": _env_float("HARNESS_CIRCUIT_BREAKER_WINDOW_S", 600.0),
+            "eval_sample_every": _env_int("HARNESS_EVAL_SAMPLE_EVERY", 1),
+            "session_min_eval_interval_s": _env_float(
+                "HARNESS_SESSION_MIN_EVAL_INTERVAL_S", 0.0
+            ),
+            "max_concurrent_evals": _env_int("HARNESS_MAX_CONCURRENT_EVALS", 4),
+            "max_evals_per_run": _env_int("HARNESS_MAX_EVALS_PER_RUN", 0),
+            "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 50),
+            "sanitize_max_len": _env_int("HARNESS_SANITIZE_MAX_LEN", 2000),
+            "health_check": _env_bool("HARNESS_HEALTH_CHECK", True),
+            "hydrate_history_from_backend": _env_bool(
+                "HARNESS_HYDRATE_HISTORY_FROM_BACKEND", False
+            ),
         }
         values.update(overrides)
         return cls(**values)  # type: ignore[arg-type]
