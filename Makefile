@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 COMPOSE_TEST := $(COMPOSE) -f docker-compose.test.yml
 
-.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e
+.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e test-contract example
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -42,5 +42,11 @@ test: ## Run the full offline test suite (unit + e2e)
 test-unit: ## Run unit tests only
 	uv run pytest tests/unit -v
 
-test-e2e: ## Run the end-to-end self-healing scenario
-	uv run pytest tests/e2e_harness_test.py -v
+test-e2e: ## Run the end-to-end pull-loop + concurrency scenarios
+	uv run pytest tests/e2e_pull_loop_test.py tests/e2e_concurrency_test.py -v
+
+test-contract: ## Run the live contract tests (needs pandaprobe CLI + creds)
+	PANDAPROBE_LIVE=1 uv run pytest tests/contract -v
+
+example: ## Run the offline self-heal example (fake CLI, no network)
+	uv run python examples/offline_self_heal.py
