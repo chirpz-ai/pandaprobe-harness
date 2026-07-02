@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - name: Sync dev environment
+        run: uv sync --group dev
+      - name: Ruff
+        run: uv run ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - name: Sync dev environment
+        run: uv sync --group dev
+      - name: Mypy (strict)
+        run: uv run mypy src
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - name: Sync dev environment
+        run: uv sync --group dev
+      - name: Offline test suite
+        run: uv run pytest -q
+
+  extras:
+    # Framework adapters are optional extras; exercise each one in isolation so
+    # a missing import guard in one adapter cannot hide behind another extra.
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extra:
+          - langgraph
+          - langchain
+          - deepagents
+          - crewai
+          - claude-agent-sdk
+          - openai-agents
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - name: Sync with extra
+        run: uv sync --extra ${{ matrix.extra }} --group dev
+      - name: Adapter tests
+        run: uv run pytest tests/integration tests/unit -q
+
+  docker:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sandbox image
+        run: docker build -f Dockerfile.sandbox -t pandaprobe-harness-sandbox .
