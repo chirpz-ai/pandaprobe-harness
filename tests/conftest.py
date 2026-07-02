@@ -9,7 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from pandaprobe_harness import HarnessConfig, HarnessFilesystem, RawLoopAdapter
+from pandaprobe_harness import (
+    Harness,
+    HarnessConfig,
+    HarnessFilesystem,
+    HarnessToolset,
+    Journal,
+    Mailbox,
+    RawLoopAdapter,
+    RulesStore,
+    ScoreHistoryStore,
+)
 from tests.fakes.fake_cli_client import FakeCliClient
 
 FAKE_BIN = Path(__file__).parent / "bin" / "fake_pandaprobe"
@@ -49,6 +59,48 @@ def adapter() -> RawLoopAdapter:
 @pytest.fixture
 def fake_bin() -> Path:
     return FAKE_BIN
+
+
+@pytest.fixture
+def mailbox(config: HarnessConfig) -> Mailbox:
+    box = Mailbox(config)
+    box.provision()
+    return box
+
+
+@pytest.fixture
+def journal(config: HarnessConfig) -> Journal:
+    return Journal(config)
+
+
+@pytest.fixture
+def rules(config: HarnessConfig, journal: Journal) -> RulesStore:
+    return RulesStore(config, journal=journal)
+
+
+@pytest.fixture
+def toolset(
+    config: HarnessConfig,
+    fake_cli: FakeCliClient,
+    mailbox: Mailbox,
+    journal: Journal,
+    rules: RulesStore,
+) -> HarnessToolset:
+    return HarnessToolset(
+        config=config,
+        cli=fake_cli,
+        mailbox=mailbox,
+        journal=journal,
+        rules=rules,
+        history=ScoreHistoryStore(config),
+    )
+
+
+@pytest.fixture
+def harness(config: HarnessConfig, fake_cli: FakeCliClient) -> Harness:
+    """A fully-assembled offline harness over the fake CLI."""
+
+    return Harness.create(config, cli=fake_cli)
 
 
 @pytest.fixture
