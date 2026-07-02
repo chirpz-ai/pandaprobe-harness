@@ -15,7 +15,7 @@ import os
 from collections.abc import Mapping, Sequence
 
 from .client import CliResult
-from .errors import CliTimeoutError, raise_for_exit_code
+from .errors import CliGeneralError, CliTimeoutError, raise_for_exit_code
 
 __all__ = ["SubprocessCliClient"]
 
@@ -39,13 +39,22 @@ class SubprocessCliClient:
 
     async def run(self, *args: str, timeout: float | None = None) -> CliResult:
         argv = (*self._base_flags, *args)
-        proc = await asyncio.create_subprocess_exec(
-            self._binary,
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self._env,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._binary,
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._env,
+            )
+        except OSError as exc:
+            # A missing/unexecutable binary (FileNotFoundError, PermissionError)
+            # must surface as a CliError so the harness degrades gracefully
+            # rather than crashing the host loop with a raw OSError.
+            result = CliResult(args=argv, exit_code=-1, stdout="", stderr=str(exc))
+            raise CliGeneralError(
+                f"failed to launch {self._binary!r}: {exc}", result=result
+            ) from exc
 
         effective_timeout = self._default_timeout if timeout is None else timeout
         try:
