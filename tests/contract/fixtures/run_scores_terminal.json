@@ -1,0 +1,27 @@
+[
+  {
+    "name": "agent_reliability",
+    "value": "0.42",
+    "status": "SUCCESS",
+    "reason": "low tool correctness on trace tr-1",
+    "metadata": {
+      "flagged_traces": ["tr-1"],
+      "per_trace_signals": {
+        "tr-1": {
+          "confidence": 0.5,
+          "coherence": 0.6,
+          "loop_detection": 0.2,
+          "tool_correctness": 0.4
+        }
+      },
+      "aggregation": {"method": "min"}
+    }
+  },
+  {
+    "name": "agent_consistency",
+    "value": "0.55",
+    "status": "SUCCESS",
+    "reason": null,
+    "metadata": {}
+  }
+]
