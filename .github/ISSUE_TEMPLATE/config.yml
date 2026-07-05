@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Help
+    url: https://github.com/chirpz-ai/pandaprobe-harness/discussions
+    about: For questions or usage help, please start a discussion instead of opening an issue.
+  - name: Documentation
+    url: https://docs.pandaprobe.com/harness/get-started/quickstart
+    about: Guides, concepts, and the full reference for the PandaProbe Harness.
