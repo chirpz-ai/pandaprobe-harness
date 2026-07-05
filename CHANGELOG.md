@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-03
+
+The "closed loop" release. v0.5 detected failures, proposed rules, and applied
+them — but never confirmed a rule actually helped. v0.6 closes the loop:
+**evidence before trust** (a rule must prove itself before it is trusted),
+**relevance over volume** (only the rules relevant to the current situation
+enter the prompt), and **measure the foundation** (an offline calibration tool
+for the breach thresholds everything keys off). All of it automatic — no human
+in the healing loop.
+
+### Changed
+
+- **BREAKING (behavior)**: `harness_rule_add` now records a **candidate**
+  rule, not an active one. Candidates are still injected into the system
+  context (under a clearly-labeled "Provisional rules (under evaluation)"
+  section — a rule must be in force to be measurable) and are promoted to
+  `active` only after a validator shows they help: `ReplayValidator` (replays
+  the captured failing scenario through a developer-supplied replay function
+  and requires the targeted metric to improve past `rule_promote_margin` with
+  no case regressing past `rule_regress_margin`) or, when no replay function
+  is wired, `ForwardTrialValidator` (compares the signature's breach rate
+  over the next `rule_trial_min_sessions` live sessions against the baseline
+  captured at add time). Unfavorable candidates are retired with a journaled
+  reason. Set `rule_validation=false` (`HARNESS_RULE_VALIDATION=false`) to
+  restore the v0.5 add→active behavior.
+- **Rule retrieval is task-conditioned by default**: the system preamble now
+  renders global (untagged) rules plus the top-`rules_context_topk` rules
+  lexically relevant to the pending notices and an optional
+  `system_context(task_hint=...)` — not the full set. The rest stay reachable
+  via `harness_rules_search` / `harness_rules_list`. Set
+  `rule_retrieval=false` to restore v0.5 render-everything behavior.
+- `harness_rule_retire` now retires candidates as well as active rules and
+  accepts a journaled `reason`; the dedup/cap in `RulesStore.add` now count
+  the whole live set (active + candidate).
+- `harness_reflect` additionally returns `candidate_rules` and
+  `recent_validations` (promote/retire outcomes) so the reflection cycle can
+  learn which kinds of rules survive validation.
+
+### Added
+
+- **Rule lifecycle** (`candidate → active | retired`) with `Rule.tags`
+  (auto-derived from the source notice's signatures, metrics, and signal
+  names), `Rule.trial` (`TrialState` bookkeeping: baseline vs. trial breach
+  rates, observed/breached sessions, replay attempts, verdict), and
+  `RulesStore.promote()/update_trial()/live()/candidates()`.
+- **Validation package** (`pandaprobe_harness.validation`): `RuleValidator`
+  protocol, `ReplayValidator`, `ForwardTrialValidator`, and the
+  `ValidationEngine` the hook drives automatically on every handled report
+  (single-flight, never blocks or raises into the host loop). New journal
+  events: `rule_promote`, `rule_retire` (with reason), `validation`
+  (fallback announcement), `evalset_capture`, `regression`.
+- **Replayable regression eval-set** (`EvalSet`, `<harness_root>/evalset/`):
+  breaching sessions are captured as `failure` cases (opt-in via
+  `capture_eval_cases`) with their signature, baseline scores, and — when the
+  turn payload carries one — the replay input; known-good sessions can be
+  captured as protected `win` cases (never auto-evicted; failures evict
+  oldest-first at `eval_case_max`). The **`ReplayFn` seam**
+  (`(case, system_context) -> new_session_id`) is how the harness re-runs
+  the developer's agent; wire it via `Harness.create(..., replay=...)`.
+- `harness.run_regression()` + the **`pandaprobe-harness-eval`** operator CLI:
+  replay the eval-set (wins first) against the current rule set and classify
+  each case improved/unchanged/regressed vs. baseline — the "did a new rule
+  break an old win" guard. Without a replay function it degrades to one clear
+  warning and all-skipped results, never a crash.
+- **Metric calibration** (`pandaprobe_harness.calibration` + the
+  **`pandaprobe-harness-calibrate`** operator CLI): with labels (JSON/CSV, or
+  eval-set kinds via `--from-evalset`) — precision/recall/F1 of the breach
+  predicate, a confusion matrix, and a threshold sweep with the
+  F1-maximizing threshold and the lowest threshold hitting a target
+  precision; without labels — score distribution, histogram, sweep, and
+  inter-metric agreement. Stdlib-only, fully offline-testable.
+- New toolset operations (9 → 14): `harness_rule_status`,
+  `harness_rules_search`, `harness_rules_list`, `harness_evalset_list`,
+  `harness_evalset_attach`.
+- New facade surface: `Harness.create(..., replay=)` (and all `for_*`
+  factories), `harness.evalset`, `harness.run_regression()`,
+  `harness.validate_candidates()`, `harness.drain_validation()`,
+  `harness.system_context(task_hint=...)`.
+- Config knobs (all mirrored as `HARNESS_*` env vars): `rule_validation`,
+  `rule_trial_min_sessions`, `rule_promote_margin`, `rule_regress_margin`,
+  `replay_timeout_s`, `capture_eval_cases`, `eval_case_max`,
+  `regression_sample`, `rule_retrieval`, `rules_context_topk`.
+
+### Fixed
+
+- `Rule.from_json` no longer coerces unknown statuses to `active` — a
+  persisted `candidate` now round-trips instead of silently self-promoting
+  across process restarts.
+
 ## [0.5.0] - 2026-07-01
 
 The "pull model" release. The harness no longer pushes alerts into agent
