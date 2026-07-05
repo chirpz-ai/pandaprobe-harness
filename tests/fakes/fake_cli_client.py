@@ -31,6 +31,7 @@ from pandaprobe_harness.cli.errors import CliAuthError, CliError, CliGeneralErro
 class _Run:
     metrics: list[str]
     poll_count: int = 0
+    session_id: str | None = None
 
 
 @dataclass
@@ -42,6 +43,9 @@ class FakeCliClient:
     metric_values: dict[str, float] = field(
         default_factory=lambda: {"agent_reliability": 0.9, "agent_consistency": 0.9}
     )
+    # session id -> {metric: score} overriding `metric_values` for that session
+    # (lets a *replayed* session score differently from the live one).
+    session_metric_values: dict[str, dict[str, float]] = field(default_factory=dict)
     metric_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Per-metric terminal status override (e.g. "FAILED" → null value).
     metric_status: dict[str, str] = field(default_factory=dict)
@@ -101,6 +105,11 @@ class FakeCliClient:
 
         self.metric_values.update(values)
 
+    def set_session_scores(self, session_id: str, **values: float) -> None:
+        """Set per-session score overrides (e.g. for a replayed session)."""
+
+        self.session_metric_values.setdefault(session_id, {}).update(values)
+
     @property
     def batch_calls(self) -> list[tuple[str, ...]]:
         return [c for c in self.calls if c[:3] == ("evals", "runs", "batch")]
@@ -151,7 +160,8 @@ class FakeCliClient:
         self._runs_created += 1
         run_id = f"run-session-{self._counter}"
         empty = self._runs_created <= self.empty_runs
-        self._runs[run_id] = _Run(metrics=[] if empty else metrics)
+        session_id = _flag_value(args, "--session-ids")
+        self._runs[run_id] = _Run(metrics=[] if empty else metrics, session_id=session_id)
         return {"id": run_id, "status": "PENDING", "target_type": "SESSION"}
 
     def _scores(self, args: Sequence[str]) -> list[dict[str, Any]]:
@@ -162,15 +172,18 @@ class FakeCliClient:
         run.poll_count += 1
         if run.poll_count <= self.running_polls:
             return [{"name": m, "value": None, "status": "PENDING"} for m in run.metrics]
-        return [self._score_record(m) for m in run.metrics]
+        return [self._score_record(m, session_id=run.session_id) for m in run.metrics]
 
-    def _score_record(self, metric: str) -> dict[str, Any]:
+    def _score_record(self, metric: str, *, session_id: str | None = None) -> dict[str, Any]:
         status = self.metric_status.get(metric, "SUCCESS")
+        overrides = self.session_metric_values.get(session_id or "", {})
         value: str | None
         if metric in self.raw_metric_values:
             value = self.raw_metric_values[metric]  # verbatim (may be non-numeric)
         elif status.upper() in {"FAILED", "ERROR"}:
             value = None  # the backend returns a null value for failed scores
+        elif metric in overrides:
+            value = str(overrides[metric])  # per-session override (replayed sessions)
         else:
             value = str(self.metric_values.get(metric))
         return {
