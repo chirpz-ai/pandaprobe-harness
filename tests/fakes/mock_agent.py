@@ -38,6 +38,7 @@ class MockLLMAgent:
         self.actions: list[str] = []
         self.tool_calls: list[tuple[str, dict[str, Any]]] = []
         self.rule_ids: list[str] = []
+        self.rule_status: dict[str, Any] | None = None
 
     async def take_turn(self) -> dict[str, Any]:
         self.turn_index += 1
@@ -89,6 +90,12 @@ class MockLLMAgent:
             "harness_mailbox_ack",
             {"notice_id": notice_id, "rule_id": rule_id, "note": "mitigated"},
         )
+        # 6. Check the rule's lifecycle (candidate rules are validated by the
+        #    harness before they are trusted).
+        if rule_id:
+            status = await self._call("harness_rule_status", {"rule_id": rule_id})
+            if status.get("ok"):
+                self.rule_status = status.get("lifecycle")
         self.healed = True
 
     async def _call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
