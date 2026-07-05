@@ -423,7 +423,14 @@ class ValidationEngine:
             except Exception:  # noqa: BLE001 - journaling is best-effort here
                 logger.debug("failed to journal validation fallback", exc_info=True)
 
-        for rule in candidates:
+        for stale in candidates:
+            # Earlier candidates' (slow, replay-bound) validations may have run
+            # for a while, and observe_report keeps appending trial evidence —
+            # judge every candidate on its FRESH state, not the round-start
+            # snapshot, and skip it if it was promoted/retired meanwhile.
+            rule = await asyncio.to_thread(self._fresh_candidate, stale.id)
+            if rule is None:
+                continue
             try:
                 verdict = await self._validate_one(rule)
             except Exception:  # noqa: BLE001 - one bad candidate must not stop the rest
@@ -439,6 +446,12 @@ class ValidationEngine:
             except Exception:  # noqa: BLE001 - degrade, never break the caller
                 logger.exception("failed to apply verdict for rule %s", rule.id)
         return verdicts
+
+    def _fresh_candidate(self, rule_id: str) -> Rule | None:
+        for rule in self._rules.candidates():
+            if rule.id == rule_id:
+                return rule
+        return None
 
     async def _validate_one(self, rule: Rule) -> ValidationVerdict:
         if self._replay_validator is not None:
@@ -461,13 +474,17 @@ class ValidationEngine:
         return await self._forward.validate(rule)
 
     def _apply(self, rule: Rule, verdict: ValidationVerdict) -> None:
-        trial = rule.trial
-        if trial is not None:
-            label = "promoted" if verdict.outcome == "promote" else "retired"
-            trial = replace(trial, verdict=f"{label}:{verdict.reason}")
+        # Stamp the verdict through the atomic mutate-under-the-lock, so trial
+        # evidence appended by concurrent observers between our snapshot and
+        # now is preserved — writing a snapshot-derived trial here would erase
+        # it from the terminal record.
+        label = "promoted" if verdict.outcome == "promote" else "retired"
+
+        def _stamp(trial: TrialState) -> TrialState:
+            return replace(trial, verdict=f"{label}:{verdict.reason}")
+
+        self._rules.update_trial(rule.id, _stamp)
         if verdict.outcome == "promote":
-            self._rules.promote(
-                rule.id, reason=verdict.reason, validator=verdict.validator, trial=trial
-            )
+            self._rules.promote(rule.id, reason=verdict.reason, validator=verdict.validator)
         elif verdict.outcome == "retire":
-            self._rules.retire(rule.id, reason=verdict.reason, trial=trial)
+            self._rules.retire(rule.id, reason=verdict.reason)

@@ -487,3 +487,77 @@ async def test_engine_never_raises(tmp_path: Path) -> None:
 
     verdicts = await engine.evaluate_candidates()
     assert verdicts == []  # the failure was contained, not raised
+
+
+async def test_evidence_observed_during_a_replay_round_survives_the_verdict(
+    tmp_path: Path,
+) -> None:
+    """_apply must not clobber trial evidence appended while the (slow) replay
+    was running: the verdict is stamped onto the FRESH trial, not the round's
+    snapshot."""
+
+    config, journal, rules, evalset = _stores(tmp_path)
+    rules.add(
+        "verify before retrying", "x", metric="agent_reliability",
+        tags=["breach:agent_reliability"],
+    )
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.set_session_scores("s-replayed", agent_reliability=0.92, agent_consistency=0.88)
+    engine_ref: list[ValidationEngine] = []
+
+    async def replay(case: EvalCase, context: str) -> str:
+        # A concurrent session's report lands mid-round.
+        engine_ref[0].observe_report("s-during-replay", set())
+        return "s-replayed"
+
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        journal=journal,
+        replay=replay,
+    )
+    engine_ref.append(engine)
+
+    (verdict,) = await engine.evaluate_candidates()
+    assert verdict.outcome == "promote"
+    (promoted,) = rules.active()
+    assert promoted.trial is not None
+    assert "s-during-replay" in promoted.trial.observed_sessions  # not clobbered
+    assert promoted.trial.verdict.startswith("promoted:")
+
+
+async def test_candidate_retired_mid_round_is_skipped(tmp_path: Path) -> None:
+    """Every candidate is judged on its FRESH state: one promoted/retired while
+    an earlier candidate's validation ran is skipped, not validated against a
+    stale snapshot."""
+
+    config, journal, rules, evalset = _stores(tmp_path)
+    first = rules.add(
+        "verify before retrying", "x", metric="agent_reliability",
+        tags=["breach:agent_reliability"],
+    )
+    second = rules.add("an unrelated candidate", "y", metric="agent_consistency")
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.set_session_scores("s-replayed", agent_reliability=0.92, agent_consistency=0.88)
+
+    async def replay(case: EvalCase, context: str) -> str:
+        # While the first candidate replays, the agent retires the second.
+        rules.retire(second.id, reason="agent decided against it")
+        return "s-replayed"
+
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        journal=journal,
+        replay=replay,
+    )
+
+    verdicts = await engine.evaluate_candidates()
+    assert [v.rule_id for v in verdicts] == [first.id]  # the second was skipped
+    assert [r.id for r in rules.active()] == [first.id]
