@@ -38,6 +38,7 @@ from ..evaluation.evaluator import MetricEvaluator
 from ..evaluation.history import ScoreHistoryStore
 from ..evaluation.metrics import EvalReport, MetricScore
 from ..evaluation.trends import TrendDetector
+from ..workspace.evalset import EvalSet, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.mailbox import DiagnosticNotice, Mailbox, NoticeMetric, Severity
 from ..workspace.rules import RulesStore
@@ -47,6 +48,7 @@ from .turn import TurnContext, parse_turn_payload
 
 if TYPE_CHECKING:
     from ..filesystem.layout import HarnessFilesystem
+    from ..validation.validator import ValidationEngine, ValidationVerdict
 
 __all__ = ["PandaHarnessHook"]
 
@@ -78,6 +80,9 @@ class PandaHarnessHook:
         evaluator: MetricEvaluator | None = None,
         parser: Callable[[object], TurnContext] | None = None,
         history: ScoreHistoryStore | None = None,
+        evalset: EvalSet | None = None,
+        validation: ValidationEngine | None = None,
+        replay: ReplayFn | None = None,
     ) -> None:
         self._cli = cli
         self._config = config or HarnessConfig()
@@ -92,6 +97,36 @@ class PandaHarnessHook:
         self._mailbox = mailbox or Mailbox(self._config)
         self._rules = rules or RulesStore(self._config, journal=self._journal)
         self._parser = parser or parse_turn_payload
+
+        # The regression eval-set: breaching sessions are captured as replayable
+        # failure cases when the knob is on; the validation engine also replays
+        # matching cases to vet candidate rules.
+        self._evalset = evalset
+        if self._evalset is None and (
+            self._config.capture_eval_cases or self._config.rule_validation
+        ):
+            self._evalset = EvalSet(self._config, journal=self._journal)
+        #: Latest non-empty turn payload per session — the replay input an eval
+        #: case needs. Facade turns send `end_state={}`, so this stays empty
+        #: there (attach inputs explicitly via the eval-set instead).
+        self._replay_inputs: dict[str, Any] = {}
+
+        # Candidate-rule validation (evidence before trust). Imported lazily to
+        # avoid a hard cycle at module import time (same as HarnessFilesystem).
+        self._validation = validation
+        if self._validation is None and self._config.rule_validation:
+            from ..validation.validator import ValidationEngine
+
+            assert self._evalset is not None  # built above when validation is on
+            self._validation = ValidationEngine(
+                config=self._config,
+                rules=self._rules,
+                evalset=self._evalset,
+                evaluator=self._evaluator,
+                journal=self._journal,
+                replay=replay,
+            )
+        self._validation_tasks: set[asyncio.Task[None]] = set()
 
         # One store instance must be shared with any other reader (the store
         # memoizes its file cache), so the facade passes its instance in.
@@ -142,10 +177,10 @@ class PandaHarnessHook:
     def rules(self) -> RulesStore:
         return self._rules
 
-    def startup_context(self) -> str:
+    def startup_context(self, *, task_hint: str | None = None) -> str:
         """Rules + pull protocol + mailbox banner, for the agent's system prompt."""
 
-        return compose_system_preamble(self._rules, self._mailbox)
+        return compose_system_preamble(self._rules, self._mailbox, task_hint=task_hint)
 
     # -- producing side (turn end) -------------------------------------------
 
@@ -160,6 +195,13 @@ class PandaHarnessHook:
 
         if not self._admit(ctx):
             return
+
+        # Remember the turn payload so a breach can be captured as a
+        # *replayable* eval case. Stashed only for admitted turns: only
+        # evaluated turns can produce a notice, and admitted sessions are the
+        # ones whose bookkeeping (and thus this stash) gets evicted.
+        if self._capture_enabled() and ctx.end_state:
+            self._replay_inputs[ctx.session_id] = dict(ctx.end_state)
 
         # If a prior turn's eval is still in flight for this session, cancel it;
         # the newest turn supersedes it (avoid orphaning a detached task).
@@ -234,6 +276,7 @@ class PandaHarnessHook:
         self._last_eval_at.pop(oldest, None)
         self._hydrated.discard(oldest)
         self._notice_state.pop(oldest, None)
+        self._replay_inputs.pop(oldest, None)
 
     def _journal_soon(self, event: dict[str, Any]) -> None:
         """Best-effort, non-blocking journal write from the sync path."""
@@ -315,7 +358,12 @@ class PandaHarnessHook:
         if self._detector is not None:
             report = await asyncio.to_thread(self._apply_trends, report)
 
-        # 2. Dedup / cooldown / recovery gate.
+        # 2. Candidate-rule validation: every handled report (healthy or
+        #    alerting) feeds the forward trials — the trial needs the
+        #    denominator — and kicks one single-flight evaluation round.
+        await self._observe_for_validation(report)
+
+        # 3. Dedup / cooldown / recovery gate.
         post, recovered = self._should_notice(report)
         if recovered:
             self._breaker_tripped = False
@@ -327,15 +375,66 @@ class PandaHarnessHook:
         if not post:
             return report
 
-        # 3. Circuit breaker, dump, notice.
+        # 4. Circuit breaker, dump, notice (+ eval-case capture inside the
+        #    same thread hop).
         try:
             payload = await self._build_dump(report)
             notice = self._breaker_or_notice(report, payload)
             if notice is not None:
-                await asyncio.to_thread(self._persist_notice, notice, payload)
+                replay_input = (
+                    self._replay_inputs.get(report.session_id)
+                    if self._capture_enabled()
+                    else None
+                )
+                await asyncio.to_thread(self._persist_notice, notice, payload, replay_input)
         except Exception:  # noqa: BLE001 - never break the host loop
             logger.exception("failed to persist notice for session=%s", report.session_id)
         return report
+
+    async def _observe_for_validation(self, report: EvalReport) -> None:
+        if self._validation is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self._validation.observe_report, report.session_id, self._signatures(report)
+            )
+            self._spawn_validation()
+        except Exception:  # noqa: BLE001 - never break the host loop
+            logger.exception(
+                "candidate validation step failed for session=%s", report.session_id
+            )
+
+    def _spawn_validation(self) -> None:
+        """Kick one detached candidate-evaluation task (single-flight)."""
+
+        if any(not task.done() for task in self._validation_tasks):
+            return
+        task = asyncio.ensure_future(self._run_validation())
+        self._validation_tasks.add(task)
+        task.add_done_callback(self._validation_tasks.discard)
+
+    async def _run_validation(self) -> None:
+        assert self._validation is not None
+        try:
+            await self._validation.evaluate_candidates()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - detached task; degrade, never lose the error
+            logger.exception("candidate evaluation failed")
+
+    async def validate_candidates(self) -> list[ValidationVerdict]:
+        """Explicitly run one candidate-evaluation round (no-op when disabled)."""
+
+        if self._validation is None:
+            return []
+        return await self._validation.evaluate_candidates()
+
+    async def drain_validation(self) -> None:
+        """Await in-flight validation tasks (bounded by the drain budget)."""
+
+        tasks = [task for task in self._validation_tasks if not task.done()]
+        if tasks:
+            await asyncio.wait(tasks, timeout=self._config.drain_timeout_s)
 
     def _breaker_or_notice(
         self, report: EvalReport, payload: dict[str, Any]
@@ -387,7 +486,12 @@ class PandaHarnessHook:
             notice_id=notice_id,
         )
 
-    def _persist_notice(self, notice: DiagnosticNotice, payload: dict[str, Any]) -> None:
+    def _persist_notice(
+        self,
+        notice: DiagnosticNotice,
+        payload: dict[str, Any],
+        replay_input: Any | None = None,
+    ) -> None:
         """Blocking persistence step, run in one ``to_thread`` hop."""
 
         self._filesystem.write_latest_eval(payload)
@@ -398,6 +502,32 @@ class PandaHarnessHook:
         self._journal.record(
             {"type": "notice", "observe_only": self._config.observe_only, **notice.to_json()}
         )
+        # Only absolute breaches become failure cases: trend/relative/
+        # percentile notices are advisory (their baseline scores can sit
+        # above the threshold, which would pollute the eval-set and its
+        # proxy labels), and `needs_human` is a rate alarm.
+        if (
+            self._capture_enabled()
+            and self._evalset is not None
+            and not self._config.observe_only
+            and notice.severity == "breach"
+        ):
+            try:
+                self._evalset.capture(
+                    session_id=notice.session_id,
+                    kind="failure",
+                    signature=notice.signatures,
+                    baseline_scores=_baseline_from_dump(payload),
+                    replay_input=replay_input,
+                    notes=notice.summary,
+                )
+            except Exception:  # noqa: BLE001 - the notice is already persisted
+                logger.exception(
+                    "failed to capture eval case for session=%s", notice.session_id
+                )
+
+    def _capture_enabled(self) -> bool:
+        return self._config.capture_eval_cases and self._evalset is not None
 
     # -- trend application ----------------------------------------------------
 
@@ -641,3 +771,19 @@ class PandaHarnessHook:
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _baseline_from_dump(payload: dict[str, Any]) -> dict[str, float]:
+    """Resolved metric values from an ``EvalReport.to_dump()`` payload."""
+
+    baseline: dict[str, float] = {}
+    scores = payload.get("scores")
+    if not isinstance(scores, list):
+        return baseline
+    for score in scores:
+        if not isinstance(score, dict):
+            continue
+        value = score.get("value")
+        if isinstance(value, (int, float)):
+            baseline[str(score.get("metric"))] = float(value)
+    return baseline
