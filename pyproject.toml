@@ -25,7 +25,7 @@ pandaprobe-harness-calibrate = "pandaprobe_harness.calibration:main"
 # install and the test suite stay lean and fully offline. They depend on the
 # PandaProbe SDK to reuse its session ContextVar (harness/traces share a session).
 # Version pins mirror the SDK's own integration extras.
-langgraph = ["langgraph>=0.2", "langchain-core>=0.3", "pandaprobe>=0.4"]
+langgraph = ["langgraph>=1.2.7", "langchain-core>=0.3", "pandaprobe>=0.4"]
 langchain = ["langchain>=1.0.0", "langchain-core>=0.3.0", "pandaprobe>=0.4"]
 deepagents = ["deepagents>=0.6.1", "langchain-core>=0.3.0", "pandaprobe>=0.4"]
 crewai = ["crewai>=0.100", "wrapt>=1.14", "pandaprobe>=0.4"]
