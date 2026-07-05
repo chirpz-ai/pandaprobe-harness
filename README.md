@@ -11,6 +11,15 @@ agent's message queue. The core has **zero runtime dependencies**; every piece
 of platform access goes through one narrow, injectable seam around the
 `pandaprobe` CLI.
 
+Since v0.6 the loop is **closed**: a rule the agent writes is not trusted on
+its word alone. It enters as a *candidate*, the harness validates it
+automatically — by replaying the captured failing scenario, or by watching the
+next live sessions — and only promotes it to *active* on evidence. Only the
+rules relevant to the current situation are injected into the prompt, a
+replayable eval-set guards old wins against regressions, and an offline
+calibration tool measures whether "breach" actually predicts failure. All of
+it agent/harness-driven — no human in the healing loop.
+
 ## How it works
 
 ```
@@ -56,7 +65,7 @@ harness = Harness.create()                     # provisions /harness, wires all 
                                                # runs the startup health check
 system_prompt = harness.system_context() + MY_PROMPT   # rules + protocol + banner
 
-specs, dispatch = as_anthropic_tools(harness.toolset)  # register the 9 harness tools
+specs, dispatch = as_anthropic_tools(harness.toolset)  # register the 14 harness tools
 tools = my_tools + specs                       # also: as_langchain_tools(...),
                                                #       as_openai_function_tools(...)
 
@@ -89,6 +98,15 @@ notice linking the rule (`harness_mailbox_ack`). Periodically it runs
 `harness_reflect` to generalize repeated mitigations and retire ineffective
 rules.
 
+With `rule_retrieval` on (the default), the rendered rules are
+**task-conditioned**: every global (untagged) rule plus the top-k
+(`rules_context_topk`) rules lexically relevant to the pending notices and an
+optional `harness.system_context(task_hint=...)` — a rule learned from one
+failure mode no longer dilutes attention on unrelated tasks. The rest of the
+rule set stays reachable on demand via `harness_rules_search` /
+`harness_rules_list`. The scorer is a stdlib token-overlap (tags count double)
+— no embeddings, no dependencies.
+
 Notice severities, lowest to highest: `trend` (advisory EWMA decline) <
 `relative` (adaptive drop below the session's own baseline) < `breach` (score
 under the absolute floor) < `needs_human`. A **circuit breaker** guards against
@@ -96,6 +114,74 @@ notice storms: more than `circuit_breaker_max_notices` notices inside
 `circuit_breaker_window_s` escalates to a single `needs_human` notice and
 suppresses further posting until the window drains — the protocol instructs the
 agent to surface that one to a human rather than act on it.
+
+## The closed loop: evidence before trust
+
+```
+harness_rule_add ──▶ CANDIDATE (in force, rendered as provisional)
+                         │
+        ┌────────────────┴──────────────────┐
+        ▼ replay fn wired                   ▼ no replay fn (automatic fallback)
+  ReplayValidator                     ForwardTrialValidator
+  replay the captured failing         watch the next rule_trial_min_sessions
+  case(s) + sampled wins with         live sessions; compare the signature's
+  the candidate in context;           breach rate against the baseline
+  score the NEW sessions              captured at add time
+        │                                   │
+        └───────────┬───────────────────────┘
+                    ▼
+   improved & nothing regressed ──▶ ACTIVE   (journal: rule_promote)
+   no improvement / regression   ──▶ RETIRED (journal: rule_retire + reason)
+```
+
+**The replay function is the strong path — and it is yours to supply.** The
+PandaProbe platform is passive and trace-based: it scores traces a session
+already produced, so the harness cannot re-run your agent "as if the rule had
+existed". Counterfactual evidence requires a replay:
+
+```python
+async def replay(case: EvalCase, system_context: str) -> str:
+    """Re-run my agent on the captured input under `system_context`;
+    return the NEW session id the run produced."""
+    session_id = f"replay-{case.id}-{uuid4().hex[:6]}"
+    with pandaprobe.session(session_id):
+        await my_agent_step(system_context + MY_PROMPT, case.replay_input)
+    return session_id
+
+harness = Harness.create(replay=replay)
+```
+
+**Without a replay function nothing breaks — and nothing is silently faked.**
+Candidate validation falls back to the forward trial (slower, statistical,
+fully automatic; announced once in the log and journal), and regression runs
+report every case as `skipped` with one clear warning.
+
+The substrate both paths share is the **eval-set** (`<root>/evalset/`): with
+`capture_eval_cases` on, every breach captures the session as a `failure`
+case (signature, baseline scores, and — when the turn payload carries it —
+the replay input; attach one later with `harness_evalset_attach` or
+`harness.evalset.attach_input(...)`). Known-good sessions can be captured as
+protected `win` cases. `await harness.run_regression()` — or the
+`pandaprobe-harness-eval` CLI — replays the corpus (wins first) against the
+*current* rule set and classifies every case `improved` / `unchanged` /
+`regressed` vs. its baseline: the standing "did a new rule break an old win"
+guard.
+
+```bash
+pandaprobe-harness-eval --replay myapp.replay:replay          # full run
+pandaprobe-harness-eval --list                                # inspect the corpus
+pandaprobe-harness-calibrate --labels labels.json             # P/R/F1 + threshold sweep
+pandaprobe-harness-calibrate --from-evalset --json            # eval-set proxy labels
+```
+
+`pandaprobe-harness-calibrate` closes the last gap: everything above keys off
+"score below threshold", and the threshold is a guess until measured. With
+ground-truth labels (JSON `{session_id: failed}`, a JSON list, CSV, or the
+eval-set's failure/win kinds as proxies) it reports precision/recall/F1 of
+the breach predicate per metric plus a threshold sweep with the F1-maximizing
+threshold and the lowest threshold hitting a target precision; without labels
+it reports the score distribution, histogram, per-threshold breach counts,
+and inter-metric agreement.
 
 ## Toolset reference
 
@@ -107,9 +193,14 @@ agent to surface that one to a human rather than act on it.
 | `harness_trace_inspect` | One flagged trace via the platform: trace, TOOL spans, trace-level scores. |
 | `harness_history` | Score trajectory for a metric: local series + backend session scores. |
 | `harness_journal` | Recent journal events — the cross-run memory for recurring patterns. |
-| `harness_rule_add` | Record a permanent mitigation rule (dedup-safe; fails at the active cap). |
-| `harness_rule_retire` | Retire a rule that proved ineffective or obsolete. |
-| `harness_reflect` | Cross-run context for a rules refactor: notices, rules, effectiveness counts. |
+| `harness_rule_add` | Record a mitigation rule (starts as a candidate; dedup-safe; capped). |
+| `harness_rule_retire` | Retire a rule (candidate or active) that proved ineffective or obsolete. |
+| `harness_rule_status` | A rule's lifecycle state + validation bookkeeping (why promoted/retired). |
+| `harness_rules_search` | Search all rules by lexical relevance (beyond the context top-k). |
+| `harness_rules_list` | List rules by lifecycle status. |
+| `harness_reflect` | Cross-run context for a rules refactor: notices, rules, validations, effectiveness. |
+| `harness_evalset_list` | Captured eval cases: failures + protected wins. |
+| `harness_evalset_attach` | Attach a replay input to an eval case so it becomes replayable. |
 
 Every operation returns a JSON envelope with an `"ok"` key; failures never raise
 into the agent loop. The companion CLI form is
@@ -126,7 +217,8 @@ possible; exit code 0 iff `ok`).
 │   └── status.json                 # cheap summary read by the banner
 ├── journal.jsonl                   # append-only cross-run event log
 ├── rules.jsonl                     # structured rules (latest record per id wins)
-├── harness_rules.md                # rendered artifact: template + active rules
+├── harness_rules.md                # rendered artifact: template + active + provisional rules
+├── evalset/<case-id>.json          # replayable eval cases (failures + protected wins)
 ├── traces/
 │   ├── latest_eval.json            # most recent eval dump (always written)
 │   └── <notice-id>.json            # one immutable dump per notice
@@ -276,10 +368,32 @@ The most important ones:
 | `HARNESS_SESSION_MIN_EVAL_INTERVAL_S` | `0` | Per-session eval rate limit. |
 | `HARNESS_MAX_CONCURRENT_EVALS` | `4` | Global eval concurrency cap. |
 | `HARNESS_MAX_EVALS_PER_RUN` | `0` | Per-process eval budget (0 = unlimited). |
-| `HARNESS_MAX_ACTIVE_RULES` | `50` | Active-rule cap (retire before add). |
-| `HARNESS_DRAIN_TIMEOUT_S` | `15` | Budget for `refresh` / `refresh_all` joins. |
+| `HARNESS_MAX_ACTIVE_RULES` | `50` | Live-rule cap, active + candidate (retire before add). |
+| `HARNESS_DRAIN_TIMEOUT_S` | `15` | Budget for `refresh` / `refresh_all` / `drain_validation` joins. |
 | `HARNESS_HEALTH_CHECK` | `true` | Startup CLI/auth verification. |
 | `HARNESS_HYDRATE_HISTORY_FROM_BACKEND` | `false` | Seed trend history from the backend. |
+| `HARNESS_RULE_VALIDATION` | `true` | Rules start as candidates; promote only on evidence (`false` = v0.5 add→active). |
+| `HARNESS_RULE_TRIAL_MIN_SESSIONS` | `5` | Forward trial: distinct live sessions before a verdict. |
+| `HARNESS_RULE_PROMOTE_MARGIN` | `0.05` | Minimum targeted-metric improvement to promote. |
+| `HARNESS_RULE_REGRESS_MARGIN` | `0.05` | Maximum tolerated drop before a case counts as regressed. |
+| `HARNESS_REPLAY_TIMEOUT_S` | `300` | Hard bound per replay invocation (hung replays degrade, never wedge). |
+| `HARNESS_CAPTURE_EVAL_CASES` | `false` | Capture breaching sessions as replayable eval cases (stores session data). |
+| `HARNESS_EVAL_CASE_MAX` | `200` | Eval-set cap; oldest failures evict first, wins never. |
+| `HARNESS_REGRESSION_SAMPLE` | `0` | Cases replayed per regression run (0 = all). |
+| `HARNESS_RULE_RETRIEVAL` | `true` | Task-conditioned rule injection (`false` = render every active rule). |
+| `HARNESS_RULES_CONTEXT_TOPK` | `8` | Tagged rules kept in the system context per query. |
+
+## Migration from 0.5
+
+One behavior change: **`harness_rule_add` now yields a `candidate`, not an
+`active` rule** (promotion requires evidence — see the closed loop above).
+Code that asserted `rules.active()` right after an add should either await
+validation (`await harness.drain_validation()` after the next turns, or wire
+a replay function) or set `rule_validation=false` /
+`HARNESS_RULE_VALIDATION=false` to restore the v0.5 semantics. Likewise
+`rule_retrieval=false` restores render-every-rule context composition.
+Existing `rules.jsonl` workspaces load unchanged (v0.5 records parse as
+`active` with no tags/trial).
 
 ## Migration from 0.4
 
@@ -303,26 +417,35 @@ make test            # full offline suite (unit + e2e); no network, no real CLI
 make lint typecheck  # ruff + mypy --strict
 make test-contract   # live CLI contract tests (PANDAPROBE_LIVE=1 + credentials)
 make example         # offline self-heal demo: examples/offline_self_heal.py
+uv run python examples/closed_loop_self_heal.py   # candidate → replay-validate →
+                                                  #   promote → regression-clean
+uv run python examples/calibration_demo.py        # labeled + unlabeled calibration
 ```
 
 The suite is **fully offline** by design: platform behaviour is modelled by a
 fake `CliClient` (and a fake `pandaprobe` binary for subprocess-level tests), so
 every gate, trend, and self-heal cycle is exercised deterministically. Only the
 opt-in contract tests touch the real CLI. See `examples/` for runnable
-end-to-end scenarios and `tests/e2e_pull_loop_test.py` for the canonical pull
-loop.
+end-to-end scenarios, `tests/e2e_closed_loop_test.py` for the canonical closed
+loop, and `tests/e2e_pull_loop_test.py` for the v0.5-compat pull loop.
 
 ## Architecture
 
 ```
 src/pandaprobe_harness/
-├── config.py          # HarnessConfig: paths, thresholds, trend/cost/safety knobs
-├── harness.py         # Harness facade: create() / for_*() factories, turn scopes
+├── config.py          # HarnessConfig: paths, thresholds, trend/cost/validation knobs
+├── harness.py         # Harness facade: create()/for_*() factories, turn scopes,
+│                      #   run_regression, validate/drain, replay seam
+├── calibration.py     # offline threshold calibration + pandaprobe-harness-calibrate
 ├── cli/               # CliClient seam: subprocess client, typed errors, JSON models
 ├── evaluation/        # MetricEvaluator, ScoreHistoryStore, HistorySource, TrendDetector
-├── hook/              # PandaHarnessHook (turn end → eval → notice) + system context
-├── workspace/         # Mailbox, Journal, RulesStore, sanitize (trust boundary), atomic I/O
-├── agent_tools/       # HarnessToolset (9 ops), native adapters, companion CLI, specs
+├── hook/              # PandaHarnessHook (turn end → eval → notice → validation cadence)
+│                      #   + system context (task-conditioned rule retrieval)
+├── validation/        # ReplayValidator, ForwardTrialValidator, ValidationEngine,
+│                      #   run_regression + pandaprobe-harness-eval
+├── workspace/         # Mailbox, Journal, RulesStore (lifecycle + retrieval), EvalSet,
+│                      #   sanitize (trust boundary), atomic I/O
+├── agent_tools/       # HarnessToolset (14 ops), native adapters, companion CLI, specs
 ├── adapters/          # Turn detectors: raw loop, LangGraph/LangChain/DeepAgents,
 │                      #   CrewAI, Claude Agent SDK, OpenAI Agents
 ├── sandbox/           # RestrictedShellTool + ShellPolicy (allow-list, env scoping)
