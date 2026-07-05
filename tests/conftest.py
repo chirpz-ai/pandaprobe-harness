@@ -20,6 +20,7 @@ from pandaprobe_harness import (
     RulesStore,
     ScoreHistoryStore,
 )
+from pandaprobe_harness.workspace.evalset import EvalSet
 from tests.fakes.fake_cli_client import FakeCliClient
 
 FAKE_BIN = Path(__file__).parent / "bin" / "fake_pandaprobe"
@@ -79,12 +80,20 @@ def rules(config: HarnessConfig, journal: Journal) -> RulesStore:
 
 
 @pytest.fixture
+def evalset(config: HarnessConfig, journal: Journal) -> EvalSet:
+    store = EvalSet(config, journal=journal)
+    store.provision()
+    return store
+
+
+@pytest.fixture
 def toolset(
     config: HarnessConfig,
     fake_cli: FakeCliClient,
     mailbox: Mailbox,
     journal: Journal,
     rules: RulesStore,
+    evalset: EvalSet,
 ) -> HarnessToolset:
     return HarnessToolset(
         config=config,
@@ -93,6 +102,7 @@ def toolset(
         journal=journal,
         rules=rules,
         history=ScoreHistoryStore(config),
+        evalset=evalset,
     )
 
 

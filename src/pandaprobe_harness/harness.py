@@ -33,12 +33,16 @@ from .agent_tools.toolset import HarnessToolset
 from .cli.client import CliClient
 from .cli.subprocess_client import SubprocessCliClient
 from .config import HarnessConfig
+from .evaluation.evaluator import MetricEvaluator
 from .evaluation.history import ScoreHistoryStore
 from .evaluation.metrics import EvalReport
 from .filesystem.layout import HarnessFilesystem
 from .hook.core import PandaHarnessHook
 from .sandbox.policy import ShellPolicy
 from .sandbox.shell import RestrictedShellTool
+from .validation.regression import RegressionReport, run_regression
+from .validation.validator import ValidationVerdict
+from .workspace.evalset import EvalSet, ReplayFn
 from .workspace.journal import Journal
 from .workspace.mailbox import Mailbox
 from .workspace.rules import RulesStore
@@ -98,6 +102,9 @@ class Harness:
         hook: PandaHarnessHook,
         toolset: HarnessToolset,
         shell: RestrictedShellTool,
+        evalset: EvalSet,
+        evaluator: MetricEvaluator,
+        replay: ReplayFn | None = None,
         adapter: Any | None = None,
     ) -> None:
         self._config = config
@@ -110,6 +117,9 @@ class Harness:
         self._hook = hook
         self._toolset = toolset
         self._shell = shell
+        self._evalset = evalset
+        self._evaluator = evaluator
+        self._replay = replay
         self._adapter = adapter
         self._turn_counts: dict[str, int] = {}
         self._background: set[asyncio.Task[Any]] = set()
@@ -118,11 +128,21 @@ class Harness:
 
     @classmethod
     def create(
-        cls, config: HarnessConfig | None = None, *, cli: CliClient | None = None
+        cls,
+        config: HarnessConfig | None = None,
+        *,
+        cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
-        """Provision the workspace and assemble the full harness (no adapter)."""
+        """Provision the workspace and assemble the full harness (no adapter).
 
-        return cls._build(config=config, cli=cli, adapter=None)
+        ``replay`` is the optional developer-supplied replay function used by
+        candidate-rule validation and :meth:`run_regression`; without it the
+        harness falls back to forward-trial validation and regression runs
+        degrade to skips.
+        """
+
+        return cls._build(config=config, cli=cli, adapter=None, replay=replay)
 
     @classmethod
     def _build(
@@ -131,6 +151,7 @@ class Harness:
         config: HarnessConfig | None,
         cli: CliClient | None,
         adapter: Any | None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         cfg = config or HarnessConfig.from_env()
         client = cli or SubprocessCliClient(cfg.cli_binary, default_timeout=cfg.cli_timeout_s)
@@ -143,6 +164,9 @@ class Harness:
         rules = RulesStore(cfg, journal=journal)
         rules.sync_markdown()
         history = ScoreHistoryStore(cfg)
+        evalset = EvalSet(cfg, journal=journal)
+        evalset.provision()
+        evaluator = MetricEvaluator(client, cfg)
 
         hook = PandaHarnessHook(
             client,
@@ -151,7 +175,10 @@ class Harness:
             journal=journal,
             rules=rules,
             filesystem=filesystem,
+            evaluator=evaluator,
             history=history,
+            evalset=evalset,
+            replay=replay,
             parser=adapter.parse_turn if adapter is not None else None,
         )
         if adapter is not None:
@@ -164,6 +191,7 @@ class Harness:
             journal=journal,
             rules=rules,
             history=history,
+            evalset=evalset,
         )
         shell = RestrictedShellTool(ShellPolicy(workdir=cfg.harness_root))
 
@@ -178,6 +206,9 @@ class Harness:
             hook=hook,
             toolset=toolset,
             shell=shell,
+            evalset=evalset,
+            evaluator=evaluator,
+            replay=replay,
             adapter=adapter,
         )
         if cfg.health_check:
@@ -200,10 +231,16 @@ class Harness:
         session_id: str | None = None,
         config: HarnessConfig | None = None,
         cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         from .adapters.langgraph import LangGraphAdapter
 
-        return cls._build(config=config, cli=cli, adapter=LangGraphAdapter(session_id=session_id))
+        return cls._build(
+            config=config,
+            cli=cli,
+            adapter=LangGraphAdapter(session_id=session_id),
+            replay=replay,
+        )
 
     @classmethod
     def for_langchain(
@@ -212,10 +249,16 @@ class Harness:
         session_id: str | None = None,
         config: HarnessConfig | None = None,
         cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         from .adapters.langchain import LangChainAdapter
 
-        return cls._build(config=config, cli=cli, adapter=LangChainAdapter(session_id=session_id))
+        return cls._build(
+            config=config,
+            cli=cli,
+            adapter=LangChainAdapter(session_id=session_id),
+            replay=replay,
+        )
 
     @classmethod
     def for_deepagents(
@@ -224,10 +267,16 @@ class Harness:
         session_id: str | None = None,
         config: HarnessConfig | None = None,
         cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         from .adapters.deepagents import DeepAgentsAdapter
 
-        return cls._build(config=config, cli=cli, adapter=DeepAgentsAdapter(session_id=session_id))
+        return cls._build(
+            config=config,
+            cli=cli,
+            adapter=DeepAgentsAdapter(session_id=session_id),
+            replay=replay,
+        )
 
     @classmethod
     def for_crewai(
@@ -236,11 +285,12 @@ class Harness:
         session_id: str | None = None,
         config: HarnessConfig | None = None,
         cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         from .adapters.crewai import CrewAIAdapter
 
         adapter = CrewAIAdapter(session_id=session_id)
-        harness = cls._build(config=config, cli=cli, adapter=adapter)
+        harness = cls._build(config=config, cli=cli, adapter=adapter, replay=replay)
         adapter.instrument()  # logs and degrades gracefully when the extra is absent
         return harness
 
@@ -251,11 +301,12 @@ class Harness:
         session_id: str | None = None,
         config: HarnessConfig | None = None,
         cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         from .adapters.claude_agent_sdk import ClaudeAgentSDKAdapter
 
         adapter = ClaudeAgentSDKAdapter(session_id=session_id)
-        harness = cls._build(config=config, cli=cli, adapter=adapter)
+        harness = cls._build(config=config, cli=cli, adapter=adapter, replay=replay)
         adapter.instrument()
         return harness
 
@@ -266,11 +317,12 @@ class Harness:
         session_id: str | None = None,
         config: HarnessConfig | None = None,
         cli: CliClient | None = None,
+        replay: ReplayFn | None = None,
     ) -> Harness:
         from .adapters.openai_agents import OpenAIAgentsAdapter
 
         adapter = OpenAIAgentsAdapter(session_id=session_id)
-        harness = cls._build(config=config, cli=cli, adapter=adapter)
+        harness = cls._build(config=config, cli=cli, adapter=adapter, replay=replay)
         adapter.instrument()
         return harness
 
@@ -309,6 +361,12 @@ class Harness:
         return self._toolset
 
     @property
+    def evalset(self) -> EvalSet:
+        """The replayable regression eval-set (failure/win scenarios)."""
+
+        return self._evalset
+
+    @property
     def shell(self) -> RestrictedShellTool:
         return self._shell
 
@@ -318,10 +376,15 @@ class Harness:
 
         return self._adapter
 
-    def system_context(self) -> str:
-        """Rules + pull protocol + mailbox banner, for the agent's system prompt."""
+    def system_context(self, task_hint: str | None = None) -> str:
+        """Rules + pull protocol + mailbox banner, for the agent's system prompt.
 
-        return self._hook.startup_context()
+        ``task_hint`` (e.g. the user's current task) sharpens rule retrieval:
+        with ``rule_retrieval`` on, only global rules plus the top-k rules
+        relevant to the hint and any pending notices are injected.
+        """
+
+        return self._hook.startup_context(task_hint=task_hint)
 
     def on_turn_end(self, raw_turn: object) -> None:
         self._hook.on_turn_end(raw_turn)
@@ -334,6 +397,34 @@ class Harness:
 
     async def check_health(self) -> bool:
         return await self._hook.check_health()
+
+    async def validate_candidates(self) -> list[ValidationVerdict]:
+        """Run one candidate-evaluation round now (empty when validation is off)."""
+
+        return await self._hook.validate_candidates()
+
+    async def drain_validation(self) -> None:
+        """Await in-flight candidate-validation tasks (bounded)."""
+
+        await self._hook.drain_validation()
+
+    async def run_regression(self, *, sample: int | None = None) -> RegressionReport:
+        """Replay the eval-set against the current rule set and report drift.
+
+        Requires the ``replay`` function passed at construction to actually
+        re-run cases; without one the report is all skips (with one clear
+        warning logged), never an exception.
+        """
+
+        return await run_regression(
+            config=self._config,
+            rules=self._rules,
+            evalset=self._evalset,
+            evaluator=self._evaluator,
+            journal=self._journal,
+            replay=self._replay,
+            sample=sample,
+        )
 
     # -- zero-adapter turn helpers ---------------------------------------------
 

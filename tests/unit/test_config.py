@@ -109,3 +109,49 @@ def test_frozen() -> None:
     cfg = HarnessConfig()
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.cli_binary = "other"  # type: ignore[misc]
+
+
+def test_closed_loop_defaults() -> None:
+    cfg = HarnessConfig()
+    assert cfg.rule_validation is True  # evidence before trust, by default
+    assert cfg.rule_trial_min_sessions == 5
+    assert cfg.rule_promote_margin == 0.05
+    assert cfg.rule_regress_margin == 0.05
+    assert cfg.capture_eval_cases is False
+    assert cfg.eval_case_max == 200
+    assert cfg.regression_sample == 0
+    assert cfg.rule_retrieval is True  # relevance over volume, by default
+    assert cfg.rules_context_topk == 8
+
+
+def test_derived_evalset_dir() -> None:
+    cfg = HarnessConfig(harness_root=Path("/h"))
+    assert cfg.evalset_dir == Path("/h/evalset")
+
+
+def test_from_env_reads_closed_loop_knobs(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_RULE_VALIDATION", "true")
+    monkeypatch.setenv("HARNESS_RULE_TRIAL_MIN_SESSIONS", "3")
+    monkeypatch.setenv("HARNESS_RULE_PROMOTE_MARGIN", "0.1")
+    monkeypatch.setenv("HARNESS_RULE_REGRESS_MARGIN", "0.2")
+    monkeypatch.setenv("HARNESS_CAPTURE_EVAL_CASES", "1")
+    monkeypatch.setenv("HARNESS_EVAL_CASE_MAX", "42")
+    monkeypatch.setenv("HARNESS_REGRESSION_SAMPLE", "7")
+    monkeypatch.setenv("HARNESS_RULE_RETRIEVAL", "true")
+    monkeypatch.setenv("HARNESS_RULES_CONTEXT_TOPK", "4")
+    cfg = HarnessConfig.from_env()
+    assert cfg.rule_validation is True
+    assert cfg.rule_trial_min_sessions == 3
+    assert cfg.rule_promote_margin == 0.1
+    assert cfg.rule_regress_margin == 0.2
+    assert cfg.capture_eval_cases is True
+    assert cfg.eval_case_max == 42
+    assert cfg.regression_sample == 7
+    assert cfg.rule_retrieval is True
+    assert cfg.rules_context_topk == 4
+
+
+def test_replay_timeout_knob(monkeypatch) -> None:
+    assert HarnessConfig().replay_timeout_s == 300.0
+    monkeypatch.setenv("HARNESS_REPLAY_TIMEOUT_S", "12.5")
+    assert HarnessConfig.from_env().replay_timeout_s == 12.5

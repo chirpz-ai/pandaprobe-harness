@@ -9,6 +9,7 @@ the CLI is unavailable.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 from pathlib import Path
 
@@ -100,6 +101,11 @@ def test_for_langgraph_wires_the_adapter(tmp_path: Path) -> None:
     assert isinstance(harness.adapter, LangGraphAdapter)
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("crewai") is not None,
+    reason="covers the degraded no-dependency path; crewai is installed here "
+    "(the extras CI matrix exercises the instrumented path instead)",
+)
 def test_for_crewai_builds_without_the_crewai_dep(tmp_path: Path) -> None:
     harness = Harness.for_crewai(
         session_id="x", config=_cfg(tmp_path, "crew"), cli=FakeCliClient()

@@ -28,6 +28,7 @@ from typing import Any
 from ..cli.subprocess_client import SubprocessCliClient
 from ..config import HarnessConfig
 from ..evaluation.history import ScoreHistoryStore
+from ..workspace.evalset import EvalSet
 from ..workspace.journal import Journal
 from ..workspace.mailbox import Mailbox
 from ..workspace.rules import RulesStore
@@ -45,9 +46,17 @@ def build_toolset_from_env() -> HarnessToolset:
     journal = Journal(config)
     rules = RulesStore(config, journal=journal)
     history = ScoreHistoryStore(config)
+    evalset = EvalSet(config, journal=journal)
+    evalset.provision()
     cli = SubprocessCliClient(config.cli_binary, default_timeout=config.cli_timeout_s)
     return HarnessToolset(
-        config=config, cli=cli, mailbox=mailbox, journal=journal, rules=rules, history=history
+        config=config,
+        cli=cli,
+        mailbox=mailbox,
+        journal=journal,
+        rules=rules,
+        history=history,
+        evalset=evalset,
     )
 
 

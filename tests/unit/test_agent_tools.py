@@ -249,7 +249,10 @@ async def test_rule_add_records_provenance(toolset: HarnessToolset) -> None:
     assert rule["rationale"] == "Repeated reliability breaches from malformed calls."
     assert rule["source_notice_id"] == "n-1"
     assert rule["metric"] == "agent_reliability"
-    assert rule["status"] == "active"
+    # Rules start as unproven candidates now (rule_validation default).
+    assert rule["status"] == "candidate"
+    assert rule["trial"] is not None
+    assert rule["tags"] == []  # "n-1" names no stored notice, so nothing derives
     assert rule["created_at"]
 
 
@@ -312,14 +315,17 @@ async def test_reflect_assembles_context_and_journals(
 
     assert result["ok"] is True
     assert [e["id"] for e in result["recent_notices"]] == ["n-1"]
-    assert [r["id"] for r in result["active_rules"]] == [rule_id]
+    # The fresh rule is still a candidate; reflection sees both partitions.
+    assert result["active_rules"] == []
+    assert [r["id"] for r in result["candidate_rules"]] == [rule_id]
     assert rule_id in result["effectiveness"]
     assert result["effectiveness"][rule_id]["metric"] == "agent_reliability"
 
     reflections = journal.recent(types=("reflect",))
     assert len(reflections) == 1
     assert reflections[0]["notice_count"] == 1
-    assert reflections[0]["active_rule_count"] == 1
+    assert reflections[0]["active_rule_count"] == 0
+    assert reflections[0]["candidate_rule_count"] == 1
 
 
 # -- dispatch ------------------------------------------------------------------------

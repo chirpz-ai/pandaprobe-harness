@@ -1,13 +1,17 @@
 # Examples
 
-Runnable demonstrations of the v0.5 **pull model**: the harness evaluates each
+Runnable demonstrations of the **pull model** (the harness evaluates each
 completed turn, posts diagnostic notices to a workspace **mailbox**, and the
 agent *pulls* them with its own harness tools — nothing is ever injected into
-the agent's message queue.
+the agent's message queue) and the v0.6 **closed loop** (a recorded rule is a
+*candidate* until replay or forward-trial evidence promotes it; the eval-set
+guards old wins; calibration measures the breach thresholds).
 
 | Example                     | Extra required                            | Credentials needed                        |
 | --------------------------- | ----------------------------------------- | ----------------------------------------- |
 | `offline_self_heal.py`      | none (core install only)                  | none — fully offline                      |
+| `closed_loop_self_heal.py`  | none (core install only)                  | none — fully offline                      |
+| `calibration_demo.py`       | none (core install only)                  | none — fully offline                      |
 | `langgraph_agent.py`        | `pandaprobe-harness[langgraph]`           | `pandaprobe` CLI auth + model API key     |
 | `openai_agents_agent.py`    | `pandaprobe-harness[openai-agents]`       | `pandaprobe` CLI auth + `OPENAI_API_KEY`  |
 | `claude_agent_sdk_agent.py` | `pandaprobe-harness[claude-agent-sdk]`    | `pandaprobe` CLI auth + `ANTHROPIC_API_KEY` |
@@ -55,6 +59,26 @@ in-process `CliClient` and a throwaway temp workspace — no network, no real
 7. **recovery** — the corrected behaviour scores healthy, no new notice is
    posted, and the journal records the whole cycle in order:
    `health → notice → rule_add → ack → recovery`.
+
+## What the closed-loop demo adds
+
+`closed_loop_self_heal.py` extends the same scenario with the v0.6 loop,
+wiring a toy **replay function** (`Harness.create(..., replay=...)`):
+
+1. the breach additionally captures the session as a **replayable eval case**
+   (`capture_eval_cases=True`);
+2. the agent's rule lands as a **candidate** (rendered under "Provisional
+   rules (under evaluation)" — in force, but unproven);
+3. the harness automatically **replays the captured failure** with the
+   candidate in context; the replayed session scores healthy, so the rule is
+   **promoted** (`journal: rule_promote`, `validator: replay`);
+4. a protected `win` case is captured and `harness.run_regression()` replays
+   the corpus against the current rules: the failure is `improved`, the win
+   `unchanged`, the report `CLEAN`.
+
+`calibration_demo.py` shows the offline threshold check
+(`pandaprobe-harness-calibrate` as a library call): precision/recall/F1 and a
+threshold sweep with labels; distribution/histogram/agreement without.
 
 Every framework example is the same loop with real turn detection wired by a
 `Harness.for_<framework>()` factory; the self-diagnostic tools are delivered

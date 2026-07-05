@@ -1,0 +1,115 @@
+name: "Bug Report"
+description: Report a bug in the PandaProbe Harness
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+  - type: checkboxes
+    attributes:
+      label: Preflight checklist
+      description: Please confirm you have done the following before submitting
+      options:
+        - label: I added a descriptive title to this issue
+          required: true
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+        - label: I am sure this is a bug and not a question or usage help request
+          required: true
+
+  - type: dropdown
+    attributes:
+      label: Integration
+      description: How is the harness wired into your agent?
+      options:
+        - Custom loop (Harness.create + turn() / run_turn / on_turn_end)
+        - LangGraph adapter
+        - LangChain adapter
+        - DeepAgents adapter
+        - CrewAI adapter
+        - Claude Agent SDK adapter
+        - OpenAI Agents adapter
+        - Companion CLI / sandboxed shell (pandaprobe-harness-agent)
+        - Operator CLI (pandaprobe-harness-eval / pandaprobe-harness-calibrate)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Steps to Reproduce
+      description: |
+        Provide a minimal code snippet or step-by-step sequence to reproduce the bug.
+        Non-default config knobs (`HARNESS_*` env vars or `HarnessConfig` overrides) are especially helpful.
+      placeholder: |
+        ```python
+        from pandaprobe_harness import Harness, HarnessConfig
+
+        harness = Harness.create(HarnessConfig.from_env(capture_eval_cases=True))
+
+        harness.on_turn_end({"session_id": "s-1", "turn_index": 1, "end_state": {"task": "..."}})
+        await harness.refresh("s-1")
+        # Error / unexpected behavior: ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Actual Behavior
+      description: What actually happened? Include any error messages or unexpected output.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Error Message / Stack Trace / Journal Events
+      description: |
+        If applicable, paste the full error message and stack trace, and any relevant
+        lines from the workspace journal (`<HARNESS_ROOT>/journal.jsonl`).
+        This will be automatically formatted as code.
+      render: shell
+
+  - type: input
+    attributes:
+      label: Harness Version
+      description: "Harness version (`pip show pandaprobe-harness`) or commit SHA"
+      placeholder: "0.6.0"
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: PandaProbe CLI Version
+      description: "Output of `pandaprobe version` (the harness shells out to it for all platform access)"
+      placeholder: "v0.2.0"
+
+  - type: input
+    attributes:
+      label: Python Version
+      description: "Output of `python --version`"
+      placeholder: "3.13.3"
+
+  - type: input
+    attributes:
+      label: Operating System
+      description: "e.g., Ubuntu 22.04, macOS 15, Windows 11"
+      placeholder: "Ubuntu 22.04"
+
+  - type: textarea
+    attributes:
+      label: Additional Context
+      description: |
+        Any other context — non-default `HARNESS_*` configuration, whether a replay function
+        is wired, sandbox/container setup, relevant workspace state (mailbox notices, rule
+        records, eval cases), or related issues.

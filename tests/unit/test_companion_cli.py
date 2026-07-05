@@ -37,7 +37,7 @@ def test_no_args_prints_usage_with_all_ops(tmp_path: Path, fake_bin: Path) -> No
 
     assert proc.returncode == 0
     assert "usage:" in proc.stdout
-    assert len(OP_SCHEMAS) == 9
+    assert len(OP_SCHEMAS) == 14
     for name in OP_SCHEMAS:
         assert name.startswith("harness_")
         assert name in proc.stdout

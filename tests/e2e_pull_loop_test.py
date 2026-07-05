@@ -1,4 +1,4 @@
-"""End-to-end pull-based self-healing scenario.
+"""End-to-end pull-based self-healing scenario (v0.5-compat mode).
 
 Simulates an agent stuck in an infinite-repetition / inconsistent-session
 failure and verifies the full pull loop:
@@ -9,6 +9,11 @@ failure and verifies the full pull loop:
   records a structured rule with provenance, acknowledges the notice ->
   the banner clears -> subsequent turns pass and post nothing further ->
   the journal records the whole cycle, across runs.
+
+These tests run with ``rule_validation=False`` / ``rule_retrieval=False`` —
+the explicit v0.5-compatibility switches — so a rule enters ``active`` the
+moment it is written. The default closed-loop behavior (candidate rules,
+automatic validation, retrieval) is covered by ``e2e_closed_loop_test.py``.
 """
 
 from __future__ import annotations
@@ -21,6 +26,19 @@ from tests.fakes.fake_cli_client import FakeCliClient
 from tests.fakes.mock_agent import MITIGATION_RULE, MockLLMAgent
 
 SESSION = "s-e2e-1"
+
+
+def _compat_config(tmp_path: Path) -> HarnessConfig:
+    """The v0.5-equivalent switches under test: add() -> active immediately."""
+
+    return HarnessConfig(
+        harness_root=tmp_path / "harness",
+        poll_interval_s=0.0,
+        poll_max_attempts=5,
+        drain_timeout_s=5.0,
+        rule_validation=False,
+        rule_retrieval=False,
+    )
 
 
 def _failing_cli() -> FakeCliClient:
@@ -37,7 +55,8 @@ def _failing_cli() -> FakeCliClient:
     )
 
 
-async def test_pull_loop_self_heals_and_converges(config: HarnessConfig) -> None:
+async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
+    config = _compat_config(tmp_path)
     cli = _failing_cli()
     harness = Harness.create(config, cli=cli)
     agent = MockLLMAgent(session_id=SESSION, toolset=harness.toolset)
@@ -98,8 +117,10 @@ async def test_pull_loop_self_heals_and_converges(config: HarnessConfig) -> None
     assert processed.resolution.rule_id == agent.rule_ids[0]
 
     # The structured rule carries provenance and reaches the rendered rules.
+    # With rule_validation=False (the compat switch) it is active immediately.
     active = harness.rules.active()
     assert len(active) == 1
+    assert active[0].status == "active"
     assert active[0].source_notice_id == notice.id
     assert active[0].metric in {"agent_reliability", "agent_consistency"}
     assert MITIGATION_RULE[:30] in config.rules_file.read_text(encoding="utf-8")
@@ -151,11 +172,12 @@ async def test_gradual_decline_posts_single_trend_notice(tmp_path: Path) -> None
     assert pending[0].severity == "trend"
 
 
-async def test_rules_and_journal_persist_across_runs(config: HarnessConfig) -> None:
+async def test_rules_and_journal_persist_across_runs(tmp_path: Path) -> None:
     """Cross-run memory: a second harness over the same workspace sees the
     learned rules in its context, the journal spanning runs, and rule
     effectiveness computed against pre-rule notices."""
 
+    config = _compat_config(tmp_path)
     # Run 1: breach -> self-heal.
     cli = _failing_cli()
     harness1 = Harness.create(config, cli=cli)

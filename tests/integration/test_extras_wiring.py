@@ -12,6 +12,7 @@ import pytest
 
 from pandaprobe_harness import Harness, HarnessConfig, HarnessToolset
 from pandaprobe_harness.agent_tools.native import as_anthropic_tools
+from pandaprobe_harness.agent_tools.toolset import OP_SCHEMAS
 from tests.fakes.fake_cli_client import FakeCliClient
 
 
@@ -24,7 +25,7 @@ def test_langchain_family(config: HarnessConfig, toolset: HarnessToolset) -> Non
     assert hasattr(handler, "on_chain_end")
 
     tools = as_langchain_tools(toolset)
-    assert len(tools) == 9
+    assert len(tools) == len(OP_SCHEMAS)
     assert [t.name for t in tools] == [s.name for s in toolset.specs()]
 
 
@@ -33,7 +34,7 @@ def test_openai_function_tools(toolset: HarnessToolset) -> None:
     from pandaprobe_harness.agent_tools.native import as_openai_function_tools
 
     tools = as_openai_function_tools(toolset)
-    assert len(tools) == 9
+    assert len(tools) == len(OP_SCHEMAS)
     for tool in tools:
         assert tool.name
         assert tool.params_json_schema
@@ -63,7 +64,7 @@ def test_claude_instrument() -> None:
 
 async def test_anthropic_tools(toolset: HarnessToolset) -> None:
     specs, dispatcher = as_anthropic_tools(toolset)
-    assert len(specs) == 9
+    assert len(specs) == len(OP_SCHEMAS)
     for spec in specs:
         assert spec["name"]
         assert spec["description"]
