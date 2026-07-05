@@ -76,6 +76,11 @@ jobs:
       - name: Verify package
         run: uv run twine check dist/*
 
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
@@ -86,8 +91,3 @@ jobs:
           commit: ${{ github.sha }}
           draft: false
           generateReleaseNotes: true
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
