@@ -33,7 +33,7 @@ ENV PANDAPROBE_CLI_VERSION=${PANDAPROBE_CLI_VERSION}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates jq \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL "https://cli.pandaprobe.com/install.sh" | sh -s -- --version "${PANDAPROBE_CLI_VERSION}" \
+    && curl -fsSL "https://cli.pandaprobe.com/install.sh" | sh -s -- "${PANDAPROBE_CLI_VERSION}" \
     && pandaprobe version
 
 # Re-declared so the pre-FROM default is visible inside this stage (for the label).
@@ -52,7 +52,7 @@ RUN uv sync --frozen --no-dev
 # Provisions /harness/{harness_rules.md, traces/, state/, mailbox/}. The actual
 # mount is a named volume in docker-compose so learned rules persist across runs.
 RUN mkdir -p /harness/traces \
-    && uv run python -c "from pandaprobe_harness import HarnessConfig, HarnessFilesystem, Mailbox; cfg = HarnessConfig(); HarnessFilesystem(cfg).provision(); Mailbox(cfg).provision()"
+    && uv run --no-sync python -c "from pandaprobe_harness import HarnessConfig, HarnessFilesystem, Mailbox; cfg = HarnessConfig(); HarnessFilesystem(cfg).provision(); Mailbox(cfg).provision()"
 
 ENV PATH="/app/.venv/bin:${PATH}"
 WORKDIR /harness
