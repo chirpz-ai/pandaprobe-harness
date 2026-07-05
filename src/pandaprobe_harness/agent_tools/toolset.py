@@ -27,9 +27,10 @@ from ..cli.errors import CliError
 from ..config import HarnessConfig
 from ..evaluation.history import ScoreHistoryStore
 from ..workspace._io import load_json
+from ..workspace.evalset import CaseKind, EvalSet
 from ..workspace.journal import Journal
 from ..workspace.mailbox import Mailbox
-from ..workspace.rules import RulesStore
+from ..workspace.rules import Rule, RulesStore, RuleStatus, derive_notice_tags
 from .spec import ToolSpec
 
 __all__ = ["OP_SCHEMAS", "HarnessToolset"]
@@ -115,7 +116,9 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
     "harness_rule_add": {
         "description": (
             "Record a permanent mitigation rule (with rationale and the notice "
-            "that motivated it). Dedup-safe; fails at the active-rule cap."
+            "that motivated it). Dedup-safe; fails at the rule cap. When rule "
+            "validation is enabled the rule starts as a CANDIDATE and is "
+            "promoted automatically once evidence shows it helps."
         ),
         "input_schema": {
             "type": "object",
@@ -124,16 +127,64 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
                 "rationale": {"type": "string"},
                 "notice_id": {"type": "string"},
                 "metric": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["rule", "rationale"],
         },
     },
     "harness_rule_retire": {
-        "description": "Retire an active rule that proved ineffective or obsolete.",
+        "description": "Retire a rule (candidate or active) that proved ineffective or obsolete.",
         "input_schema": {
             "type": "object",
             "properties": {"rule_id": {"type": "string"}},
             "required": ["rule_id"],
+        },
+    },
+    "harness_rule_status": {
+        "description": (
+            "A rule's lifecycle state — candidate/active/retired — plus its "
+            "validation bookkeeping (baseline vs trial breach rate, sessions "
+            "observed, verdict), so you can see why it was promoted or retired."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"rule_id": {"type": "string"}},
+            "required": ["rule_id"],
+        },
+    },
+    "harness_rules_search": {
+        "description": (
+            "Search the rule set by lexical relevance. The system context only "
+            "carries the rules relevant to the current situation — everything "
+            "else stays reachable here."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+                "status": {
+                    "type": "string",
+                    "enum": ["candidate", "active", "retired"],
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "harness_rules_list": {
+        "description": (
+            "List rules by lifecycle status (candidate/active/retired; all "
+            "when no status is given)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["candidate", "active", "retired"],
+                }
+            },
+            "required": [],
         },
     },
     "harness_reflect": {
@@ -142,6 +193,31 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
             "active rules, and per-rule effectiveness counts."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    "harness_evalset_list": {
+        "description": (
+            "List captured eval cases: failure scenarios and protected wins "
+            "used for rule validation and regression runs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"kind": {"type": "string", "enum": ["failure", "win"]}},
+            "required": [],
+        },
+    },
+    "harness_evalset_attach": {
+        "description": (
+            "Attach a replay input (the original task/prompt payload) to an "
+            "eval case so it becomes replayable for validation and regression."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string"},
+                "replay_input": {},
+            },
+            "required": ["case_id", "replay_input"],
+        },
     },
 }
 
@@ -158,6 +234,7 @@ class HarnessToolset:
         journal: Journal,
         rules: RulesStore,
         history: ScoreHistoryStore,
+        evalset: EvalSet | None = None,
     ) -> None:
         self._config = config
         self._cli = cli
@@ -165,6 +242,7 @@ class HarnessToolset:
         self._journal = journal
         self._rules = rules
         self._history = history
+        self._evalset = evalset
         self._specs = tuple(
             ToolSpec(
                 name=name,
@@ -183,7 +261,12 @@ class HarnessToolset:
                     ("harness_journal", self.journal_recent),
                     ("harness_rule_add", self.rule_add),
                     ("harness_rule_retire", self.rule_retire),
+                    ("harness_rule_status", self.rule_status),
+                    ("harness_rules_search", self.rules_search),
+                    ("harness_rules_list", self.rules_list),
                     ("harness_reflect", self.reflect),
+                    ("harness_evalset_list", self.evalset_list),
+                    ("harness_evalset_attach", self.evalset_attach),
                 )
             )
         )
@@ -319,11 +402,28 @@ class HarnessToolset:
         rationale = str(args["rationale"])
         notice_id = str(args["notice_id"]) if args.get("notice_id") is not None else None
         metric = str(args["metric"]) if args.get("metric") is not None else None
-        rule = await asyncio.to_thread(
-            lambda: self._rules.add(
-                rule_text, rationale, source_notice_id=notice_id, metric=metric
-            )
+        tags_raw = args.get("tags")
+        explicit_tags = (
+            [str(tag) for tag in tags_raw] if isinstance(tags_raw, list) else []
         )
+
+        def _add() -> Rule:
+            # Auto-derive retrieval tags from the source notice (signatures,
+            # metric names, signal names); explicit tags come first.
+            derived: tuple[str, ...] = ()
+            if notice_id:
+                notice = self._mailbox.read(notice_id)
+                if notice is not None:
+                    derived = derive_notice_tags(notice)
+            return self._rules.add(
+                rule_text,
+                rationale,
+                source_notice_id=notice_id,
+                metric=metric,
+                tags=(*explicit_tags, *derived),
+            )
+
+        rule = await asyncio.to_thread(_add)
         return {"ok": True, "rule": rule.to_json()}
 
     async def rule_retire(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -334,23 +434,112 @@ class HarnessToolset:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "rule": rule.to_json()}
 
+    async def rules_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        query = str(args["query"])
+        limit_raw = args.get("limit", 10)
+        try:
+            limit = int(limit_raw) if isinstance(limit_raw, (int, str)) else 10
+        except ValueError:
+            limit = 10
+        limit = 10 if limit <= 0 else min(limit, 50)
+        status_raw = args.get("status")
+        statuses: tuple[RuleStatus, ...]
+        if status_raw in ("candidate", "active", "retired"):
+            statuses = (status_raw,)
+        else:
+            statuses = ("active", "candidate")  # the live set by default
+        results = await asyncio.to_thread(
+            lambda: self._rules.search(query, limit=limit, statuses=statuses)
+        )
+        return {
+            "ok": True,
+            "rules": [{**rule.to_json(), "score": score} for rule, score in results],
+        }
+
+    async def rules_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        status_raw = args.get("status")
+        rules = await asyncio.to_thread(self._rules.all)
+        if status_raw in ("candidate", "active", "retired"):
+            rules = [rule for rule in rules if rule.status == status_raw]
+        return {"ok": True, "rules": [rule.to_json() for rule in rules]}
+
+    async def rule_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        rule_id = str(args["rule_id"])
+        rules = await asyncio.to_thread(self._rules.all)
+        for rule in rules:
+            if rule.id != rule_id:
+                continue
+            lifecycle: dict[str, Any] = {"status": rule.status}
+            if rule.trial is not None:
+                trial = rule.trial
+                lifecycle.update(
+                    {
+                        "baseline_rate": trial.baseline_rate,
+                        "trial_rate": trial.trial_rate,
+                        "sessions_observed": len(trial.observed_sessions),
+                        "sessions_needed": self._config.rule_trial_min_sessions,
+                        "replay_attempts": trial.replay_attempts,
+                        "verdict": trial.verdict,
+                    }
+                )
+            return {"ok": True, "rule": rule.to_json(), "lifecycle": lifecycle}
+        return {"ok": False, "error": f"no rule {rule_id!r}"}
+
+    # -- eval-set ------------------------------------------------------------------
+
+    async def evalset_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        evalset = self._evalset
+        if evalset is None:
+            return {"ok": False, "error": "eval-set store unavailable"}
+        kind_raw = args.get("kind")
+        kind: CaseKind | None
+        if kind_raw == "failure" or kind_raw == "win":
+            kind = kind_raw
+        else:
+            kind = None
+        cases = await asyncio.to_thread(lambda: evalset.cases(kind=kind))
+        return {"ok": True, "cases": [case.summary() for case in cases]}
+
+    async def evalset_attach(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        evalset = self._evalset
+        if evalset is None:
+            return {"ok": False, "error": "eval-set store unavailable"}
+        case_id = str(args["case_id"])
+        if "replay_input" not in args:
+            return {"ok": False, "error": "replay_input is required"}
+        payload = args["replay_input"]
+        try:
+            case = await asyncio.to_thread(evalset.attach_input, case_id, payload)
+        except KeyError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "case": case.summary()}
+
     async def reflect(self, args: Mapping[str, Any]) -> dict[str, Any]:
         recent_notices = await asyncio.to_thread(
             lambda: self._journal.recent(20, types=("notice",))
         )
         active = await asyncio.to_thread(self._rules.active)
+        candidates = await asyncio.to_thread(self._rules.candidates)
         effectiveness = await asyncio.to_thread(self._rules.effectiveness)
+        # Validation outcomes are part of the cross-run memory: the reflection
+        # cycle should learn which kinds of rules survive their trials.
+        recent_validations = await asyncio.to_thread(
+            lambda: self._journal.recent(20, types=("rule_promote", "rule_retire"))
+        )
         await asyncio.to_thread(
             self._journal.record,
             {
                 "type": "reflect",
                 "notice_count": len(recent_notices),
                 "active_rule_count": len(active),
+                "candidate_rule_count": len(candidates),
             },
         )
         return {
             "ok": True,
             "recent_notices": recent_notices,
             "active_rules": [r.to_json() for r in active],
+            "candidate_rules": [r.to_json() for r in candidates],
+            "recent_validations": recent_validations,
             "effectiveness": effectiveness,
         }
