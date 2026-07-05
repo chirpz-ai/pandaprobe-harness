@@ -14,11 +14,14 @@
 ARG UV_VERSION=0.6.16
 ARG PANDAPROBE_CLI_VERSION=v0.2.0
 
+# --- uv (pinned tag, not :latest) -------------------------------------------
+# Build args are expanded in FROM lines but NOT in `COPY --from=<image>`, so
+# the pinned image is aliased as a stage and copied from by name.
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
 FROM python:3.13-slim AS base
 
-# --- uv (pinned tag, not :latest) -------------------------------------------
-ARG UV_VERSION
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+COPY --from=uv /uv /uvx /bin/
 
 # --- PandaProbe CLI (pinned + verified) -------------------------------------
 # Install a specific release tag so builds are deterministic. `go install` of a
@@ -33,6 +36,8 @@ RUN apt-get update \
     && curl -fsSL "https://cli.pandaprobe.com/install.sh" | sh -s -- --version "${PANDAPROBE_CLI_VERSION}" \
     && pandaprobe version
 
+# Re-declared so the pre-FROM default is visible inside this stage (for the label).
+ARG UV_VERSION
 LABEL org.pandaprobe.cli-version="${PANDAPROBE_CLI_VERSION}" \
       org.pandaprobe.uv-version="${UV_VERSION}"
 

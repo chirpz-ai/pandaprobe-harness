@@ -9,6 +9,9 @@ updates:
     commit-message:
       prefix: "deps(python)"
     open-pull-requests-limit: 10
+    # Don't auto-rebase open PRs on every push to main (each rebase shows up
+    # as a "Dependabot Updates" run); rebase on demand with `@dependabot rebase`.
+    rebase-strategy: "disabled"
     groups:
       dev-dependencies:
         dependency-type: "development"
@@ -21,6 +24,7 @@ updates:
     commit-message:
       prefix: "deps(ci)"
     open-pull-requests-limit: 5
+    rebase-strategy: "disabled"
     groups:
       actions:
         patterns: ["*"]
