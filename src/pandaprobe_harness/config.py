@@ -61,6 +61,7 @@ class HarnessConfig:
     mailbox_status_file: Path = field(init=False)
     journal_file: Path = field(init=False)
     rules_store_file: Path = field(init=False)
+    evalset_dir: Path = field(init=False)
 
     # CLI invocation.
     cli_binary: str = "pandaprobe"
@@ -132,10 +133,42 @@ class HarnessConfig:
     max_evals_per_run: int = 0
 
     # -- self-heal rules -------------------------------------------------------
-    # Cap on concurrently-active structured rules (agent must retire to add).
+    # Cap on concurrently-live structured rules (agent must retire to add).
     max_active_rules: int = 50
     # Length cap applied when sanitizing eval-derived free text.
     sanitize_max_len: int = 2000
+
+    # -- rule validation (evidence before trust) -------------------------------
+    # New rules start as candidates and are promoted to active only after a
+    # validator (replay or forward trial) shows they help. False restores the
+    # v0.5 behavior: rules enter `active` the moment they are written.
+    rule_validation: bool = True
+    # Forward trial: distinct sessions to observe before a verdict.
+    rule_trial_min_sessions: int = 5
+    # Minimum improvement of the targeted metric to promote a candidate.
+    rule_promote_margin: float = 0.05
+    # Maximum tolerated drop on any other case/metric before a candidate or a
+    # regression-run case counts as regressed.
+    rule_regress_margin: float = 0.05
+    # Hard bound on one developer replay invocation; a hung replay degrades to
+    # an inconclusive case instead of wedging validation/regression forever.
+    replay_timeout_s: float = 300.0
+
+    # -- regression eval-set ---------------------------------------------------
+    # Capture breaching sessions as replayable eval cases (opt-in: stores
+    # session-derived data under the workspace).
+    capture_eval_cases: bool = False
+    # Corpus cap; oldest failure cases are evicted first, wins never.
+    eval_case_max: int = 200
+    # Cases replayed per regression run (0 = all).
+    regression_sample: int = 0
+
+    # -- rule retrieval (relevance over volume) --------------------------------
+    # Inject only global rules + the top-k rules relevant to the current
+    # situation instead of every active rule. False restores v0.5 rendering.
+    rule_retrieval: bool = True
+    # How many tagged rules the retrieval keeps in the system context.
+    rules_context_topk: int = 8
 
     # -- robustness / scale ----------------------------------------------------
     # Verify the CLI is present and authenticated before the first eval.
@@ -159,6 +192,7 @@ class HarnessConfig:
         object.__setattr__(self, "mailbox_status_file", root / "mailbox" / "status.json")
         object.__setattr__(self, "journal_file", root / "journal.jsonl")
         object.__setattr__(self, "rules_store_file", root / "rules.jsonl")
+        object.__setattr__(self, "evalset_dir", root / "evalset")
 
     # -- helpers --------------------------------------------------------------
 
@@ -227,6 +261,16 @@ class HarnessConfig:
             "max_evals_per_run": _env_int("HARNESS_MAX_EVALS_PER_RUN", 0),
             "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 50),
             "sanitize_max_len": _env_int("HARNESS_SANITIZE_MAX_LEN", 2000),
+            "rule_validation": _env_bool("HARNESS_RULE_VALIDATION", True),
+            "rule_trial_min_sessions": _env_int("HARNESS_RULE_TRIAL_MIN_SESSIONS", 5),
+            "rule_promote_margin": _env_float("HARNESS_RULE_PROMOTE_MARGIN", 0.05),
+            "rule_regress_margin": _env_float("HARNESS_RULE_REGRESS_MARGIN", 0.05),
+            "replay_timeout_s": _env_float("HARNESS_REPLAY_TIMEOUT_S", 300.0),
+            "capture_eval_cases": _env_bool("HARNESS_CAPTURE_EVAL_CASES", False),
+            "eval_case_max": _env_int("HARNESS_EVAL_CASE_MAX", 200),
+            "regression_sample": _env_int("HARNESS_REGRESSION_SAMPLE", 0),
+            "rule_retrieval": _env_bool("HARNESS_RULE_RETRIEVAL", True),
+            "rules_context_topk": _env_int("HARNESS_RULES_CONTEXT_TOPK", 8),
             "health_check": _env_bool("HARNESS_HEALTH_CHECK", True),
             "hydrate_history_from_backend": _env_bool(
                 "HARNESS_HYDRATE_HISTORY_FROM_BACKEND", False
