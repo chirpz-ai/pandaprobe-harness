@@ -21,7 +21,7 @@ def test_add_returns_rule_appends_jsonl_and_renders_markdown(
     )
 
     assert isinstance(rule, Rule)
-    assert rule.status == "active"
+    assert rule.status == "candidate"  # rules start unproven (rule_validation default)
     assert rule.source_notice_id == "n-123"
     assert rule.metric == "agent_reliability"
 
@@ -43,7 +43,7 @@ def test_add_dedups_on_normalized_text(rules: RulesStore) -> None:
     assert duplicate.id == first.id
     assert duplicate == first
     assert len(rules.all()) == 1
-    assert len(rules.active()) == 1
+    assert len(rules.live()) == 1
 
 
 def test_add_raises_at_active_rule_cap(tmp_path: Path) -> None:
@@ -111,7 +111,7 @@ def test_effectiveness_splits_notices_around_created_at(
 
     stats = rules.effectiveness()[rule.id]
     assert stats["metric"] == "agent_reliability"
-    assert stats["status"] == "active"
+    assert stats["status"] == "candidate"
     assert stats["created_at"] == rule.created_at
     assert stats["notices_before"] == 1
     assert stats["notices_after"] == 1
