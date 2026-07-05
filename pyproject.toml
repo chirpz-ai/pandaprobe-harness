@@ -39,7 +39,7 @@ all = [
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
-    "ruff>=0.5",
+    "ruff>=0.15.20",
     "mypy>=1.10",
     "twine>=5.0",
 ]
