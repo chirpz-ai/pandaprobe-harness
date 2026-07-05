@@ -1,10 +1,11 @@
 [project]
 name = "pandaprobe-harness"
-version = "0.6.0"
+dynamic = ["version"]
 description = "Meta-cognitive diagnostic sandbox harness for PandaProbe-instrumented agents."
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "Apache-2.0" }
+license = "MIT"
+license-files = ["LICENSE"]
 # The harness core has NO runtime dependencies — it only shells out to the
 # `pandaprobe` CLI through a stdlib subprocess seam. Framework adapters add their
 # own optional deps via the extras below.
@@ -40,17 +41,21 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
+    "twine>=5.0",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/pandaprobe_harness"]
+[tool.hatch.version]
+# Single source of truth; the release workflow triggers on changes to it.
+path = "src/pandaprobe_harness/_version.py"
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/pandaprobe_harness/filesystem/templates" = "pandaprobe_harness/filesystem/templates"
+[tool.hatch.build.targets.wheel]
+# Non-Python package data (the harness_rules.md template) is included by
+# default because it lives inside the package directory.
+packages = ["src/pandaprobe_harness"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
