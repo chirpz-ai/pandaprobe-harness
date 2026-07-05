@@ -17,6 +17,7 @@ Public API::
 
 from __future__ import annotations
 
+from ._version import __version__
 from .adapters.protocol import FrameworkAdapter
 from .adapters.raw_loop import RawLoopAdapter
 from .agent_tools.spec import ToolSpec
@@ -70,8 +71,6 @@ from .workspace.rules import (
     derive_notice_tags,
 )
 from .workspace.sanitize import sanitize_text
-
-__version__ = "0.6.0"
 
 __all__ = [
     "CalibrationReport",
