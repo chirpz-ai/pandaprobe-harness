@@ -1,0 +1,96 @@
+# =============================================================================
+# PandaBench — the benchmark A/B study suite for the PandaProbe Harness.
+#
+# This is a SELF-CONTAINED uv project, deliberately NOT a workspace member of
+# the parent `pandaprobe-harness` repo. It depends on the RELEASED harness
+# package from PyPI (never a path/editable dependency on ../src) so the study
+# measures the shipped artifact. See ../docs/benchmark-study-brief.md.
+# =============================================================================
+[project]
+name = "pandabench"
+version = "0.1.0"
+description = "A/B benchmark study measuring the PandaProbe Harness on agent reliability."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+dependencies = [
+    # The released harness (exact-pinned; only 0.6.3 is on PyPI). NEVER ../src.
+    "pandaprobe-harness==0.6.3",
+    # The PandaProbe SDK: session binding + manual spans so LiteLLM calls are
+    # scoreable by the platform (the SDK has no LiteLLM auto-wrapper).
+    "pandaprobe>=0.4",
+    # The single LLM provider layer for the entire study.
+    "litellm>=1.55",
+    # HTTP client for driving the isolated AppWorld environment server.
+    "httpx>=0.27",
+    # Analysis + reporting.
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "matplotlib>=3.9",
+    "tabulate>=0.9",           # markdown tables in report.md
+    # Config + env loading.
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+# NOTE — benchmark harnesses are NOT in-process dependencies:
+#   * AppWorld pins pydantic<2, which is irreconcilable with modern LiteLLM
+#     (pydantic>=2.10). AppWorld therefore runs as an ISOLATED service in its
+#     own venv (see scripts/appworld_env, installed by `make setup`), and
+#     pandabench drives it over its HTTP API — pandabench never imports it.
+#   * tau2-bench is not published under a verified PyPI name; it is installed
+#     into its own env in the tau2 phase.
+#   * harbor is a standalone uv *tool* (`uv tool install harbor`), not a lib.
+# This keeps the pandabench core (LiteLLM + harness, pydantic v2) conflict-free.
+# See IMPLEMENTATION_NOTES.md.
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6.0",
+    "pandas-stubs>=2.2",
+]
+
+[project.scripts]
+pandabench-run = "pandabench.cli:run_main"
+pandabench-report = "pandabench.cli:report_main"
+pandabench-calibrate = "pandabench.cli:calibrate_main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pandabench"]
+
+# -- Tooling: independent of the parent repo's config -------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "scripts", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# ASYNC109: `timeout` params mirror the harness CliClient protocol (the fake CLI
+# in tests must match its signature); same rationale as the harness package.
+ignore = ["ASYNC109"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "scripts"]
+mypy_path = "src"
+
+# Third-party benchmark/provider libs ship partial or no type stubs.
+[[tool.mypy.overrides]]
+module = ["tau2.*", "appworld.*", "harbor.*", "litellm.*", "pandaprobe.*", "scipy.*"]
+ignore_missing_imports = true
