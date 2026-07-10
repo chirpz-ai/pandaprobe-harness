@@ -66,6 +66,9 @@ addopts = "-ra"
 target-version = "py313"
 line-length = 100
 src = ["src", "tests"]
+# The `benchmarks/` sub-project is a separate uv project with its own ruff
+# config; keep the package's `ruff check .` (make lint + CI) out of it.
+extend-exclude = ["benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]

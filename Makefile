@@ -3,7 +3,11 @@
 COMPOSE := docker compose
 COMPOSE_TEST := $(COMPOSE) -f docker-compose.test.yml
 
-.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e test-contract example
+.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e test-contract example bench-setup bench-smoke bench-run bench-report bench-check
+
+# Benchmark sub-project lives in ./benchmarks (its own uv project). These are
+# thin delegators; all logic is in benchmarks/Makefile.
+MAKE_BENCH := $(MAKE) --no-print-directory -C benchmarks
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -50,3 +54,18 @@ test-contract: ## Run the live contract tests (needs pandaprobe CLI + creds)
 
 example: ## Run the offline self-heal example (fake CLI, no network)
 	uv run python examples/offline_self_heal.py
+
+bench-setup: ## Set up the benchmarks/ sub-project (uv sync, harbor, appworld data)
+	$(MAKE_BENCH) setup
+
+bench-smoke: ## Run the benchmark smoke test (cheap, both arms, all benchmarks)
+	$(MAKE_BENCH) smoke
+
+bench-run: ## Run one benchmark arm (pass BENCHMARK= ARM= MODEL= SEED= ...)
+	$(MAKE_BENCH) run BENCHMARK=$(BENCHMARK) ARM=$(ARM) MODEL=$(MODEL) SEED=$(SEED) BACKEND=$(BACKEND) K=$(K) LIMIT=$(LIMIT)
+
+bench-report: ## Regenerate the benchmark summary/ artifacts
+	$(MAKE_BENCH) report
+
+bench-check: ## Lint + typecheck + unit-test the benchmarks/ code
+	$(MAKE_BENCH) check

@@ -1,0 +1,8 @@
+# AppWorld benchmark config. Merged into study.yaml (study.yaml keys win).
+# The agent's single tool is execute(code); the environment runs out-of-process
+# (see runners/appworld_env.py). Splits come from {APPWORLD_ROOT}/data/datasets/<dataset>.txt.
+dataset: dev                 # train(90) | dev(57) | test_normal(168) | test_challenge(417)
+max_turns: 30
+learning_fraction: 0.35      # seeded partition of the dataset into learning/eval
+# learning_split: []         # explicit task ids override the seeded partition
+# eval_split: []
