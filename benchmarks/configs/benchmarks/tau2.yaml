@@ -1,0 +1,9 @@
+# tau2-bench config. Merged into study.yaml (study.yaml keys win).
+# Real runs drive tau2's Orchestrator with pandabench.adapters.tau2_agent in tau2's
+# isolated venv (it pins litellm<1.82.7); user simulator on a fixed cheap model.
+# See IMPLEMENTATION_NOTES.md for the install + TAU2_DATA_DIR prerequisites.
+dataset: retail              # retail (add airline/telecom only if budget allows)
+max_turns: 30                # maps to tau2 max_steps
+learning_fraction: 0.35
+# The user simulator model is a fixed role in configs/models.yaml (roles.user_simulator),
+# identical across arms and independent of the agent model.
