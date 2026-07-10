@@ -18,6 +18,13 @@ build/
 # Diagnostic filesystem data (persistent /harness volume mount)
 harness-data/
 
+# Benchmark sub-project: raw run outputs and per-run harness workspaces are not
+# committed; only the aggregated results/summary/ artifacts are.
+benchmarks/results/runs/
+benchmarks/results/**/raw/
+benchmarks/results/**/harness_root/
+benchmarks/.env
+
 # OS / editor cruft
 .DS_Store
 *.swp
