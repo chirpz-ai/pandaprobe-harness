@@ -1,0 +1,7 @@
+benchmark,model,arm,n_tasks,pass_at_1,pass_hat_k,mean_cost_usd,mean_input_tokens,n_error
+appworld,mock,baseline,2,0.0,0.0,0.0,10.0,0
+appworld,mock,harness,2,0.0,0.0,0.0,10.0,0
+tau2,mock,baseline,2,0.0,0.0,0.0,10.0,0
+tau2,mock,harness,2,0.0,0.0,0.0,10.0,0
+terminal_bench,mock,baseline,2,0.0,0.0,0.0,10.0,0
+terminal_bench,mock,harness,2,0.0,0.0,0.0,10.0,0
