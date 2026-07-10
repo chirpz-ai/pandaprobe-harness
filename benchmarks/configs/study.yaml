@@ -1,0 +1,56 @@
+# =============================================================================
+# Study design — arms, seeds, trials, splits, thresholds, harness knobs.
+# See docs/benchmark-study-brief.md §5. Nothing study-relevant is hardcoded.
+# =============================================================================
+arms: [baseline, harness]     # B' (harness-noval) is flag-gated, not in the default matrix
+seeds: [1, 2, 3]              # >=3 seeds; each shuffles task order (counterbalances learning)
+k: 4                          # trials per eval task (pass@1 = first trial; pass^k = all k)
+
+# Harness knobs for the study (override the package defaults). Lowered
+# rule_trial_min_sessions so the short learning phase can promote rules
+# (Checkpoint 2). Recorded here so every run is reproducible.
+harness:
+  rule_trial_min_sessions: 3
+  rule_promote_margin: 0.05
+  rule_regress_margin: 0.05
+  replay_timeout_s: 180
+  replay_max_turns: 15
+  regression_sample: 0        # 0 = replay the whole eval-set
+
+# Absolute breach thresholds per benchmark. Same value for ALL arms/seeds of a
+# benchmark. These are the pre-calibration defaults; Checkpoint 1 tunes them per
+# benchmark from the metric<->failure calibration and records the chosen value here.
+breach_thresholds:
+  default: 0.5
+  appworld: 0.5
+  terminal_bench: 0.5
+  tau2: 0.5
+
+# Per-benchmark task universe + subset rule. Task-specific detail (dataset,
+# tool surface) is merged from configs/benchmarks/<name>.yaml; keys here win.
+benchmarks:
+  appworld:
+    dataset: dev              # 57 tasks; the study's default AppWorld subset
+    max_turns: 30
+    learning_fraction: 0.35   # ~20 learning / ~37 eval, partitioned by seed
+    learning_split: []        # explicit ids override the seeded partition
+    eval_split: []
+  terminal_bench:
+    dataset: terminal-bench-2
+    max_turns: 30
+    learning_fraction: 0.35
+  tau2:
+    dataset: retail
+    max_turns: 30
+    learning_fraction: 0.35
+
+# Budget discipline: `make matrix` prints an estimate and asks before launching.
+cost_cap_usd: 200
+
+# The smoke test: cheap, fast, exercises the whole pipeline end to end.
+smoke:
+  model: gemini-2.5-flash
+  tasks: 2
+  k: 1
+  arms: [baseline, harness]
+  benchmarks: [appworld, terminal_bench, tau2]
