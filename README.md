@@ -89,6 +89,15 @@ uv run python examples/calibration_demo.py          # threshold calibration
 | `pandaprobe-harness-eval` | Replay the eval-set against the current rules — the regression guard. |
 | `pandaprobe-harness-calibrate` | Measure and tune the breach thresholds, with or without labels. |
 
+## Benchmarks
+
+An A/B study measuring the harness's effect on agent reliability across
+AppWorld, Terminal-Bench (via Harbor), and τ²-bench lives in
+[`benchmarks/`](benchmarks/) — a self-contained uv project that installs the
+released harness from PyPI. Run it from the repo root with `make bench-setup`,
+`make bench-smoke`, and `make bench-report` (see
+[`benchmarks/README.md`](benchmarks/README.md)).
+
 ## Development
 
 ```bash
