@@ -1,0 +1,79 @@
+# =============================================================================
+# Model registry — the single place the study's provider-routing constraints
+# live. Keys are study model identifiers; values resolve to LiteLLM strings.
+#
+# ROUTING CONSTRAINTS (see docs/benchmark-study-brief.md §7):
+#   * Vertex AI is primary (Gemini + Claude partner models) — ADC auth.
+#   * OpenAI models go through OpenAI's own API (Vertex does not serve them).
+#   * Claude models support BOTH backends, switchable per run via `--backend`,
+#     `CLAUDE_BACKEND`, or the per-model `default_backend` below.
+#
+# `param_allowlist` gates which sampler params LiteLLM may forward: Claude 4.6+
+# 400s on temperature/top_p/top_k, so those keys omit them. `price_per_mtok` is
+# a FALLBACK only, used when litellm.completion_cost has no price for a model.
+#
+# NOTE: verify current model IDs against the installed LiteLLM at run time; the
+# Vertex partner-model form for Claude may carry a version suffix.
+# =============================================================================
+models:
+
+  gemini-3.1-flash-lite:
+    provider_family: gemini
+    litellm_model: "vertex_ai/gemini-3.1-flash-lite"
+    param_allowlist: [temperature, top_p, max_tokens]
+    price_per_mtok: {input: 0.25, output: 1.50}
+
+  gemini-3.5-flash:
+    provider_family: gemini
+    litellm_model: "vertex_ai/gemini-3.5-flash"
+    param_allowlist: [temperature, top_p, max_tokens]
+    price_per_mtok: {input: 1.50, output: 9.0}
+
+  gemini-3.1-pro:
+    provider_family: gemini
+    litellm_model: "vertex_ai/gemini-3.1-pro"
+    param_allowlist: [temperature, top_p, max_tokens]
+    price_per_mtok: {input: 2.00, output: 12.0}
+
+  gpt-5.1:
+    provider_family: openai
+    litellm_model: "openai/gpt-5.1"
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 1.25, output: 10.0}
+
+  gpt-5.1-mini:
+    provider_family: openai
+    litellm_model: "openai/gpt-5.1-mini"
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 0.25, output: 2.0}
+
+  claude-sonnet-4-6:
+    provider_family: claude
+    backends:
+      anthropic: "anthropic/claude-sonnet-4-6"
+      vertex_ai: "vertex_ai/claude-sonnet-4-6"
+    default_backend: vertex_ai
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 3.0, output: 15.0}
+
+  claude-opus-4-8:
+    provider_family: claude
+    backends:
+      anthropic: "anthropic/claude-opus-4-8"
+      vertex_ai: "vertex_ai/claude-opus-4-8"
+    default_backend: vertex_ai
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 15.0, output: 75.0}
+
+  # Dry-run pseudo-model: no real API calls (the MockClient is used instead).
+  mock:
+    provider_family: mock
+    litellm_model: "mock/mock"
+    mock: true
+    param_allowlist: [max_tokens]
+
+# Named roles used by the runners.
+roles:
+  user_simulator: gemini-2.5-flash   # tau2 user simulator: cheap, fixed across arms
+  dry_run: mock
+  smoke: gemini-2.5-flash            # the cheap model used by `make smoke`
