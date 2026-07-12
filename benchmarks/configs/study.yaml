@@ -49,7 +49,7 @@ cost_cap_usd: 200
 
 # The smoke test: cheap, fast, exercises the whole pipeline end to end.
 smoke:
-  model: gemini-2.5-flash
+  model: gemini-3.1-flash-lite
   tasks: 2
   k: 1
   arms: [baseline, harness]
