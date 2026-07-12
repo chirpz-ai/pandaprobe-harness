@@ -80,7 +80,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         backend: str | None = None,
         capture: bool = False,
         harness_root: str | None = None,
-        max_turns: int = 30,
+        max_turns: int = 100,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir, *args, model_name=model_name, logger=logger, **kwargs)

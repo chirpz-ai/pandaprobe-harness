@@ -160,8 +160,12 @@ def _smoke() -> int:
 
 
 def _matrix(study_path: Path) -> int:
-    logger.error("`make matrix` is intentionally left for the operator to launch; "
-                 "it spends real API budget. Run per-arm `make <benchmark>` commands instead.")
+    logger.error(
+        "`make matrix` is not yet wired to execute the full cross-product (it would "
+        "spend real API budget across every model x seed x arm x benchmark). Run the "
+        "full study with the per-arm loop documented in RUNNING.md §6, or run "
+        "individual `make <benchmark> ARM=... MODEL=... SEED=...` commands."
+    )
     return 1
 
 
