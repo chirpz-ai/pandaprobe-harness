@@ -19,8 +19,9 @@ dependencies = [
     # The PandaProbe SDK: session binding + the native LiteLLM wrapper (>=0.5)
     # that auto-traces every litellm call so sessions are scoreable.
     "pandaprobe>=0.5",
-    # The single LLM provider layer for the entire study.
-    "litellm>=1.55",
+    # The single LLM provider layer for the entire study. The [google] extra
+    # pulls google-auth so LiteLLM can use Vertex AI via ADC (Vertex is primary).
+    "litellm[google]>=1.55",
     # HTTP client for driving the isolated AppWorld environment server.
     "httpx>=0.27",
     # Analysis + reporting.
