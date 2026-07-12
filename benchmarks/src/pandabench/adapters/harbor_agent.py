@@ -6,7 +6,7 @@ purely through ``environment.exec``. That lets us reuse the shared pandabench
 loop + harness verbatim — the bash tool is just ``environment.exec``.
 
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
-  --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-4-6 \
+  --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-5 \
   --ak backend=vertex_ai --ak capture=true --ak harness_root=/abs/path
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
@@ -90,7 +90,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._max_turns = max_turns
         registry = load_registry(_CONFIGS / "models.yaml")
         self._model = registry.resolve(
-            model_key or model_name or "gemini-2.5-flash", backend=backend
+            model_key or model_name or "gemini-3.1-flash-lite", backend=backend
         )
         tracer = PandaTracer.from_env() if arm == "harness" else PandaTracer.disabled()
         self._client = LiteLLMClient(tracer=tracer)
