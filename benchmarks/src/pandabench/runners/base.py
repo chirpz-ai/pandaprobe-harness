@@ -11,6 +11,7 @@ harness session lifecycle lives here so it is identical across benchmarks and so
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -155,6 +156,7 @@ class BenchmarkRunner:
         harness_root = harness_root_for(run_dir)
         use_harness = arm == "harness" and not dry_run
         learning_outcome: str | None = None
+        harness: Any = None
 
         logger.info(
             "run %s: arm=%s model=%s seed=%s learning=%d eval=%d",
@@ -172,6 +174,9 @@ class BenchmarkRunner:
                 seed=seed, backend=backend, max_turns=max_turns, benchmark=benchmark,
             )
             if harness is not None:
+                # Barrier: drain learning-phase evals + validate candidate rules so
+                # the eval phase runs with a settled, promoted ruleset.
+                await self._settle(harness, "learning")
                 learning_outcome = _checkpoint_two(harness)
 
         if "eval" in phases:
@@ -186,7 +191,10 @@ class BenchmarkRunner:
                 seed=seed, backend=backend, max_turns=max_turns, benchmark=benchmark,
             )
 
-        if use_harness:
+        if use_harness and harness is not None:
+            # Final barrier: let outstanding evals land + validate before archiving
+            # so the workspace (journal/rules/evalset) is complete.
+            await self._settle(harness, "final")
             archive_workspace(harness_root, run_dir / "harness")
 
         self._write_manifest(
@@ -322,6 +330,34 @@ class BenchmarkRunner:
             return session_id
 
         return make_replay_fn(replay_runner=replay_runner)
+
+    async def _settle(self, harness: Any, label: str) -> None:
+        """Await outstanding background evals + validate candidate rules (bounded).
+
+        Each session is scored in a detached background task that can take minutes
+        (LLM-judged over many traces); ``refresh``/``on_turn_end`` don't block on it.
+        This barrier loops ``refresh_all`` + ``drain_validation`` until those tasks
+        drain or ``settle_timeout_s`` elapses, so notices land and candidate rules
+        get promoted/retired before the next phase / before archiving.
+        """
+
+        deadline = time.monotonic() + self._study.harness.settle_timeout_s
+        while time.monotonic() < deadline:
+            try:
+                await harness.refresh_all()
+                await harness.drain_validation()
+            except Exception as exc:  # noqa: BLE001 - never crash the run on settle
+                logger.warning("settle(%s): drain error: %s", label, exc)
+                return
+            pending = [t for t in getattr(harness.hook, "_pending", {}).values() if not t.done()]
+            if not pending:
+                break
+            logger.info("settle(%s): %d session eval(s) still pending...", label, len(pending))
+            await asyncio.sleep(self._study.harness.settle_poll_s)
+        try:
+            await harness.drain_validation()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settle(%s): final drain_validation error: %s", label, exc)
 
     def _splits(self, dataset: str, seed: int, limit: int | None, benchmark: str) -> TaskSplits:
         cfg = self._study.benchmark(benchmark)

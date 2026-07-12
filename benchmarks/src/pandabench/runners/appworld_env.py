@@ -106,10 +106,24 @@ class HttpAppWorldEnv:
 
     def evaluate(self, task_id: str) -> EvalResult:
         # suppress_errors=True returns the test tracker (with failures) instead of
-        # raising when the task is incomplete or a test errors.
-        out = self._post(
-            "/evaluate", {"task_id": task_id, "suppress_errors": True, "report": False}
-        )
+        # raising when the task is incomplete or a test errors. Retry on 5xx: the
+        # single-world server can transiently 500 under long runs (evaluate is
+        # read-only scoring, so retrying is safe — unlike execute).
+        body = {"task_id": task_id, "suppress_errors": True, "report": False}
+        out: Any = {}
+        for attempt in range(3):
+            try:
+                out = self._post("/evaluate", body)
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code >= 500 and attempt < 2:
+                    logger.warning(
+                        "appworld /evaluate %s for %s (attempt %d/3); retrying",
+                        exc.response.status_code, task_id, attempt + 1,
+                    )
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                raise
         data = out if isinstance(out, dict) else {}
         passes = data.get("passes") or []
         return EvalResult(

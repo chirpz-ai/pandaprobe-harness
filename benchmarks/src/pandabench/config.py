@@ -26,11 +26,16 @@ class HarnessKnobs:
     replay_timeout_s: float = 180.0
     replay_max_turns: int = 15
     regression_sample: int = 0
-    # How long refresh() waits for platform session-eval scores per trial:
-    # poll_interval_s * poll_max_attempts (bounded; benchmark sessions have many
-    # traces so scoring can be slow — keep this generous).
-    poll_interval_s: float = 3.0
-    poll_max_attempts: int = 60
+    # Background eval poll budget (poll_interval_s * poll_max_attempts). Benchmark
+    # session evals are LLM-judged over many traces and can take 6-12 min, so this
+    # must exceed that or scores/notices never land.
+    poll_interval_s: float = 5.0
+    poll_max_attempts: int = 200
+    # Settle barrier: after the learning phase (and before archiving) wait for
+    # outstanding session evals + candidate-rule validation to drain, so the eval
+    # phase starts with a promoted, settled ruleset. Bounded; breaks early.
+    settle_timeout_s: float = 1080.0
+    settle_poll_s: float = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,8 +107,10 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
         replay_timeout_s=float(harness_raw.get("replay_timeout_s", 180.0)),
         replay_max_turns=int(harness_raw.get("replay_max_turns", 15)),
         regression_sample=int(harness_raw.get("regression_sample", 0)),
-        poll_interval_s=float(harness_raw.get("poll_interval_s", 3.0)),
-        poll_max_attempts=int(harness_raw.get("poll_max_attempts", 60)),
+        poll_interval_s=float(harness_raw.get("poll_interval_s", 5.0)),
+        poll_max_attempts=int(harness_raw.get("poll_max_attempts", 200)),
+        settle_timeout_s=float(harness_raw.get("settle_timeout_s", 1080.0)),
+        settle_poll_s=float(harness_raw.get("settle_poll_s", 10.0)),
     )
 
     benchmarks: dict[str, BenchmarkConfig] = {}
