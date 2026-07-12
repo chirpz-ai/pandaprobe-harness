@@ -28,7 +28,6 @@ __all__ = [
     "harness_root_for",
     "make_replay_fn",
     "make_session_id",
-    "project_name_for",
     "sanitize_component",
 ]
 
@@ -55,12 +54,6 @@ def make_session_id(
 
     parts = [benchmark, task_id, arm, model_key, str(seed), f"t{trial}"]
     return "-".join(sanitize_component(p) for p in parts)
-
-
-def project_name_for(benchmark: str, arm: str) -> str:
-    """PandaProbe project name so platform data stays organized per arm."""
-
-    return f"bench-{sanitize_component(benchmark)}-{sanitize_component(arm)}"
 
 
 def harness_root_for(run_dir: Path) -> Path:

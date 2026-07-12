@@ -15,7 +15,6 @@ from pandabench.agents.loop import run_agent_loop
 from pandabench.harness_glue import (
     build_harness,
     make_session_id,
-    project_name_for,
     sanitize_component,
 )
 from pandabench.providers.litellm_client import MockClient
@@ -41,10 +40,6 @@ def test_session_id_stable_and_recomputable():
     a = make_session_id(**kw)
     b = make_session_id(**kw)
     assert a == b == "appworld-82e2fac_1-harness-claude-sonnet-5-1-t0"
-
-
-def test_project_name():
-    assert project_name_for("tau2", "baseline") == "bench-tau2-baseline"
 
 
 # -- record schema ------------------------------------------------------------

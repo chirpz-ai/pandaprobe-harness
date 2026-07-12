@@ -33,7 +33,6 @@ from ..harness_glue import (
     build_harness,
     build_harness_config,
     make_session_id,
-    project_name_for,
 )
 from ..providers.litellm_client import LiteLLMClient
 from ..providers.models import load_registry
@@ -96,9 +95,8 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._client = LiteLLMClient(tracer=tracer)
         self._harness = None
         if arm == "harness" and harness_root:
-            import os
-
-            os.environ["PANDAPROBE_PROJECT_NAME"] = project_name_for("terminal_bench", arm)
+            # Traces + eval runs both use the ambient PANDAPROBE_PROJECT_NAME
+            # (from .env / --agent-env) — we never override it.
             phase = "learning" if capture else "eval"
             cfg = build_harness_config(
                 harness_root=Path(harness_root), phase=phase, study=_load_study(),

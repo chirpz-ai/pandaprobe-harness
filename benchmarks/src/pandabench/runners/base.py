@@ -28,7 +28,6 @@ from ..harness_glue import (
     harness_root_for,
     make_replay_fn,
     make_session_id,
-    project_name_for,
 )
 from ..providers.litellm_client import ChatClient, LiteLLMClient, MockClient, Usage
 from ..providers.models import ModelRegistry, ResolvedModel
@@ -161,9 +160,6 @@ class BenchmarkRunner:
             "run %s: arm=%s model=%s seed=%s learning=%d eval=%d",
             run_id, arm, model.key, seed, len(splits.learning), len(splits.eval),
         )
-
-        if use_harness:
-            self._set_project(benchmark, arm)
 
         if "learning" in phases:
             harness = (
@@ -325,11 +321,6 @@ class BenchmarkRunner:
             return session_id
 
         return make_replay_fn(replay_runner=replay_runner)
-
-    def _set_project(self, benchmark: str, arm: str) -> None:
-        import os
-
-        os.environ["PANDAPROBE_PROJECT_NAME"] = project_name_for(benchmark, arm)
 
     def _splits(self, dataset: str, seed: int, limit: int | None, benchmark: str) -> TaskSplits:
         cfg = self._study.benchmark(benchmark)
