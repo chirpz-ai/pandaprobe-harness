@@ -16,6 +16,11 @@ harness:
   replay_timeout_s: 180
   replay_max_turns: 15
   regression_sample: 0        # 0 = replay the whole eval-set
+  # Per-trial wait for platform session-eval scores = poll_interval_s * poll_max_attempts.
+  # Bounded (never hangs); generous because trace-heavy sessions score slowly. If a
+  # session's eval isn't done within this budget, the trial records a null score and moves on.
+  poll_interval_s: 3          # seconds between score polls
+  poll_max_attempts: 60       # -> up to 180s per trial
 
 # Absolute breach thresholds per benchmark. Same value for ALL arms/seeds of a
 # benchmark. These are the pre-calibration defaults; Checkpoint 1 tunes them per

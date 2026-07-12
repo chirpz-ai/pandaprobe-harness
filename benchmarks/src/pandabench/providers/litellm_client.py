@@ -97,6 +97,10 @@ class ChatClient(Protocol):
         extra_params: dict[str, Any] | None = None,
     ) -> ChatResult: ...
 
+    def flush(self) -> None:
+        """Block until buffered traces are sent to the platform (no-op if untraced)."""
+        ...
+
 
 class LiteLLMClient:
     """Thin wrapper over ``litellm.acompletion`` with usage/cost + PandaProbe tracing."""
@@ -171,6 +175,9 @@ class LiteLLMClient:
                     f"{model.litellm_model} call failed after {self._num_retries} retries: {exc}"
                 ) from exc
         return _parse_response(response, model)
+
+    def flush(self) -> None:
+        self._tracer.flush()
 
 
 def _parse_response(response: Any, model: ResolvedModel) -> ChatResult:
@@ -277,3 +284,6 @@ class MockClient:
             resolved_model=model.litellm_model,
             raw=None,
         )
+
+    def flush(self) -> None:
+        pass

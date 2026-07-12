@@ -96,3 +96,19 @@ class PandaTracer:
         except Exception as exc:  # pragma: no cover - telemetry must never crash a trial
             logger.warning("pandaprobe session bind failed for %s: %s", session_id, exc)
             yield
+
+    def flush(self, timeout: float = 30.0) -> None:
+        """Block until buffered spans are sent (no-op when disabled).
+
+        Called before the harness fires a session eval so scoring sees the full
+        session, not one still sitting in the SDK's async send buffer.
+        """
+
+        if not self._enabled:
+            return
+        try:
+            import pandaprobe
+
+            pandaprobe.flush(timeout=timeout)
+        except Exception as exc:  # pragma: no cover - telemetry must never crash a trial
+            logger.warning("pandaprobe flush failed: %s", exc)

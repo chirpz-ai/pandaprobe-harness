@@ -256,6 +256,7 @@ class BenchmarkRunner:
                 {"session_id": session_id, "turn_index": max(outcome.turns, 1),
                  "end_state": wiring.end_state()}
             )
+            client.flush()   # push buffered traces so the eval scores the full session
             report = await harness.refresh(session_id)   # bounded; posts notices + captures
             await harness.drain_validation()              # bounded; completes promotion
             telemetry = collect_harness_telemetry(harness, session_id, report).to_dict()
