@@ -1167,7 +1167,7 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.55" },
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
-    { name = "pandaprobe", specifier = ">=0.4" },
+    { name = "pandaprobe", specifier = ">=0.5" },
     { name = "pandaprobe-harness", specifier = "==0.6.3" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
@@ -1188,15 +1188,15 @@ dev = [
 
 [[package]]
 name = "pandaprobe"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/ca/c993f73816cf825b3afb5fcdb74f2be6787790b4f3fa441378720a27c1b9/pandaprobe-0.4.0.tar.gz", hash = "sha256:20c273c0316082438a0dd13683c6216a471324661dfc535e06afe521603a55d1", size = 521377, upload_time = "2026-05-19T05:24:40.762Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/01/1c262799b4e56bef9a1ca8bf4f2d6a3fc2f4ae7c7d53f0d7156331611946/pandaprobe-0.5.0.tar.gz", hash = "sha256:2649a3c3adb9a160a0b13e5a2a9e2d44cb5392f4da99a357b9434ca4365f2003", size = 532066, upload_time = "2026-07-12T05:19:17.723Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/72/0efc61b64cc6599d12e7d1fe8b12c3fd2daeec6444ed5cd30fcc6270da8b/pandaprobe-0.4.0-py3-none-any.whl", hash = "sha256:722b60616d2978ea187b680b64782a83999fad4bbfa884ee4ca3175d724a3909", size = 101755, upload_time = "2026-05-19T05:24:38.673Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/5b/95b2d92eb391a573c45268c806a77b9b62a068968968baf3ccd84ec118ed/pandaprobe-0.5.0-py3-none-any.whl", hash = "sha256:9fc2cb71d919a9475c8946b099a32a6c943085108cbd72ef26444855983f04d8", size = 106245, upload_time = "2026-07-12T05:19:16.358Z" },
 ]
 
 [[package]]
