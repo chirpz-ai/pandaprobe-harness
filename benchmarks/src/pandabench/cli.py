@@ -93,7 +93,7 @@ def run_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pandabench-run", description="Run a benchmark arm.")
     parser.add_argument("--benchmark", choices=_BENCHMARKS)
     parser.add_argument("--arm", default="baseline")
-    parser.add_argument("--model", default="gemini-2.5-flash")
+    parser.add_argument("--model", default="gemini-3.1-flash-lite")
     parser.add_argument("--backend", default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("-k", "--k", type=int, default=None, dest="k")
@@ -180,7 +180,7 @@ def preflight() -> int:
     for var in ("VERTEXAI_PROJECT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PANDAPROBE_API_KEY"):
         checks.append((var, bool(os.environ.get(var)), "set"))
 
-    ping_model = os.environ.get("PANDABENCH_PING_MODEL", "gemini-2.5-flash")
+    ping_model = os.environ.get("PANDABENCH_PING_MODEL", "gemini-3.1-flash-lite")
     ok, detail = _ping(ping_model)
     checks.append((f"LLM ping ({ping_model})", ok, detail))
 
