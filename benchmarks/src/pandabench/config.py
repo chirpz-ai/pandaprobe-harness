@@ -110,7 +110,7 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
 
     smoke_raw = data.get("smoke") or {}
     smoke = SmokeConfig(
-        model=str(smoke_raw.get("model", "gemini-2.5-flash")),
+        model=str(smoke_raw.get("model", "gemini-3.1-flash-lite")),
         tasks=int(smoke_raw.get("tasks", 2)),
         k=int(smoke_raw.get("k", 1)),
         arms=tuple(str(a) for a in smoke_raw.get("arms", ["baseline", "harness"])),
