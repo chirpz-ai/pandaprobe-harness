@@ -3,7 +3,7 @@
 # pandabench.adapters.harbor_agent:PandaBenchAgent ...`; the agent's tool is bash
 # (environment.exec). See IMPLEMENTATION_NOTES.md for prerequisites (Docker + co-install).
 dataset: terminal-bench-2    # Harbor dataset ref (also accepts terminal-bench@2.0)
-max_turns: 30
+max_turns: 100
 learning_fraction: 0.35
 # Stratified ~30-task subset recommended for the study; select via harbor
 # --include-task-name globs recorded here once chosen.

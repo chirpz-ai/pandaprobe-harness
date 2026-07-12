@@ -29,32 +29,32 @@ def registry():
 
 
 def test_single_backend_resolution(registry):
-    m = registry.resolve("gemini-2.5-flash")
-    assert m.litellm_model == "vertex_ai/gemini-2.5-flash"
+    m = registry.resolve("gemini-3.1-flash-lite")
+    assert m.litellm_model == "vertex_ai/gemini-3.1-flash-lite"
     assert m.provider == "vertex"
     assert m.backend is None
     assert "temperature" in m.param_allowlist
 
 
 def test_claude_defaults_to_vertex(registry):
-    m = registry.resolve("claude-sonnet-4-6", env={})
-    assert m.litellm_model == "vertex_ai/claude-sonnet-4-6"
+    m = registry.resolve("claude-sonnet-5", env={})
+    assert m.litellm_model == "vertex_ai/claude-sonnet-5"
     assert m.provider == "vertex"
     assert m.backend == "vertex_ai"
-    assert "temperature" not in m.param_allowlist  # Claude 4.6+ rejects it
+    assert "temperature" not in m.param_allowlist  # Claude 5 rejects it
 
 
 def test_claude_backend_arg_overrides(registry):
     m = registry.resolve(
-        "claude-sonnet-4-6", backend="anthropic", env={"CLAUDE_BACKEND": "vertex_ai"}
+        "claude-sonnet-5", backend="anthropic", env={"CLAUDE_BACKEND": "vertex_ai"}
     )
-    assert m.litellm_model == "anthropic/claude-sonnet-4-6"
+    assert m.litellm_model == "anthropic/claude-sonnet-5"
     assert m.provider == "anthropic"
     assert m.backend == "anthropic"
 
 
 def test_claude_env_overrides_default(registry):
-    m = registry.resolve("claude-sonnet-4-6", env={"CLAUDE_BACKEND": "anthropic"})
+    m = registry.resolve("claude-sonnet-5", env={"CLAUDE_BACKEND": "anthropic"})
     assert m.backend == "anthropic"
 
 
@@ -65,24 +65,24 @@ def test_unknown_model_raises(registry):
 
 def test_backend_on_single_backend_raises(registry):
     with pytest.raises(ValueError):
-        registry.resolve("gemini-2.5-flash", backend="anthropic")
+        registry.resolve("gemini-3.1-flash-lite", backend="anthropic")
 
 
 def test_unknown_backend_raises(registry):
     with pytest.raises(ValueError):
-        registry.resolve("claude-sonnet-4-6", backend="bedrock", env={})
+        registry.resolve("claude-sonnet-5", backend="bedrock", env={})
 
 
 def test_roles(registry):
-    assert registry.role("user_simulator") == "gemini-2.5-flash"
+    assert registry.role("user_simulator") == "gemini-3.1-flash-lite"
     assert registry.resolve(registry.role("dry_run")).is_mock is True
     with pytest.raises(KeyError):
         registry.role("does-not-exist")
 
 
 def test_provider_of():
-    assert provider_of("vertex_ai/claude-opus-4-8") == "vertex"
-    assert provider_of("openai/gpt-5.1") == "openai"
+    assert provider_of("vertex_ai/claude-haiku-4-5") == "vertex"
+    assert provider_of("openai/gpt-5.4-mini") == "openai"
     assert provider_of("something/weird") == "something"
 
 
@@ -91,7 +91,7 @@ def test_provider_of():
 
 def test_param_allowlist_drops_temperature_for_claude(registry):
     client = LiteLLMClient(tracer=PandaTracer.disabled())
-    claude = registry.resolve("claude-sonnet-4-6", env={})
+    claude = registry.resolve("claude-sonnet-5", env={})
     params = client._call_params(claude, max_tokens=1000, extra={"temperature": 0.7})
     assert "temperature" not in params  # not allowlisted
     assert params["max_tokens"] == 1000
@@ -99,7 +99,7 @@ def test_param_allowlist_drops_temperature_for_claude(registry):
 
 def test_param_allowlist_keeps_temperature_for_gemini(registry):
     client = LiteLLMClient(tracer=PandaTracer.disabled())
-    gemini = registry.resolve("gemini-2.5-flash")
+    gemini = registry.resolve("gemini-3.1-flash-lite")
     params = client._call_params(gemini, max_tokens=None, extra={"temperature": 0.5})
     assert params["temperature"] == 0.5
     assert "max_tokens" in params  # default applied
@@ -155,7 +155,7 @@ def test_parse_tool_call_arguments_are_json(registry):
         ),
         _FakeUsage(100, 20),
     )
-    model = registry.resolve("gemini-2.5-flash")
+    model = registry.resolve("gemini-3.1-flash-lite")
     result = _parse_response(resp, model)
     assert len(result.tool_calls) == 1
     tc = result.tool_calls[0]
@@ -165,7 +165,7 @@ def test_parse_tool_call_arguments_are_json(registry):
     assert result.usage.input_tokens == 100
     assert result.usage.output_tokens == 20
     # No real litellm price for the fake response -> price-table fallback.
-    assert result.usage.cost_usd == pytest.approx(100 / 1e6 * 0.30 + 20 / 1e6 * 2.50)
+    assert result.usage.cost_usd == pytest.approx(100 / 1e6 * 0.25 + 20 / 1e6 * 1.50)
 
 
 def test_parse_malformed_tool_args_do_not_crash(registry):
@@ -173,13 +173,13 @@ def test_parse_malformed_tool_args_do_not_crash(registry):
         _FakeChoice(_FakeMessage(None, [_FakeToolCall("c", "f", "not json")]), "tool_calls"),
         _FakeUsage(1, 1),
     )
-    result = _parse_response(resp, registry.resolve("gemini-2.5-flash"))
+    result = _parse_response(resp, registry.resolve("gemini-3.1-flash-lite"))
     assert result.tool_calls[0].arguments == {}  # degrades, never raises
 
 
 def test_parse_plain_text_final(registry):
     resp = _FakeResponse(_FakeChoice(_FakeMessage("done", None), "stop"), _FakeUsage(5, 3))
-    result = _parse_response(resp, registry.resolve("gemini-2.5-flash"))
+    result = _parse_response(resp, registry.resolve("gemini-3.1-flash-lite"))
     assert result.tool_calls == []
     assert result.assistant_message == {"role": "assistant", "content": "done"}
     assert result.finish_reason == "stop"

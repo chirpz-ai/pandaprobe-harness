@@ -1,7 +1,0 @@
-benchmark,model,phase,trials,rules_active_max,rules_candidate_max,rules_retired_max,notices_total,breach_rate
-appworld,mock,eval,2,0.0,0.0,0.0,0.0,0.0
-appworld,mock,learning,1,0.0,0.0,0.0,0.0,0.0
-tau2,mock,eval,2,0.0,0.0,0.0,0.0,0.0
-tau2,mock,learning,1,0.0,0.0,0.0,0.0,0.0
-terminal_bench,mock,eval,2,0.0,0.0,0.0,0.0,0.0
-terminal_bench,mock,learning,1,0.0,0.0,0.0,0.0,0.0

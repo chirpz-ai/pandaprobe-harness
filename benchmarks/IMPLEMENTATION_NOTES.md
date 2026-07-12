@@ -7,7 +7,7 @@ and the sharp edges discovered while building. Read alongside the brief.
 ## Pinned versions (benchmarks/uv.lock)
 
 - `pandaprobe-harness==0.6.3` (exact; only 0.6.3 is on PyPI) — from PyPI, never `../src`.
-- `pandaprobe==0.4.0` (the SDK, for session binding + manual spans).
+- `pandaprobe>=0.5` (the SDK; native LiteLLM wrapper + session binding).
 - `litellm` (>=1.55; lock pins the resolved version, currently 1.91.x).
 - `pandas>=2.2`, `numpy>=2.0`, `scipy>=1.14`, `matplotlib>=3.9`, `tabulate`, `httpx`,
   `pyyaml`, `python-dotenv`.
@@ -30,13 +30,13 @@ and the sharp edges discovered while building. Read alongside the brief.
    (LiteLLM, pydantic v2) conflict-free. **Verified end-to-end against the real
    server** (see Verification status).
 
-3. **PandaProbe tracing is a MANUAL span per LiteLLM call.** The SDK auto-wraps
-   only native clients (`wrap_openai/anthropic/gemini`); it has no LiteLLM wrapper.
-   Since every study call goes through `litellm.acompletion`, `providers/tracing.py`
-   opens `pandaprobe.session(sid)` + a `start_trace` + an `LLM`-kind span per call
-   (recording messages/usage/cost) so sessions are scoreable. `start_trace` *raises*
-   without creds, so the tracer guards on `get_client()` — arm A and offline tests
-   never touch the SDK.
+3. **PandaProbe tracing uses the native LiteLLM wrapper (SDK >= 0.5).**
+   `providers/tracing.py` calls `wrap_litellm(litellm)` once (when a client is
+   available) to auto-trace every `litellm.acompletion` call, and binds each call
+   to the harness session via `pandaprobe.session(session_id)`. The tracer guards on
+   `get_client()` — arm A and offline tests (`PandaTracer.disabled()`) never patch
+   LiteLLM or open a session. (Earlier builds used manual `start_trace`+span
+   instrumentation because SDK 0.4 had no LiteLLM wrapper; 0.5 added it.)
 
 4. **`on_turn_end` is called ONCE per task-trial (by the runner), not per loop turn,
    and NOT via `harness.turn()`.** Eval-case capture stashes the non-empty
@@ -69,7 +69,7 @@ and the sharp edges discovered while building. Read alongside the brief.
   always pass `--port` explicitly.
 - **AppWorld holds one active world per server** — tasks run serially per server;
   concurrency would need multiple ports.
-- **Claude 4.6+ reject `temperature`/`top_p`/`top_k`** — `models.yaml` per-model
+- **Claude 5 / GPT-5 reject `temperature`/`top_p`/`top_k`** — `models.yaml` per-model
   `param_allowlist` drops them; we filter explicitly (not via `litellm.drop_params`).
 - **`tau2` PyPI name is ambiguous** — the `tau2` PyPI package is likely NOT the
   sierra-research benchmark; the real install is resolved in the tau2 phase (see

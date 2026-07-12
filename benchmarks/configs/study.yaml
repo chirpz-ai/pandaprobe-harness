@@ -16,6 +16,16 @@ harness:
   replay_timeout_s: 180
   replay_max_turns: 15
   regression_sample: 0        # 0 = replay the whole eval-set
+  # Background eval poll budget = poll_interval_s * poll_max_attempts. AppWorld/tau2
+  # session evals are LLM-judged over many traces and can take 6-12 min, so keep this
+  # above that or scores/notices never land.
+  poll_interval_s: 5          # seconds between score polls
+  poll_max_attempts: 200      # -> ~1000s (17 min) background poll budget
+  # Settle barrier between the learning and eval phases (and before archiving): wait
+  # for outstanding session evals + candidate-rule validation to drain so the eval
+  # phase runs with a promoted, settled ruleset. Bounded; breaks early when drained.
+  settle_timeout_s: 1080      # max seconds to wait for evals + validation to drain
+  settle_poll_s: 10           # seconds between drain checks
 
 # Absolute breach thresholds per benchmark. Same value for ALL arms/seeds of a
 # benchmark. These are the pre-calibration defaults; Checkpoint 1 tunes them per
@@ -31,17 +41,17 @@ breach_thresholds:
 benchmarks:
   appworld:
     dataset: dev              # 57 tasks; the study's default AppWorld subset
-    max_turns: 30
+    max_turns: 100            # a turn = one execute(); AppWorld's env cap is 1000
     learning_fraction: 0.35   # ~20 learning / ~37 eval, partitioned by seed
     learning_split: []        # explicit ids override the seeded partition
     eval_split: []
   terminal_bench:
     dataset: terminal-bench-2
-    max_turns: 30
-    learning_fraction: 0.35
+    max_turns: 100            # Terminal-Bench has no native turn cap (timeout-driven);
+    learning_fraction: 0.35   #   100 is our in-process agent budget
   tau2:
     dataset: retail
-    max_turns: 30
+    max_turns: 100            # matches tau2's native default (run_tasks max_steps=100)
     learning_fraction: 0.35
 
 # Budget discipline: `make matrix` prints an estimate and asks before launching.
@@ -49,7 +59,7 @@ cost_cap_usd: 200
 
 # The smoke test: cheap, fast, exercises the whole pipeline end to end.
 smoke:
-  model: gemini-2.5-flash
+  model: gemini-3.1-flash-lite
   tasks: 2
   k: 1
   arms: [baseline, harness]

@@ -6,7 +6,7 @@ purely through ``environment.exec``. That lets us reuse the shared pandabench
 loop + harness verbatim — the bash tool is just ``environment.exec``.
 
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
-  --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-4-6 \
+  --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-5 \
   --ak backend=vertex_ai --ak capture=true --ak harness_root=/abs/path
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
@@ -33,7 +33,6 @@ from ..harness_glue import (
     build_harness,
     build_harness_config,
     make_session_id,
-    project_name_for,
 )
 from ..providers.litellm_client import LiteLLMClient
 from ..providers.models import load_registry
@@ -80,7 +79,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         backend: str | None = None,
         capture: bool = False,
         harness_root: str | None = None,
-        max_turns: int = 30,
+        max_turns: int = 100,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir, *args, model_name=model_name, logger=logger, **kwargs)
@@ -90,15 +89,14 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._max_turns = max_turns
         registry = load_registry(_CONFIGS / "models.yaml")
         self._model = registry.resolve(
-            model_key or model_name or "gemini-2.5-flash", backend=backend
+            model_key or model_name or "gemini-3.1-flash-lite", backend=backend
         )
         tracer = PandaTracer.from_env() if arm == "harness" else PandaTracer.disabled()
         self._client = LiteLLMClient(tracer=tracer)
         self._harness = None
         if arm == "harness" and harness_root:
-            import os
-
-            os.environ["PANDAPROBE_PROJECT_NAME"] = project_name_for("terminal_bench", arm)
+            # Traces + eval runs both use the ambient PANDAPROBE_PROJECT_NAME
+            # (from .env / --agent-env) — we never override it.
             phase = "learning" if capture else "eval"
             cfg = build_harness_config(
                 harness_root=Path(harness_root), phase=phase, study=_load_study(),

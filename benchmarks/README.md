@@ -37,14 +37,16 @@ uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
 
 ## Running
 
+See **[RUNNING.md](RUNNING.md)** for the full command-first, step-by-step guide.
+
 ```bash
 make smoke                # dry-run pipeline gate: both arms x tiny task set, all benchmarks
 make report               # regenerate results/summary/ from results/runs/
 
 # One real arm of one benchmark (needs that harness provisioned + creds):
-make appworld ARM=harness  MODEL=claude-sonnet-4-6 SEED=1 BACKEND=vertex K=4 LIMIT=5
-make terminal ARM=baseline MODEL=gemini-2.5-pro     SEED=1
-make tau2     ARM=harness   MODEL=gpt-5.1            SEED=1
+make appworld ARM=harness  MODEL=claude-sonnet-5 SEED=1 BACKEND=vertex_ai K=4 LIMIT=5
+make terminal ARM=baseline MODEL=gemini-3.1-pro  SEED=1
+make tau2     ARM=harness   MODEL=gpt-5.4-mini    SEED=1
 
 make calibrate BENCH=appworld   # Checkpoint 1: metric<->failure calibration
 make matrix                     # full study matrix (left for the operator; spends budget)

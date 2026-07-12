@@ -3,16 +3,25 @@
 # Every target is sugar over a documented `uv run pandabench-*` command; the
 # Makefile carries no logic of its own.
 
-# Per-run knobs (overridable): make appworld ARM=harness MODEL=claude-sonnet-4-6 SEED=1 K=4 LIMIT=2
-ARM     ?= baseline
-MODEL   ?= gemini-2.5-flash
-SEED    ?= 1
-BACKEND ?=
-K       ?= 4
-LIMIT   ?=
-BENCH   ?= appworld
+# Per-run knobs (overridable): make appworld ARM=harness MODEL=claude-sonnet-5 SEED=1 K=4 LIMIT=2
+#   ARM      baseline | harness
+#   MODEL    a models.yaml key (see `configs/models.yaml`)
+#   SEED     shuffles task order; use several (1 2 3) for replicates
+#   K        trials per task (pass@1 = first trial; pass^k = all K)
+#   LIMIT    max tasks per phase (unset = the whole split)
+#   MAXTURNS per-task agent-turn cap (unset = study.yaml max_turns, 100 for all benchmarks)
+#   BACKEND  Claude only: vertex_ai | anthropic (omit for OpenAI/Gemini)
+ARM      ?= baseline
+MODEL    ?= gemini-3.1-flash-lite
+SEED     ?= 1
+BACKEND  ?=
+K        ?= 4
+LIMIT    ?=
+MAXTURNS ?=
+BENCH    ?= appworld
 BENCHMARK ?= $(BENCH)
 LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
+MAXTURNS_FLAG := $(if $(MAXTURNS),--max-turns $(MAXTURNS),)
 BACKEND_FLAG := $(if $(BACKEND),--backend $(BACKEND),)
 
 .PHONY: help setup sync smoke run appworld terminal tau2 matrix report calibrate check lint typecheck test preflight
@@ -35,15 +44,15 @@ preflight: ## Validate Docker, CLIs, credentials, and a 1-token ping per provide
 smoke: ## 2 tasks x 1 trial x both arms x cheap model, all benchmarks (< ~10 min)
 	uv run pandabench-run --smoke
 
-run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=])
+run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=] [MAXTURNS=])
 	uv run pandabench-run --benchmark $(BENCHMARK) --arm $(ARM) --model $(MODEL) \
-		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG)
+		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(MAXTURNS_FLAG)
 
-appworld terminal tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/...
+appworld terminal tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/MAXTURNS
 	uv run pandabench-run --benchmark $@ --arm $(ARM) --model $(MODEL) \
-		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG)
+		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(MAXTURNS_FLAG)
 
-matrix: ## Run the full study matrix from configs/study.yaml (prints cost estimate, confirms)
+matrix: ## Full study matrix — NOT yet wired; prints how to run per-arm loops (see RUNNING.md §6)
 	uv run pandabench-run --matrix configs/study.yaml
 
 report: ## Regenerate summary/ (CSVs + report.md + plots) from runs/

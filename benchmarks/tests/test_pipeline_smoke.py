@@ -29,7 +29,7 @@ def _runner(tmp_path: Path) -> BenchmarkRunner:
 
 async def test_dry_run_pipeline_and_resume(tmp_path):
     run_dir = await _runner(tmp_path).run(
-        arm="baseline", model_key="gemini-2.5-flash", backend=None, seed=1,
+        arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
         k=1, limit=2, dry_run=True, phases=("eval",),
     )
     records_file = run_dir / "records.jsonl"
@@ -39,7 +39,7 @@ async def test_dry_run_pipeline_and_resume(tmp_path):
 
     # Resume: rerun with the same run_id -> every trial is skipped, no duplicates.
     await _runner(tmp_path).run(
-        arm="baseline", model_key="gemini-2.5-flash", backend=None, seed=1,
+        arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
         k=1, limit=2, dry_run=True, phases=("eval",), run_id=run_dir.name,
     )
     assert len(records_file.read_text().splitlines()) == n_first
@@ -55,7 +55,7 @@ async def test_dry_run_pipeline_and_resume(tmp_path):
 async def test_both_arms_dry_run_pipeline(tmp_path):
     for arm in ("baseline", "harness"):
         run_dir = await _runner(tmp_path).run(
-            arm=arm, model_key="gemini-2.5-flash", backend=None, seed=1,
+            arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=1,
             k=1, limit=1, dry_run=True, phases=("learning", "eval"),
         )
         assert (run_dir / "records.jsonl").exists()

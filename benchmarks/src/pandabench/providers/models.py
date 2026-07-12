@@ -43,16 +43,16 @@ class ResolvedModel:
     """A model key resolved to a concrete LiteLLM call target."""
 
     key: str
-    """The models.yaml key, e.g. ``claude-sonnet-4-6`` — recorded in results."""
+    """The models.yaml key, e.g. ``claude-sonnet-5`` — recorded in results."""
     litellm_model: str
-    """The full LiteLLM string actually called, e.g. ``vertex_ai/claude-sonnet-4-6``."""
+    """The full LiteLLM string actually called, e.g. ``vertex_ai/claude-sonnet-5``."""
     provider: str
     """Coarse provider label, e.g. ``vertex`` / ``anthropic`` / ``openai``."""
     backend: str | None
     """The chosen backend for dual-backend (Claude) models, else ``None``."""
     param_allowlist: frozenset[str]
-    """Sampler/params LiteLLM may forward; everything else is dropped (Claude
-    4.6+ 400s on ``temperature``)."""
+    """Sampler/params LiteLLM may forward; everything else is dropped (Claude 5
+    and GPT-5 400 on ``temperature``)."""
     price_per_mtok: dict[str, float] | None
     """Fallback USD price per 1M tokens ``{input, output}`` when
     ``litellm.completion_cost`` lacks a price."""
