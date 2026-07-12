@@ -37,10 +37,10 @@ def test_sanitize_component():
 
 def test_session_id_stable_and_recomputable():
     kw = dict(benchmark="appworld", task_id="82e2fac_1", arm="harness",
-              model_key="claude-sonnet-4-6", seed=1, trial=0)
+              model_key="claude-sonnet-5", seed=1, trial=0)
     a = make_session_id(**kw)
     b = make_session_id(**kw)
-    assert a == b == "appworld-82e2fac_1-harness-claude-sonnet-4-6-1-t0"
+    assert a == b == "appworld-82e2fac_1-harness-claude-sonnet-5-1-t0"
 
 
 def test_project_name():
@@ -53,8 +53,8 @@ def test_project_name():
 def test_trial_record_round_trip():
     rec = TrialRecord(
         run_id="r1", benchmark="appworld", task_id="t1", arm="harness",
-        model="gemini-2.5-flash", provider="vertex", backend=None,
-        resolved_model="vertex_ai/gemini-2.5-flash", seed=1, trial=0, phase="eval",
+        model="gemini-3.1-flash-lite", provider="vertex", backend=None,
+        resolved_model="vertex_ai/gemini-3.1-flash-lite", seed=1, trial=0, phase="eval",
         passed=True, native_metrics={"tgc": 1.0}, turns=3, wall_time_s=12.5,
         usage={"input_tokens": 100, "output_tokens": 20, "cost_usd": 0.01},
         harness={"session_id": "s", "rules_active": 2}, error=None,
@@ -62,7 +62,7 @@ def test_trial_record_round_trip():
     restored = TrialRecord.from_json(json.loads(json.dumps(rec.to_json())))
     assert restored == rec
     assert restored.resume_key == resume_key(
-        "appworld", "t1", "harness", "gemini-2.5-flash", None, 1, 0, "eval"
+        "appworld", "t1", "harness", "gemini-3.1-flash-lite", None, 1, 0, "eval"
     )
 
 
