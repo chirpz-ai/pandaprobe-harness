@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 # Sampler params we may set; each is forwarded only if the model's allowlist
-# permits it (Claude 4.6+ 400s on temperature/top_p/top_k).
+# permits it (Claude 5 / GPT-5 400 on temperature/top_p/top_k).
 _SAMPLER_PARAMS = ("temperature", "top_p", "top_k")
 
 
@@ -160,26 +160,17 @@ class LiteLLMClient:
         if self._drop_params:
             kwargs["drop_params"] = True
 
-        with self._tracer.llm_call(
-            session_id=session_id, model=model.litellm_model, messages=messages
-        ) as span:
-            span.set_model_parameters(call_params)
+        # The native LiteLLM wrapper auto-produces the LLM span; binding the
+        # session id is all we do here (usage/cost for our records come from the
+        # parsed response below).
+        with self._tracer.session(session_id):
             try:
                 response = await litellm.acompletion(**kwargs)
             except Exception as exc:  # noqa: BLE001 - normalize any provider failure
-                span.set_error(str(exc))
                 raise ProviderError(
                     f"{model.litellm_model} call failed after {self._num_retries} retries: {exc}"
                 ) from exc
-
-            result = _parse_response(response, model)
-            span.set_output({"messages": [result.assistant_message]})
-            span.set_token_usage(
-                prompt_tokens=result.usage.input_tokens,
-                completion_tokens=result.usage.output_tokens,
-            )
-            span.set_cost(total=result.usage.cost_usd)
-            return result
+        return _parse_response(response, model)
 
 
 def _parse_response(response: Any, model: ResolvedModel) -> ChatResult:
