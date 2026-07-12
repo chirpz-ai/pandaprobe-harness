@@ -31,17 +31,17 @@ breach_thresholds:
 benchmarks:
   appworld:
     dataset: dev              # 57 tasks; the study's default AppWorld subset
-    max_turns: 30
+    max_turns: 100            # a turn = one execute(); AppWorld's env cap is 1000
     learning_fraction: 0.35   # ~20 learning / ~37 eval, partitioned by seed
     learning_split: []        # explicit ids override the seeded partition
     eval_split: []
   terminal_bench:
     dataset: terminal-bench-2
-    max_turns: 30
-    learning_fraction: 0.35
+    max_turns: 100            # Terminal-Bench has no native turn cap (timeout-driven);
+    learning_fraction: 0.35   #   100 is our in-process agent budget
   tau2:
     dataset: retail
-    max_turns: 30
+    max_turns: 100            # matches tau2's native default (run_tasks max_steps=100)
     learning_fraction: 0.35
 
 # Budget discipline: `make matrix` prints an estimate and asks before launching.

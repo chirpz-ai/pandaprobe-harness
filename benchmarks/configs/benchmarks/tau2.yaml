@@ -3,7 +3,7 @@
 # isolated venv (it pins litellm<1.82.7); user simulator on a fixed cheap model.
 # See IMPLEMENTATION_NOTES.md for the install + TAU2_DATA_DIR prerequisites.
 dataset: retail              # retail (add airline/telecom only if budget allows)
-max_turns: 30                # maps to tau2 max_steps
+max_turns: 100               # maps to tau2 max_steps (tau2's native default)
 learning_fraction: 0.35
 # The user simulator model is a fixed role in configs/models.yaml (roles.user_simulator),
 # identical across arms and independent of the agent model.
