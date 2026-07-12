@@ -18,11 +18,8 @@ build/
 # Diagnostic filesystem data (persistent /harness volume mount)
 harness-data/
 
-# Benchmark sub-project: raw run outputs and per-run harness workspaces are not
-# committed; only the aggregated results/summary/ artifacts are.
-benchmarks/results/runs/
-benchmarks/results/**/raw/
-benchmarks/results/**/harness_root/
+# Benchmark sub-project: the entire results/ tree is run output — never committed.
+benchmarks/results/
 benchmarks/.env
 
 # OS / editor cruft
