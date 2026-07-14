@@ -28,7 +28,7 @@ pandaprobe-harness-calibrate = "pandaprobe_harness.calibration:main"
 langgraph = ["langgraph>=0.2", "langchain-core>=0.3", "pandaprobe>=0.4"]
 langchain = ["langchain>=1.0.0", "langchain-core>=0.3.0", "pandaprobe>=0.4"]
 deepagents = ["deepagents>=0.6.1", "langchain-core>=0.3.0", "pandaprobe>=0.4"]
-crewai = ["crewai>=0.100", "wrapt>=1.14", "pandaprobe>=0.4"]
+crewai = ["crewai>=1.15.1", "wrapt>=1.14", "pandaprobe>=0.4"]
 claude-agent-sdk = ["claude-agent-sdk>=0.1.0", "wrapt>=1.14.0", "pandaprobe>=0.4"]
 openai-agents = ["openai-agents>=0.13.0", "pandaprobe>=0.4"]
 all = [
