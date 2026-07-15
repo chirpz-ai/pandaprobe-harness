@@ -1,0 +1,45 @@
+% figures/results.tex  --  Figure 2: results placeholder (arm-B learning dynamics).
+%
+% AUTHOR TODO: Replace with the real plot once the learning-phase runs land. Two options
+% (pick one for camera-ready; this placeholder sketches the learning-curve variant):
+%
+%   OPTION A (shown here) -- Learning dynamics, arm B only:
+%       x-axis = learning task-trial index (each trial is one session);
+%       left y-axis = cumulative/rolling pass rate (0..1) of the harness arm;
+%       right y-axis = cumulative count of PROMOTED (active) rules.
+%     Expected/hypothesised shape: pass rate trends UP and to the right as rules are
+%     promoted; the promoted-rules step function rises then plateaus (rule set saturates).
+%     A flat pass-rate line would indicate the harness learned nothing useful (null result).
+%
+%   OPTION B -- pass@1-vs-pass^k deltas: grouped bars per (benchmark x model), showing
+%     Delta pass@1 and Delta pass^k (harness - baseline). Hypothesis: Delta pass^k > Delta pass@1
+%     (reliability rises more than peak capability).
+%
+% Drawn with base TikZ only (no pgfplots dependency); main.tex wraps this in \resizebox so it
+% always fits the column regardless of internal size. The curve below is ILLUSTRATIVE /
+% SCHEMATIC -- it encodes the *expected shape*, NOT measured data; axes carry no numeric ticks.
+
+\begin{tikzpicture}[font=\small, >={Stealth[length=2mm]}]
+  \def\W{66mm} \def\H{38mm}
+  % axes
+  \draw[->] (0,0) -- (\W,0);
+  \draw[->] (0,0) -- (0,\H) node[above, font=\scriptsize] {pass rate};
+  \draw[->] (\W,0) -- (\W,\H) node[above, font=\scriptsize] {\#rules};
+  \node[font=\scriptsize] at (0.5*\W,-5mm) {learning task-trial index $\rightarrow$};
+
+  % SCHEMATIC pass-rate curve (rising, concave) -- illustrative only, not data
+  \draw[thick, black]
+      (0,6mm) .. controls (18mm,10mm) and (30mm,25mm) .. (44mm,30mm)
+              .. controls (54mm,32mm) and (60mm,32mm) .. (\W,32.5mm);
+  \node[font=\scriptsize, black, anchor=west] at (26mm,19mm) {harness pass rate (expected)};
+
+  % SCHEMATIC cumulative promoted-rules step function -- illustrative only
+  \draw[thick, dashed, gray]
+      (0,1mm) -- (14mm,1mm) -- (14mm,8mm) -- (29mm,8mm) -- (29mm,16mm)
+      -- (43mm,16mm) -- (43mm,21mm) -- (\W,21mm);
+  \node[font=\scriptsize, gray, anchor=east] at (\W,25mm) {promoted rules (cum.)};
+
+  % TBD banner
+  \node[draw, fill=black!4, rounded corners, font=\scriptsize\bfseries, align=center]
+       at (0.5*\W, \H+6mm) {PLACEHOLDER: schematic of expected shape;\\numbers forthcoming};
+\end{tikzpicture}
