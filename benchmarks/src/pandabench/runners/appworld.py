@@ -79,11 +79,39 @@ class AppWorldRunner:
         self._env = env
         self._server = server
         self._experiment = experiment_name
+        # The environment server holds ONE world; live trials and background
+        # rule-validation replays share this single runner/env. Concurrent
+        # sessions on the same world corrupt each other's state (the live
+        # trial's /evaluate then 500s). Serialize every task lifecycle
+        # (initialize -> ... -> evaluate -> close) so only one session touches
+        # the server at a time. Baseline never replays, so this only ever
+        # serializes the harness arm; the cost is that replays no longer
+        # overlap live trials.
+        self._server_lock = asyncio.Lock()
 
     def list_tasks(self, dataset: str) -> list[str]:
         return self._env.list_task_ids(dataset or "dev")
 
     async def run_once(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        model: ResolvedModel,
+        client: ChatClient,
+        max_turns: int,
+        wiring: HarnessWiring | None,
+        preamble: str | None = None,
+    ) -> TaskOutcome:
+        # Serialize the whole lifecycle against the single-world server so a
+        # background replay can't interleave with a live trial on the same world.
+        async with self._server_lock:
+            return await self._run_once_locked(
+                task_id=task_id, session_id=session_id, model=model, client=client,
+                max_turns=max_turns, wiring=wiring, preamble=preamble,
+            )
+
+    async def _run_once_locked(
         self,
         *,
         task_id: str,
