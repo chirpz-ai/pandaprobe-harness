@@ -218,14 +218,14 @@ $m_j(s)$ & metric $j$ (reliability, consistency) \\
 $\tau_j$ & breach threshold for metric $j$ (def.\ $0.5$) \\
 $b_j(s)$ & point-breach indicator for metric $j$ \\
 $\Rset$ & rule set (active $\cup$ candidate) \\
-$r$ & a single rule (text, tags, metric, rationale) \\
+$r$ & a rule (text, tags, metric, rationale) \\
 $q$ & task query used for rule retrieval \\
 $c(\Rset,q)$ & policy-inducing context \\
 $\rho$ & rule retrieval / render operator \\
 $\Heal$ & self-heal operator on the rule set \\
 $\Breach_t$ & breaches observed at step $t$ \\
 $\dpromote,\dregress$ & promote / regress margins (def.\ $0.05$) \\
-$n$ & forward-trial window (\texttt{trial\_min\_sessions}) \\
+$n$ & forward-trial window length \\
 $p_0,\hat{p}$ & baseline / trial breach rate \\
 $k$ & trials per task in evaluation \\
 \bottomrule
@@ -394,8 +394,8 @@ rate $\hat{p}$. We \textbf{promote} iff
 with $\dpromote = 0.05$ (\texttt{rule\_promote\_margin}); otherwise we \textbf{retire}. While
 fewer than $n$ sessions have been observed the verdict is \emph{pending}.
 Equation~\eqref{eq:forward} is a one-sided decision on a difference of breach proportions with
-a fixed margin; it is deliberately \emph{conservative}---a rule must drive the breach rate to
-zero or beat the baseline by at least $\dpromote$---trading statistical power for a low
+a fixed margin; it is deliberately \emph{conservative}, a rule must drive the breach rate to
+zero or beat the baseline by at least $\dpromote$, trading statistical power for a low
 false-promotion rate over the short windows available at inference time.
 
 \paragraph{Replay test.} For captured failure cases $\{s_i\}$ (at most $3$) and protected win
@@ -566,7 +566,7 @@ only the Harness's internal machinery.
 \begin{itemize}\itemsep2pt
 \item \textbf{A --- baseline:} the agent loop with no Harness (no preamble, no toolset, no
 self-healing).
-\item \textbf{B --- Harness:} the full loop---context preamble with retrieved rules, the
+\item \textbf{B --- Harness:} the full loop, context preamble with retrieved rules, the
 $14$-operation toolset, per-trial evaluation and candidate validation, eval-case capture on,
 replay wired.
 \item \textbf{B$'$ --- Harness, no-validation (ablation, flag-gated):} identical to B but rules
@@ -580,19 +580,18 @@ For each benchmark$\times$model, the Harness arm first runs a seeded \emph{learn
 the baseline arm runs the same split for exposure symmetry (its learning-phase results are
 flagged and excluded from the headline). Both arms then run the held-out \emph{frozen eval}
 split, with the Harness arm carrying over the rules learned in the learning phase. Because
-benchmark trials complete much faster than production sessions, the runner explicitly settles
+benchmark trials may complete faster than production sessions, the runner explicitly settles
 the evaluation and drains candidate validation between task-trials so that notices land and
 gates resolve \emph{during} the learning phase rather than after it.
 
 \subsection{Models}
 All model calls in every arm route through a single provider-abstraction layer, so the arms
 differ only in Harness wiring. The matrix spans a frontier proprietary model plus a smaller
-model from each of three commercial providers (a Gemini tier served via a managed cloud, a GPT
-tier via its own API, and a Claude tier switchable between two backends); a representative
-triad (one strong model per provider) is used for the headline runs. Trials are drawn from each
-model's natural nondeterminism: current frontier models reject an explicit temperature control,
-so trial-to-trial variance is \emph{intrinsic} and cannot be tuned away---a point we return to
-in \S\ref{sec:limitations}.
+model from each of three commercial providers (Google Gemini, OpenAI GPT
+and Anthropic Claude); a representative triad (one strong model per provider) is used for the 
+headline runs. Trials are drawn from each model's natural nondeterminism: current frontier 
+models reject an explicit temperature control, so trial-to-trial variance is \emph{intrinsic} 
+and cannot be tuned away, a point we return to in \S\ref{sec:limitations}.
 
 \subsection{Trials, seeds, and estimators}
 Each eval task is run $k=4$ times; we use $\ge 3$ study seeds, each shuffling task order to
