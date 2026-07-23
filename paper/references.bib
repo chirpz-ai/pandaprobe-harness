@@ -1,175 +1,129 @@
 % references.bib
 % -----------------------------------------------------------------------------------
-% Every \cite key in main.tex resolves to an entry here. Keys are prefixed "placeholder-"
-% as a reminder that the AUTHOR should VERIFY each entry's bibliographic details (venue,
-% year, page numbers) before submission -- the data below is a best-effort starting point
-% from memory, not a checked citation. Replace the note fields once verified.
+% Two kinds of entries:
+%  (1) REAL, author-specified references (benchmarks + the two metric-backbone papers).
+%      Use these verbatim; they are the citations the author has chosen.
+%  (2) PLACEHOLDER stubs (keys "placeholder-*"): every OTHER citation location. These do
+%      NOT point at a real paper -- they render as "([cite: <topic>] 20XX)" so the author
+%      can see each slot in the PDF and drop in the reference they choose. Replace the
+%      author/title/year with the real entry (keep or rename the key) when citing.
 % -----------------------------------------------------------------------------------
 
-@inproceedings{placeholder-reflexion,
-  title     = {Reflexion: Language Agents with Verbal Reinforcement Learning},
-  author    = {Shinn, Noah and Cassano, Federico and Berman, Edward and Gopinath, Ashwin and Narasimhan, Karthik and Yao, Shunyu},
-  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
-  year      = {2023},
-  note      = {TODO(author): verify citation details}
-}
+% ============================== REAL (author-specified) =============================
 
-@inproceedings{placeholder-selfrefine,
-  title     = {Self-Refine: Iterative Refinement with Self-Feedback},
-  author    = {Madaan, Aman and Tandon, Niket and Gupta, Prakhar and Hallinan, Skyler and Gao, Luyu and others},
-  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
-  year      = {2023},
-  note      = {TODO(author): verify citation details}
-}
-
-@inproceedings{placeholder-critic,
-  title     = {CRITIC: Large Language Models Can Self-Correct with Tool-Interactive Critiquing},
-  author    = {Gou, Zhibin and Shao, Zhihong and Gong, Yeyun and Shen, Yelong and Yang, Yujiu and Duan, Nan and Chen, Weizhu},
-  booktitle = {International Conference on Learning Representations (ICLR)},
-  year      = {2024},
-  note      = {TODO(author): verify citation details}
-}
-
-@inproceedings{placeholder-selfconsistency,
-  title     = {Self-Consistency Improves Chain of Thought Reasoning in Language Models},
-  author    = {Wang, Xuezhi and Wei, Jason and Schuurmans, Dale and Le, Quoc and Chi, Ed and Narang, Sharan and Chowdhery, Aakanksha and Zhou, Denny},
-  booktitle = {International Conference on Learning Representations (ICLR)},
-  year      = {2023},
-  note      = {TODO(author): verify citation details}
-}
-
-@inproceedings{placeholder-processreward,
-  title     = {Let's Verify Step by Step},
-  author    = {Lightman, Hunter and Kosaraju, Vineet and Burda, Yura and Edwards, Harri and Baker, Bowen and Lee, Teddy and Leike, Jan and Schulman, John and Sutskever, Ilya and Cobbe, Karl},
-  booktitle = {International Conference on Learning Representations (ICLR)},
-  year      = {2024},
-  note      = {TODO(author): verify citation details; process-supervision / reward-model reference}
-}
-
-@inproceedings{placeholder-llmjudge,
-  title     = {Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena},
-  author    = {Zheng, Lianmin and Chiang, Wei-Lin and Sheng, Ying and Zhuang, Siyuan and Wu, Zhanghao and others},
-  booktitle = {Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks},
-  year      = {2023},
-  note      = {TODO(author): verify citation details}
-}
-
-@article{placeholder-memgpt,
-  title   = {MemGPT: Towards LLMs as Operating Systems},
-  author  = {Packer, Charles and Wooders, Sarah and Lin, Kevin and Fang, Vivian and Patil, Shishir G. and Stoica, Ion and Gonzalez, Joseph E.},
-  journal = {arXiv preprint arXiv:2310.08560},
-  year    = {2023},
-  note    = {TODO(author): verify citation details}
-}
-
-@inproceedings{placeholder-genagents,
-  title     = {Generative Agents: Interactive Simulacra of Human Behavior},
-  author    = {Park, Joon Sung and O'Brien, Joseph C. and Cai, Carrie J. and Morris, Meredith Ringel and Liang, Percy and Bernstein, Michael S.},
-  booktitle = {ACM Symposium on User Interface Software and Technology (UIST)},
-  year      = {2023},
-  note      = {TODO(author): verify citation details}
-}
-
-@article{placeholder-voyager,
-  title   = {Voyager: An Open-Ended Embodied Agent with Large Language Models},
-  author  = {Wang, Guanzhi and Xie, Yuqi and Jiang, Yunfan and Mandlekar, Ajay and Xiao, Chaowei and Zhu, Yuke and Fan, Linxi and Anandkumar, Anima},
-  journal = {arXiv preprint arXiv:2305.16291},
-  year    = {2023},
-  note    = {TODO(author): verify citation details}
-}
-
-@inproceedings{placeholder-expel,
-  title     = {ExpeL: LLM Agents Are Experiential Learners},
-  author    = {Zhao, Andrew and Huang, Daniel and Xu, Quentin and Lin, Matthieu and Liu, Yong-Jin and Huang, Gao},
-  booktitle = {AAAI Conference on Artificial Intelligence},
-  year      = {2024},
-  note      = {TODO(author): verify citation details}
-}
-
-@inproceedings{placeholder-rag,
-  title     = {Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks},
-  author    = {Lewis, Patrick and Perez, Ethan and Piktus, Aleksandra and Petroni, Fabio and Karpukhin, Vladimir and others},
-  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
-  year      = {2020},
-  note      = {TODO(author): verify citation details}
-}
-
-@article{placeholder-constitutional,
-  title   = {Constitutional AI: Harmlessness from AI Feedback},
-  author  = {Bai, Yuntao and Kadavath, Saurav and Kundu, Sandipan and Askell, Amanda and Kernion, Jackson and others},
-  journal = {arXiv preprint arXiv:2212.08073},
-  year    = {2022},
-  note    = {TODO(author): verify citation details}
-}
-
-@article{placeholder-guardrails,
-  title   = {NeMo Guardrails: A Toolkit for Controllable and Safe LLM Applications with Programmable Rails},
-  author  = {Rebedea, Traian and Dinu, Razvan and Sreedhar, Makesh and Parisien, Christopher and Cohen, Jonathan},
-  journal = {arXiv preprint arXiv:2310.10501},
-  year    = {2023},
-  note    = {TODO(author): verify citation details; representative agent-guardrails/observability reference}
-}
-
-@article{placeholder-tta,
-  title   = {A Survey on Test-Time Adaptation of Deep Neural Networks},
-  author  = {Liang, Jian and He, Ran and Tan, Tieniu},
-  journal = {International Journal of Computer Vision},
-  year    = {2024},
-  note    = {TODO(author): verify citation details; or cite a specific TTA/TTT method (e.g. Sun et al. 2020)}
-}
-
-@inproceedings{placeholder-catforget,
-  title     = {Catastrophic Interference in Connectionist Networks: The Sequential Learning Problem},
-  author    = {McCloskey, Michael and Cohen, Neal J.},
-  booktitle = {Psychology of Learning and Motivation},
-  volume    = {24},
-  pages     = {109--165},
-  year      = {1989},
-  note      = {TODO(author): verify; classic catastrophic-forgetting reference}
-}
-
-@inproceedings{placeholder-appworld,
+@inproceedings{trivedi2024appworld,
   title     = {AppWorld: A Controllable World of Apps and People for Benchmarking Interactive Coding Agents},
   author    = {Trivedi, Harsh and Khot, Tushar and Hartmann, Mareike and Manku, Ruskin and Dong, Vinty and Li, Edward and Gupta, Shashank and Sabharwal, Ashish and Balasubramanian, Niranjan},
-  booktitle = {Annual Meeting of the Association for Computational Linguistics (ACL)},
-  year      = {2024},
-  note      = {TODO(author): verify citation details; digital-work benchmark}
+  booktitle = {Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  pages     = {16022--16076},
+  year      = {2024}
 }
 
-@misc{placeholder-terminalbench,
-  title        = {Terminal-Bench: A Benchmark for AI Agents on Terminal Tasks},
-  author       = {{Terminal-Bench Authors}},
-  year         = {2025},
-  howpublished = {\url{}},
-  note         = {TODO(author): complete real citation for the terminal-task benchmark (v2.x)}
+@article{merrill2026terminal,
+  title   = {Terminal-Bench: Benchmarking Agents on Hard, Realistic Tasks in Command Line Interfaces},
+  author  = {Merrill, Mike A. and Shaw, Alexander G. and Carlini, Nicholas and Li, Boxuan and Raj, Harsh and Bercovich, Ivan and Shi, Lin and Shin, Jeong Yeon and Walshe, Thomas and Buchanan, E. Kelly and others},
+  journal = {arXiv preprint arXiv:2601.11868},
+  year    = {2026}
 }
 
-@misc{placeholder-tau2,
-  title        = {tau2-bench: Evaluating Conversational Tool-Use Agents with a User Simulator},
-  author       = {{tau2-bench Authors}},
-  year         = {2025},
-  howpublished = {\url{}},
-  note         = {TODO(author): complete real citation for the tool-calling dialogue benchmark; see also tau-bench (Yao et al. 2024)}
+@article{barres2025tau,
+  title   = {{$\tau^2$}-Bench: Evaluating Conversational Agents in a Dual-Control Environment},
+  author  = {Barres, Victor and Dong, Honghua and Ray, Soham and Si, Xujie and Narasimhan, Karthik},
+  journal = {arXiv preprint arXiv:2506.07982},
+  year    = {2025}
 }
 
-@article{placeholder-mcnemar,
-  title   = {Note on the Sampling Error of the Difference between Correlated Proportions or Percentages},
-  author  = {McNemar, Quinn},
-  journal = {Psychometrika},
-  volume  = {12},
-  number  = {2},
-  pages   = {153--157},
-  year    = {1947},
-  note    = {TODO(author): verify}
+@article{tayebati2026tracer,
+  title   = {TRACER: Trajectory Risk Aggregation for Critical Episodes in Agentic Reasoning},
+  author  = {Tayebati, Sina and Kumar, Divake and Darabi, Nastaran and Ettori, Davide and Krishnan, Ranganath and Trivedi, Amit Ranjan},
+  journal = {arXiv preprint arXiv:2602.11409},
+  year    = {2026}
 }
 
-@article{placeholder-bootstrap,
-  title   = {Bootstrap Methods: Another Look at the Jackknife},
-  author  = {Efron, Bradley},
-  journal = {The Annals of Statistics},
-  volume  = {7},
-  number  = {1},
-  pages   = {1--26},
-  year    = {1979},
-  note    = {TODO(author): verify}
+@article{zhao2024saup,
+  title   = {SAUP: Situation Awareness Uncertainty Propagation on LLM Agent},
+  author  = {Zhao, Qiwei and Zhao, Xujiang and Liu, Yanchi and Cheng, Wei and Sun, Yiyou and Oishi, Mika and Osaki, Takao and Matsuda, Katsushi and Yao, Huaxiu and Chen, Haifeng},
+  journal = {arXiv preprint arXiv:2412.01033},
+  year    = {2024}
 }
+
+@misc{Tayebati_pandaprobe_2026,
+  author       = {Tayebati, Sina},
+  title        = {{PandaProbe}},
+  year         = {2026},
+  month        = feb,
+  howpublished = {\url{https://github.com/chirpz-ai/pandaprobe}},
+  note         = {Version 0.1.0, Apache-2.0 license}
+}
+
+% ============================== PLACEHOLDERS (author to fill) =======================
+% Each renders as "([cite: <topic>] 20XX)". The topic is the KIND of work the location
+% needs, not a specific paper -- replace with the reference you choose.
+
+@misc{placeholder-reflexion,
+  author = {{[cite: verbal self-correction]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-selfrefine,
+  author = {{[cite: iterative refinement]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-critic,
+  author = {{[cite: tool-assisted critique]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-selfconsistency,
+  author = {{[cite: self-consistency]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-processreward,
+  author = {{[cite: process/outcome reward]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-llmjudge,
+  author = {{[cite: LLM-as-judge]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-memgpt,
+  author = {{[cite: agent memory]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-genagents,
+  author = {{[cite: episodic agent memory]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-voyager,
+  author = {{[cite: skill library]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-expel,
+  author = {{[cite: experiential learning]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-rag,
+  author = {{[cite: retrieval-augmented generation]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-constitutional,
+  author = {{[cite: rule-based steering]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-guardrails,
+  author = {{[cite: agent guardrails/observability]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-tta,
+  author = {{[cite: test-time adaptation]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-catforget,
+  author = {{[cite: catastrophic forgetting]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-mcnemar,
+  author = {{[cite: McNemar test]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}
+
+@misc{placeholder-bootstrap,
+  author = {{[cite: bootstrap confidence interval]}}, title = {Placeholder}, year = {20XX},
+  note = {TODO(author): cite the intended reference}}

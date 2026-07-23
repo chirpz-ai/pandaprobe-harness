@@ -38,7 +38,7 @@
 /TemplateVersion (2027.1)
 }
 
-% --- notation macros (keep symbols consistent everywhere, incl. results) ---
+% notation macros (keep symbols consistent everywhere, incl. results)
 \newcommand{\ind}{\mathbf{1}}                     % indicator
 \newcommand{\Rset}{\mathcal{R}}                   % active/candidate rule set
 \newcommand{\evalfn}{\mathcal{E}}                 % session-level evaluation service
@@ -65,12 +65,12 @@
 Large language model (LLM) agents that are \emph{capable} on a task are not necessarily
 \emph{reliable} on it: the same agent, run repeatedly, frequently succeeds on some trials and
 fails on others, and quality tends to drift over long horizons. Peak-performance metrics such
-as $\passone$ hide this variance, whereas the stricter reliability metric $\passk$---the
-fraction of tasks solved on \emph{all} $k$ independent trials---exposes it. We present a
+as $\passone$ hide this variance, whereas the stricter reliability metric $\passk$, the
+fraction of tasks solved on \emph{all} $k$ independent trials, exposes it. We present a
 \emph{self-healing agent harness} (hereafter \emph{the Harness}): a runtime envelope that wraps
 an arbitrary LLM agent loop and, with no human in the loop, (i) \emph{detects} its own quality
 degradations from a session-level agent-evaluation service, (ii) posts structured diagnostic
-notices to a workspace that the agent \emph{pulls} on its own initiative---nothing is injected
+notices to a workspace that the agent \emph{pulls} on its own initiative, with nothing injected
 into the conversation, (iii) lets the agent author corrective operating \emph{rules}, and (iv)
 admits each rule only after it passes an empirical \emph{evidence gate}: a replay of the
 captured failure or a forward trial over subsequent live sessions, with a regression guard
@@ -79,9 +79,7 @@ agent's policy-inducing context and cast rule validation as paired empirical imp
 testing with a multi-metric non-regression constraint. We evaluate the Harness with an A/B
 protocol (identical agent, baseline vs.\ Harness) across three agent benchmarks spanning tool
 use, digital work, and terminal tasks, reporting $\passone$ and $\passk$ with paired
-significance tests. \textbf{Findings are forthcoming:} the study's runs are in progress; the
-Harness is designed to raise $\passk$ (reliability) more than $\passone$ (peak
-capability)---the headline effect is a placeholder [TODO] pending completion of the runs.
+significance tests.
 \end{abstract}
 
 % =====================================================================================
@@ -91,8 +89,8 @@ capability)---the headline effect is a placeholder [TODO] pending completion of 
 Progress on LLM agents is usually reported as \emph{capability}: can the agent, at its best,
 solve the task? But deployment demands \emph{reliability}: does it solve the task \emph{every}
 time it is asked? These are different properties, and the gap between them is large. Because
-modern agents are stochastic---and, increasingly, because frontier models do not expose a
-temperature control, so sampling variation cannot even be turned off---repeated runs of the
+modern agents are stochastic (and, increasingly, because frontier models do not expose a
+temperature control, so sampling variation cannot even be turned off), repeated runs of the
 same agent on the same task yield different outcomes. A metric like $\passone$ (did the first
 trial pass?) rewards a lucky draw; the stricter $\passk$ (did \emph{all} $k$ independent trials
 pass?) is a direct measure of reliability and is typically far lower. Closing this
@@ -109,12 +107,12 @@ from scratch, trial after trial. Reliability is precisely a \emph{cross-episode}
 mechanism that neither persists nor verifies its corrections is poorly matched to it.
 
 We propose to close the loop. The Harness wraps an arbitrary agent loop as a non-blocking
-runtime envelope and runs a four-stage cycle---\textbf{Detect}, \textbf{Notice}, \textbf{Heal},
-\textbf{Validate}---across episodes (Figure~\ref{fig:overview}). Degradations are detected from
+runtime envelope and runs a four-stage cycle (\textbf{Detect}, \textbf{Notice}, \textbf{Heal},
+\textbf{Validate}) across episodes (Figure~\ref{fig:overview}). Degradations are detected from
 a session-level evaluation service; they are surfaced as diagnostic notices in a filesystem
 workspace that the agent \emph{pulls} from on its own initiative (a deliberate design choice we
 call the \emph{pull model}: the Harness never writes into the agent's conversation); the agent
-authors a corrective \emph{rule}; and---crucially---the rule is admitted to the agent's
+authors a corrective \emph{rule}; and, crucially, the rule is admitted to the agent's
 operating context only after it passes an \emph{evidence gate}. The gate either \emph{replays}
 the captured failure under the new rule and checks for measured improvement, or runs a
 \emph{forward trial} over subsequent live sessions and compares breach rates, in both cases
@@ -128,22 +126,27 @@ trusted.
 
 \paragraph{Contributions.}
 \begin{enumerate}\itemsep2pt
-\item A \textbf{formalism} for a self-healing agent harness: the session evaluator and
-breach/trend signals, a task-conditioned context-composition operator $\rho$ for rule
-retrieval, and the self-heal operator $\Heal$ decomposed into \emph{propose} and \emph{gate}
-(\S\ref{sec:harness}).
-\item An \textbf{evidence-gating mechanism} for self-authored rules---a forward-trial test on a
-difference of breach proportions and a replay-based paired improvement test with a multi-metric
-non-regression constraint---plus a corpus-level regression guard against forgetting, all with
-the exact predicates and margins used in our implementation
-(\S\ref{sec:validate}--\S\ref{sec:regression}).
-\item A \textbf{three-benchmark A/B protocol} for measuring agent reliability, with a
-learning/frozen-eval phase design, $\passone$ vs.\ $\passk$ estimators, McNemar and bootstrap
-significance tests, and two explicit methodological checkpoints (metric--failure calibration; a
-rule-promotion gate) (\S\ref{sec:setup}).
-\item \textbf{Findings (forthcoming).} The study is running; \S\ref{sec:results} provides the
-full analysis scaffolding---tables, significance procedure, ablations---with results reported
-as placeholders to be completed as runs land.
+\item \textbf{Self-healing as a drop-in reliability layer.} We deliver self-healing as a runtime
+envelope that wraps an \emph{arbitrary} LLM agent loop (model-, framework-, and task-agnostic,
+non-blocking, and separated from the agent by a strict \emph{pull-model} boundary that never
+mutates the transcript), letting the agent continually improve its own policy-inducing context
+across episodes with no weight updates, no human labels, and no human in the loop. To our
+knowledge it is the first self-correction loop in which \emph{every} self-authored change must
+pass an empirical test before it can influence behavior.
+\item \textbf{An evidence gate that makes self-improvement trustworthy.} We formalize rule
+validation as a replay-based paired improvement test with a multi-metric non-regression
+constraint together with a forward-trial test on breach proportions, backed by a corpus-level
+regression guard against catastrophic forgetting (\S\ref{sec:validate}, \S\ref{sec:regression}).
+This converts unbounded self-modification into \emph{bounded, auditable, and reversible}
+adaptation, and it closes an observability-to-autonomy loop: production session-quality signals
+(grounded in trajectory-risk and uncertainty-propagation research) drive the agent's own
+corrections through a concrete formalism for the seams (the retrieval operator $\rho$ and the
+self-heal operator $\Heal$; \S\ref{sec:harness}).
+\item \textbf{A reliability-first evaluation protocol.} We reframe agent progress around
+\emph{reliability} ($\passk$: all $k$ trials pass) rather than peak capability ($\passone$), and
+give a paired A/B protocol (metric--failure calibration and rule-promotion checkpoints, an
+explicit token-overhead confound, and standard paired significance tests) over three agent
+benchmarks (\S\ref{sec:setup}).
 \end{enumerate}
 
 % =====================================================================================
@@ -190,7 +193,7 @@ is not covered by the above lines of work.
 \paragraph{Reliability metrics and benchmarks.} We measure reliability with $\passk$ (all $k$
 trials pass), a stricter sibling of $\passone$, on three public agent benchmarks spanning
 digital work, terminal tasks, and tool-calling dialogue
-\citep{placeholder-appworld,placeholder-terminalbench,placeholder-tau2}. Paired significance
+\citep{trivedi2024appworld,merrill2026terminal,barres2025tau}. Paired significance
 follows standard practice: McNemar's test on discordant pairs \citep{placeholder-mcnemar} and a
 bootstrap confidence interval on the paired delta \citep{placeholder-bootstrap}.
 
@@ -239,8 +242,8 @@ $k$ & trials per task in evaluation \\
 $\evalfn$ scores the session (\textbf{Detect}); breaches and declining trends become diagnostic
 notices posted to a filesystem workspace (\textbf{Notice}); the agent \emph{pulls} a notice, inspects
 its own flagged traces, and authors a corrective rule (\textbf{Heal}); the rule enters as a
-\emph{candidate} and is promoted to \emph{active} only after passing an evidence gate---a replay of
-the captured failure or a forward trial---and retired if it regresses (\textbf{Validate}). The
+\emph{candidate} and is promoted to \emph{active} only after passing an evidence gate (a replay of
+the captured failure or a forward trial), and retired if it regresses (\textbf{Validate}). The
 dashed vertical line is the \emph{pull-model boundary}: the workspace is never injected into the
 agent's conversation. \textit{(Placeholder schematic; see \texttt{figures/overview.tex} for the
 author's redraw notes.)}}
@@ -257,15 +260,33 @@ metric vector
   \mvec(s) = \bigl(m_1(s),\dots,m_d(s)\bigr) \in [0,1]^d,
   \label{eq:metricvec}
 \end{equation}
-with higher values better. In our setting $d{=}2$, with $m_1$ a session \emph{reliability}
-score and $m_2$ a session \emph{consistency} score. The service is reached through a
-command-line interface exposing a request/response contract (arguments in, JSON out); this
-narrow seam is why the Harness core carries no runtime dependency on the service and can be
-exercised against an in-process stand-in. Every call degrades gracefully to a \emph{pending}
-(missing) score on failure, so the evaluation path never blocks or raises into the host agent
-loop.
+with higher values better. In our study the evaluator $\evalfn$ is instantiated by
+PandaProbe~\citep{Tayebati_pandaprobe_2026}, an open-source agent-engineering and evaluation
+platform, and $d{=}2$: $m_1$ is a session \emph{reliability} score and $m_2$ a session
+\emph{consistency} score, both in $[0,1]$ (higher is better).
+The service is reached through a command-line interface exposing a request/response contract
+(arguments in, JSON out); this narrow seam is why the Harness core carries no runtime dependency
+on the service and can be exercised against an in-process stand-in. Every call degrades gracefully
+to a \emph{pending} (missing) score on failure, so the evaluation path never blocks or raises into
+the host agent loop.
 
-For metric $j$ with threshold $\tau_j$ (default $\tau_j{=}0.5$), the \emph{point-breach}
+\paragraph{Session-quality metrics.} Both metrics aggregate the same per-trace signals (model
+confidence, loop detection, tool-call correctness, and coherence) into a single session score,
+but with different intent. \emph{Reliability} captures \emph{worst-case} risk: each signal is
+converted to a per-trace risk and the session score is a tail-risk aggregate over the most at-risk
+traces (a top-$k$ tail blended with the single worst trace), so one catastrophic trace sinks the
+score even when the rest are clean. This aggregation follows the trajectory-risk formulation of
+TRACER~\citep{tayebati2026tracer}, which aggregates risk over the critical episodes of an agent
+trajectory. \emph{Consistency} instead captures \emph{stability}: each trace's confidence-based
+uncertainty is amplified by penalties from the other signals, and the per-trace uncertainties are
+combined by a root-mean-square across the session, so many moderate deviations score poorly even
+when no single trace is catastrophic. This aggregation follows the situational
+uncertainty-propagation formulation of SAUP~\citep{zhao2024saup}, which propagates step-wise
+uncertainty under situational weighting. The two are complementary: reliability is sensitive to
+rare, severe failures and consistency to pervasive instability, and the Harness treats a breach of
+\emph{either} as a degradation.
+
+For metric $j$ with threshold $\tau_j$, the \emph{point-breach}
 indicator is
 \begin{equation}
   b_j(s) = \ind\!\left[\,m_j(s) \ne \varnothing \ \wedge\ m_j(s) < \tau_j\,\right],
@@ -320,8 +341,8 @@ text, rationale, and metric). Its relevance to $Q$ is
   %         text excludes tag tokens, normalized by |Q|
 \end{equation}
 i.e.\ a tag-token match is weighted $2.0$, a (non-tag) text-token match $1.0$, and the score is
-normalized by query size. Retrieval returns \emph{all} untagged (``global'') rules---which are
-always eligible and exempt from the cutoff---together with the $\topk$ tagged rules by score:
+normalized by query size. Retrieval returns \emph{all} untagged (``global'') rules, which are
+always eligible and exempt from the cutoff, together with the $\topk$ tagged rules by score:
 \begin{equation}
   \rho(\Rset,q) = \mathrm{render}\!\Bigl( G(\Rset)\ \cup\ \operatorname*{top-}k_{\;r\in \Rset\setminus G}\ \mathrm{score}(r,Q) \Bigr),
   \label{eq:rho}
@@ -484,9 +505,9 @@ first, then failures) under the current rule set and classifies each case from i
   % source: validation/regression.py _classify (regressed checked FIRST)
 \end{equation}
 Regression is checked first, so it dominates. The run is \emph{clean} iff no case is classified
-regressed. This provides a bounded guarantee---\emph{no admitted rule set regresses a
+regressed. This provides a bounded guarantee: \emph{no admitted rule set regresses a
 previously-passing case by more than $\dregress$ on any metric, within the replay coverage of
-the eval-set}---and its limits are exactly that coverage: cases that cannot be replayed are
+the eval-set}. Its limits are exactly that coverage; cases that cannot be replayed are
 skipped (and reported as such), so the guard is only as strong as the captured corpus.
 
 \subsection{The pull model and the healing action space}
@@ -498,7 +519,7 @@ append-only journal), and \emph{nothing is injected into the agent's conversatio
 reads them only by invoking tools, on its own initiative; a standing protocol in its system
 context tells it how. This keeps the transcript clean, makes healing auditable, and avoids
 fighting the host framework for control of the message stream. Second, healing is performed
-through a self-diagnostic \emph{toolset} of $14$ operations---read/acknowledge notices, inspect
+through a self-diagnostic \emph{toolset} of $14$ operations: read/acknowledge notices, inspect
 flagged traces and score history, browse the journal, add/retire/inspect rules, search and list
 the rule set, assemble a cross-run reflection, and list/attach eval cases. Every operation
 returns a structured result and never raises into the agent loop, so a malformed self-diagnosis
@@ -528,10 +549,10 @@ $k$ & rules in context (\topk) & $8$ \\
 $n$ & forward-trial window & $5$ \\
 $\dpromote$ & promote margin & $0.05$ \\
 $\dregress$ & regress margin & $0.05$ \\
---- & max active rules & $50$ \\
---- & max replay attempts & $3$ \\
---- & failure / win cases replayed & $3\,/\,2$ \\
---- & validation / retrieval / capture & on/on/off \\
+-- & max active rules & $50$ \\
+-- & max replay attempts & $3$ \\
+-- & failure / win cases replayed & $3\,/\,2$ \\
+-- & validation / retrieval / capture & on/on/off \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -543,20 +564,24 @@ $\dregress$ & regress margin & $0.05$ \\
 We evaluate the Harness with a paired A/B protocol: the \emph{same} agent code, models,
 prompts, and task sets in every arm, with the only difference being whether the Harness is
 wired in. This isolates the effect of self-healing from the agent's underlying capability.
+Throughout, the session-quality metrics that drive the Harness are supplied by the PandaProbe
+platform (\S\ref{sec:setup-formal}) through its command-line interface; the same platform,
+metrics, and breach thresholds are used across all arms and seeds, so the evaluation signal is
+identical in the baseline and Harness runs.
 
 \subsection{Benchmarks}
 We use three public agent benchmarks chosen because each exposes a reliability signal and
 stresses a different competency:
 \begin{itemize}\itemsep2pt
-\item \textbf{Digital-work benchmark} \citep{placeholder-appworld}: multi-step tasks over apps
-and APIs, scored by task- and scenario-goal completion plus a \emph{no-collateral-damage} check
-(the agent must not corrupt unrelated state). We use its development split (57 tasks).
-\item \textbf{Terminal-task benchmark} \citep{placeholder-terminalbench}: command-line tasks
-executed in a sandbox, run through a standard agent-orchestration layer with a per-attempt
-binary reward. We use a stratified subset ($\approx\!30$ tasks).
-\item \textbf{Tool-calling dialogue benchmark} \citep{placeholder-tau2}: a customer-service
-setting with an LLM-simulated user and an orchestrator; it reports $\passk$ natively. We use
-one domain's task set.
+\item \textbf{AppWorld}~\citep{trivedi2024appworld}: multi-step tasks over a controllable world of
+apps and APIs, scored by task- and scenario-goal completion plus a \emph{no-collateral-damage}
+check (the agent must not corrupt unrelated state). We use its development split (57 tasks).
+\item \textbf{Terminal-Bench}, driven through the Harbor harness~\citep{merrill2026terminal}:
+hard, realistic command-line tasks executed in a sandboxed container, with a per-attempt binary
+reward. We use a stratified subset ($\approx\!30$ tasks).
+\item \textbf{$\tau^2$-bench}~\citep{barres2025tau}: a dual-control, tool-calling dialogue
+benchmark in which an LLM-simulated user and the agent act on a shared customer-service
+environment; it reports $\passk$ natively. We use one domain's task set (retail).
 \end{itemize}
 Each benchmark's native pass/fail is the ground truth; the evaluation service's metrics drive
 only the Harness's internal machinery.
@@ -564,12 +589,12 @@ only the Harness's internal machinery.
 \subsection{Arms}
 \label{sec:arms}
 \begin{itemize}\itemsep2pt
-\item \textbf{A --- baseline:} the agent loop with no Harness (no preamble, no toolset, no
+\item \textbf{A, baseline:} the agent loop with no Harness (no preamble, no toolset, no
 self-healing).
-\item \textbf{B --- Harness:} the full loop, context preamble with retrieved rules, the
+\item \textbf{B, Harness:} the full loop, context preamble with retrieved rules, the
 $14$-operation toolset, per-trial evaluation and candidate validation, eval-case capture on,
 replay wired.
-\item \textbf{B$'$ --- Harness, no-validation (ablation, flag-gated):} identical to B but rules
+\item \textbf{B$'$, Harness without validation (flag-gated ablation):} identical to B but rules
 activate immediately (the gate of \S\ref{sec:validate} is bypassed). This isolates the
 contribution of validation and is run only where budget permits.
 \end{itemize}
@@ -604,7 +629,7 @@ $X_{t,i}\in\{0,1\}$,
 \end{align}
 i.e.\ $\passone$ counts tasks whose \emph{first} trial passed and $\passk$ counts tasks whose
 \emph{all} $k$ trials passed. Our central hypothesis is that the Harness raises $\passk$
-(reliability) more than $\passone$ (peak capability)---equivalently, that it reduces
+(reliability) more than $\passone$ (peak capability); equivalently, that it reduces
 trial-to-trial variance.
 
 \paragraph{Paired significance.} Comparisons are paired per task between the baseline ($B$) and
@@ -641,8 +666,8 @@ in, so we gate expensive runs on them.
 \item \textbf{Checkpoint 1 (metric--failure calibration).} The evaluation metrics were designed
 for production sessions; whether they correlate with \emph{benchmark} task failure is an
 empirical question. After the first learning run of each benchmark we calibrate the breach
-predicate against the benchmark's own pass/fail labels---precision, recall, and F1 over a
-threshold sweep---and, if needed, adjust $\tau$ per the sweep (the same $\tau$ for all arms and
+predicate against the benchmark's own pass/fail labels (precision, recall, and F1 over a
+threshold sweep) and, if needed, adjust $\tau$ per the sweep (the same $\tau$ for all arms and
 seeds of a benchmark). \emph{If no threshold yields usable signal, arm B is inert and we report
 that null mechanism as a finding rather than papering over it.}
 \item \textbf{Checkpoint 2 (rules promoted before eval).} With a short learning phase, the
@@ -668,9 +693,9 @@ per turn so that any effect on $\passk$ can be read alongside its price.
 \toprule
 Benchmark & Split & \#learn & \#eval & $k$ & turns \\
 \midrule
-Digital  & dev      & \TBD & \TBD & 4 & 100 \\
-Terminal & subset   & \TBD & \TBD & 4 & 100 \\
-Dialogue & 1 domain & \TBD & \TBD & 4 & 100 \\
+AppWorld       & dev    & \TBD & \TBD & 4 & 100 \\
+Terminal-Bench & subset & \TBD & \TBD & 4 & 100 \\
+$\tau^2$-bench & retail & \TBD & \TBD & 4 & 100 \\
 \midrule
 \multicolumn{6}{@{}l}{\small Seeds $\{1,2,3\}$; arms A, B, B$'$; forward-trial window $n{=}3$.} \\
 \bottomrule
@@ -711,12 +736,12 @@ paired outcomes. \emph{Numbers forthcoming pending completion of the runs.}}
 \cmidrule(lr){3-5}\cmidrule(lr){6-8}
 Benchmark & Model & B & H & $\Delta$ & B & H & $\Delta$ & CI$_{95}(\Delta\passk)$ & McNemar $p$ \\
 \midrule
-Digital-work  & frontier & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
-Digital-work  & small    & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
-Terminal-task & frontier & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
-Terminal-task & small    & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
-Tool-dialogue & frontier & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
-Tool-dialogue & small    & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+AppWorld       & frontier & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+AppWorld       & small    & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+Terminal-Bench & frontier & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+Terminal-Bench & small    & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+$\tau^2$-bench & frontier & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
+$\tau^2$-bench & small    & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -744,13 +769,13 @@ $\Delta\passone$-vs-$\Delta\passk$ bar variant.}
 
 \subsection{Harness telemetry and cost}
 \label{sec:telemetry}
-Table~\ref{tab:telemetry} reports what the Harness actually did---rules proposed, promoted, and
+Table~\ref{tab:telemetry} reports what the Harness actually did (rules proposed, promoted, and
 retired; notices raised; the breach rate; and the mean number of rules rendered into
-context---next to its price: added input tokens per turn and latency overhead versus baseline.
+context) next to its price: added input tokens per turn and latency overhead versus baseline.
 This table lets a reader weigh any reliability gain against the token-overhead confound
 (\S\ref{sec:confound}): a gain in $\passk$ accompanied by a large per-turn token premium is a
 different result than the same gain at near-zero overhead. It also surfaces degenerate
-regimes---many notices but no promotions (the gate rejecting everything), or promotions with no
+regimes: many notices but no promotions (the gate rejecting everything), or promotions with no
 measured gain (rules that pass the gate but do not generalize).
 
 \begin{table}[t]
@@ -760,7 +785,7 @@ measured gain (rules that pass the gate but do not generalize).
 \label{tab:telemetry}
 \begin{tabular}{@{}lccc@{}}
 \toprule
-Quantity & Digital & Terminal & Dialogue \\
+Quantity & AppWorld & Terminal & $\tau^2$ \\
 \midrule
 rules proposed        & \TBD & \TBD & \TBD \\
 rules promoted        & \TBD & \TBD & \TBD \\
@@ -781,7 +806,7 @@ Harness:
 \begin{itemize}\itemsep2pt
 \item \textbf{No-validation} (arm B$'$): rules activate immediately. This isolates the
 \emph{evidence gate}. If validation matters, removing it should \emph{lower} $\passk$ (unproven
-rules, including harmful ones, take effect)---and it may raise variance.
+rules, including harmful ones, take effect), and it may raise variance.
 \item \textbf{No-retrieval:} all active rules are rendered rather than the $\topk$ relevant
 ones (Eq.~\eqref{eq:rho}). This isolates \emph{task-conditioned retrieval}; the expected effect
 is higher token cost and, on larger rule sets, distraction that can erode $\passk$.
@@ -802,7 +827,7 @@ full Harness. \emph{Numbers forthcoming.}}
 \toprule
 Variant & $\passone$ & $\passk$ & $\Delta\passk$ vs.\ full \\
 \midrule
-Full Harness         & \TBD & \TBD & --- \\
+Full Harness         & \TBD & \TBD & -- \\
 \ \ no-validation (B$'$) & \TBD & \TBD & \TBD \\
 \ \ no-retrieval     & \TBD & \TBD & \TBD \\
 \ \ replay-only      & \TBD & \TBD & \TBD \\
@@ -835,7 +860,7 @@ executed). The terminal-task and tool-dialogue integrations were implemented aga
 benchmarks' real APIs but were \emph{not} run end-to-end at build time (they were exercised
 only through the mock/dry-run pipeline). The statistical machinery
 (Eqs.~\eqref{eq:pass1}--\eqref{eq:bootstrap}) is unit-tested but has not yet been run on real
-study data, and both checkpoints of \S\ref{sec:checkpoints} are built but unexecuted---so no
+study data, and both checkpoints of \S\ref{sec:checkpoints} are built but unexecuted, so no
 calibration F1 or rule-promotion counts exist yet. We will update these as runs complete.
 
 \paragraph{Intrinsic trial variance.} Because the models reject temperature control, we cannot
@@ -851,15 +876,15 @@ representations, or other agent architectures is open (\S\ref{sec:conclusion}).
 \label{sec:conclusion}
 
 We presented a self-healing agent harness that closes the loop on agent \emph{reliability}: it
-detects its own degradations, lets the agent author corrective rules, and---unlike open-loop
-self-correction---admits each rule only after it passes an empirical evidence gate, with a
+detects its own degradations, lets the agent author corrective rules, and, unlike open-loop
+self-correction, admits each rule only after it passes an empirical evidence gate, with a
 regression guard against forgetting. We cast the loop as an evidence-gated operator on the
 agent's policy-inducing context and gave the exact retrieval, promotion, and regression
 predicates used in our implementation, together with a three-benchmark A/B protocol for
 measuring the $\passone$ vs.\ $\passk$ reliability gap. The empirical verdict is forthcoming.
 
-Several directions follow. \textbf{Richer rule representations}---structured or parameterized
-rules, or rules with preconditions---could raise the ceiling on what a single promotion can
+Several directions follow. \textbf{Richer rule representations} (structured or parameterized
+rules, or rules with preconditions) could raise the ceiling on what a single promotion can
 fix. \textbf{Multi-metric, vector-valued validation} would replace the scalar
 target/non-regression split of \S\ref{sec:validate} with a Pareto criterion.
 \textbf{Cross-agent rule sharing} raises the question of when a rule validated for one agent
