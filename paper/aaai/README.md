@@ -9,7 +9,7 @@ The AAAI 2027 style **requires pdfLaTeX** (it has an engine guard and will *not*
 XeLaTeX / LuaLaTeX / tectonic). On Overleaf, set the compiler to "pdfLaTeX" (the default). Locally:
 
 ```bash
-cd paper
+cd paper/aaai
 pdflatex main
 bibtex   main
 pdflatex main
@@ -26,7 +26,7 @@ key is missing. There should be no missing-file or undefined-**reference** (cros
 ## Layout
 
 ```
-paper/
+paper/aaai/                      # this AAAI paper (sibling folders under paper/ hold other papers)
 ├── main.tex                     # the full paper (all sections)
 ├── references.bib               # every \cite key resolves; all flagged for author verification
 ├── aaai2027.sty                 # official AAAI 2027 style (do not modify)
@@ -36,6 +36,7 @@ paper/
 │   └── results.tex              # Fig 2 — learning-dynamics placeholder (self-contained TikZ; \input-ed)
 └── README.md                    # this file
 ```
+(`paper/.gitignore` covers LaTeX build artifacts for all sub-folders.)
 
 ## AAAI compliance notes (already applied)
 
@@ -89,5 +90,5 @@ paper/
    your product name, benchmark-suite name, company, author name(s), any project domains, and any
    env-var prefixes (kept out of this README so the sweep does not match itself):
    ```bash
-   grep -riE '<identifiers>' paper/   # e.g. product|company|suite|author|domains|ENV_PREFIX
+   grep -riE '<identifiers>' paper/aaai/   # e.g. product|company|suite|author|domains|ENV_PREFIX
    ```
