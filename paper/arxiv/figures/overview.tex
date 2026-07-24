@@ -1,0 +1,67 @@
+% Figure 1: PandaProbe Harness architecture and self-heal loop.
+
+\begin{tikzpicture}[
+    font=\small,
+    >={Stealth[length=2mm]},
+    stage/.style={draw, rounded corners, align=center, minimum width=20mm,
+                  minimum height=9mm, fill=black!4, thick},
+    store/.style={draw, align=center, minimum width=16mm, minimum height=7mm,
+                  fill=blue!5, font=\footnotesize},
+    agent/.style={draw, rounded corners, align=center, minimum width=26mm,
+                  minimum height=16mm, fill=black!2, very thick},
+    lbl/.style={font=\scriptsize\itshape, align=center},
+    node distance=9mm and 12mm,
+]
+
+% --- Agent side (left) ---
+\node[agent] (agent) {\textbf{LLM agent loop}\\[2pt]\footnotesize policy $\pi$\\[2pt]
+                      \footnotesize context $c(R,q)$};
+
+% --- Four stages of the loop (right), arranged in a cycle ---
+\node[stage, right=26mm of agent, yshift=15mm] (detect)  {\textbf{Detect}\\[1pt]\scriptsize $E$ scores\\[-1pt]\scriptsize session $s$};
+\node[stage, right=8mm of detect]              (notice)  {\textbf{Notice}\\[1pt]\scriptsize post to\\[-1pt]\scriptsize mailbox};
+\node[stage, below=14mm of notice]             (validate){\textbf{Validate}\\[1pt]\scriptsize gate rule\\[-1pt]\scriptsize (evidence)};
+\node[stage, below=14mm of detect]             (heal)    {\textbf{Heal}\\[1pt]\scriptsize agent writes\\[-1pt]\scriptsize a rule};
+
+% cyclic arrows Detect -> Notice -> Heal -> Validate -> Detect
+\draw[->, thick] (detect) -- (notice);
+\draw[->, thick] (notice) -- (validate);
+\draw[->, thick] (validate) -- (heal);
+\draw[->, thick] (heal) -- (detect);
+
+% --- Workspace substrate (bottom) ---
+\node[store, below=20mm of heal, xshift=-4mm] (mailbox) {mailbox};
+\node[store, right=5mm of mailbox]            (rules)   {rules store};
+\node[store, right=5mm of rules]              (evalset) {eval-set};
+\node[store, right=5mm of evalset]            (journal) {journal};
+\begin{scope}[on background layer]
+  \node[draw, dashed, rounded corners, fit=(mailbox)(journal),
+        inner sep=3mm, label={[font=\footnotesize\bfseries]below:Workspace (append-only, on disk)}] (ws) {};
+\end{scope}
+
+% --- Evidence gate state machine (candidate -> active -> retired) ---
+\node[store, right=16mm of validate, yshift=6mm]  (cand)  {candidate};
+\node[store, above=3mm of cand]                   (act)   {active};
+\node[store, below=3mm of cand]                   (ret)   {retired};
+\draw[->] (cand) -- node[lbl,right]{promote} (act);
+\draw[->] (cand) -- node[lbl,right]{retire}  (ret);
+\draw[->] (act.east) to[out=0,in=0] node[lbl,right]{regress} (ret.east);
+\node[lbl, above=1pt of act] {Evidence gate};
+
+% --- Pull-model boundary (dashed vertical line between agent and harness) ---
+\coordinate (btop) at ($(agent.north east)!0.5!(detect.north west) + (0,10mm)$);
+\coordinate (bbot) at (btop |- ws.south);
+\draw[dashed, gray] (btop) -- (bbot)
+      node[midway, sloped, above, font=\scriptsize\bfseries, gray] {pull-model boundary};
+
+% agent PULLS from workspace (arrow FROM workspace TO agent, labelled "pull")
+\draw[->, dashed] (ws.west) to[out=180,in=270] node[lbl,below left]{agent pulls\\notices \& rules} (agent.south);
+% the loop's stages read/write the workspace (harness side only)
+\draw[->, dotted] (notice.south) to[out=270,in=90] (mailbox.north);
+\draw[->, dotted] (heal.south)   to[out=270,in=90] (rules.north);
+\draw[->, dotted] (validate.south) to[out=270,in=90] (evalset.north);
+
+% Detect reads the agent's session (the only arrow crossing toward the harness)
+\draw[->] (agent.north) to[out=90,in=180] node[lbl,above]{session $s$} (detect.west);
+
+\end{tikzpicture}

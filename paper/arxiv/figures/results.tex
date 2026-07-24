@@ -1,0 +1,23 @@
+% Learning-dynamics placeholder. Curves are schematic and contain no measured
+% values.
+
+\begin{tikzpicture}[font=\small, >={Stealth[length=2mm]}]
+  \def\W{66mm} \def\H{38mm}
+  \draw[->] (0,0) -- (\W,0);
+  \draw[->] (0,0) -- (0,\H) node[above, font=\scriptsize] {pass rate};
+  \draw[->] (\W,0) -- (\W,\H) node[above, font=\scriptsize] {\#rules};
+  \node[font=\scriptsize] at (0.5*\W,-5mm) {learning task-trial index $\rightarrow$};
+
+  \draw[thick, black]
+      (0,6mm) .. controls (18mm,10mm) and (30mm,25mm) .. (44mm,30mm)
+              .. controls (54mm,32mm) and (60mm,32mm) .. (\W,32.5mm);
+  \node[font=\scriptsize, black, anchor=west] at (26mm,19mm) {harness pass rate (expected)};
+
+  \draw[thick, dashed, gray]
+      (0,1mm) -- (14mm,1mm) -- (14mm,8mm) -- (29mm,8mm) -- (29mm,16mm)
+      -- (43mm,16mm) -- (43mm,21mm) -- (\W,21mm);
+  \node[font=\scriptsize, gray, anchor=east] at (\W,25mm) {promoted rules (cum.)};
+
+  \node[draw, fill=black!4, rounded corners, font=\scriptsize\bfseries, align=center]
+       at (0.5*\W, \H+6mm) {PLACEHOLDER: schematic of expected shape;\\numbers forthcoming};
+\end{tikzpicture}

@@ -1,0 +1,712 @@
+% PandaProbe Harness branded arXiv preprint for agent builders and the
+% open-source community.
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage[left=0.76in,right=0.76in,top=0.72in,bottom=0.72in,columnsep=0.24in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{newtxtext,newtxmath}
+\usepackage[hyphens]{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{xspace}
+\usepackage{natbib}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
+\usepackage[colorlinks=true,allcolors=blue!55!black,hypertexnames=false]{hyperref}
+\hypersetup{
+  pdftitle={PandaProbe Harness: Evidence-Gated Self-Healing for Reliable LLM Agents},
+  pdfauthor={Sina Tayebati; PandaProbe Research Lab, Chirpz AI},
+  pdfsubject={Open-source self-healing runtime envelope for LLM agents},
+  pdfkeywords={LLM agents, reliability, self-healing, PandaProbe, evidence-gated validation}
+}
+
+\setlength{\columnsep}{0.24in}
+\setcounter{secnumdepth}{2}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{7pt plus 2pt minus 2pt}
+\setlength{\intextsep}{7pt plus 2pt minus 2pt}
+\captionsetup{font=small,labelfont=bf}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.75em}{}
+\titleformat{\subsection}{\fontsize{11}{13}\selectfont\bfseries}{\thesubsection}{0.75em}{}
+\frenchspacing
+
+\definecolor{codebg}{RGB}{246,248,250}
+\lstdefinestyle{pandacode}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\scriptsize,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framerule=0.25pt,
+  showstringspaces=false,
+  tabsize=4
+}
+\lstset{style=pandacode}
+
+% Notation for the self-healing mechanism and benchmark study.
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\Rset}{\mathcal{R}}
+\newcommand{\evalfn}{\mathcal{E}}
+\newcommand{\mvec}{\mathbf{m}}
+\newcommand{\Heal}{\mathcal{H}}
+\newcommand{\Breach}{\mathfrak{B}}
+\newcommand{\dpromote}{\delta_{\mathrm{prom}}}
+\newcommand{\dregress}{\delta_{\mathrm{reg}}}
+\newcommand{\passk}{\mathrm{pass}^{k}}
+\newcommand{\passone}{\mathrm{pass@}1}
+\newcommand{\TBD}{--}
+\newcommand{\topk}{\textsc{top-}k}
+\newcommand{\Harness}{\textsc{PandaProbe Harness}\xspace}
+\newcommand{\PandaProbe}{\textsc{PandaProbe}\xspace}
+
+\title{PandaProbe Harness: Evidence-Gated Self-Healing for Reliable LLM Agents}
+\author{
+  Sina Tayebati\\
+  \small PandaProbe Research Lab, Chirpz AI\\
+  \small \href{https://github.com/chirpz-ai/pandaprobe-harness}{github.com/chirpz-ai/pandaprobe-harness}
+}
+% TODO(author): confirm exact author spelling, affiliation, email, ORCID, and co-authors.
+\date{}
+
+\begin{document}
+
+% A wide title over a two-column body. The abstract begins the left column.
+\twocolumn[
+\begin{@twocolumnfalse}
+\maketitle
+\end{@twocolumnfalse}
+]
+
+\section*{Abstract}
+Large language model (LLM) agents that are \emph{capable} on a task are not necessarily
+\emph{reliable} on it: the same agent, run repeatedly, frequently succeeds on some trials and
+fails on others, and quality tends to drift over long horizons. Peak-performance metrics such
+as $\passone$ hide this variance, whereas the stricter reliability metric $\passk$, the
+fraction of tasks solved on \emph{all} $k$ independent trials, exposes it. We present
+\Harness, an open-source runtime envelope developed and maintained by the PandaProbe research lab
+that wraps an
+arbitrary LLM agent loop and, with no human in the loop, (i) \emph{detects} quality
+degradations using PandaProbe session metrics, (ii) posts structured diagnostic notices to an
+inspectable workspace that the agent \emph{pulls} on its own initiative, (iii) lets the agent
+author corrective operating \emph{rules}, and (iv) admits each rule only after an empirical
+\emph{evidence gate}: replay of the captured failure or a forward trial over subsequent live
+sessions, with a regression guard for past wins. We formalize the loop as an evidence-gated
+operator on the agent's policy-inducing context and cast rule validation as paired empirical
+improvement testing with a multi-metric non-regression constraint. We evaluate PandaProbe
+Harness with an A/B protocol across AppWorld, Terminal-Bench, and $\tau^2$-bench, reporting
+$\passone$ and $\passk$ with paired significance tests. The package, examples, and benchmark
+suite are publicly available; quantitative results remain forthcoming.
+
+\section{Introduction}
+\label{sec:intro}
+
+Progress on LLM agents is usually reported as \emph{capability}: can the agent, at its best,
+solve the task? Deployment demands \emph{reliability}: does it solve the task \emph{every}
+time it is asked? These are different properties. Modern agents are stochastic, and some
+frontier models do not expose temperature control, so repeated runs of the same agent on the
+same task yield different outcomes. A metric such as $\passone$ rewards a successful first
+draw; $\passk$ asks whether \emph{all} $k$ independent trials pass. Closing this
+\emph{reliability gap} is the problem we attack.
+
+A natural idea is to let the agent correct itself. Existing methods reflect on failed attempts
+and retry \citep{shinn2023reflexion,madaan2023selfrefine,gou2024critic}. Such open-loop
+self-correction has two limitations. First, it is \emph{unvalidated}: a plausible-sounding
+reflection is trusted immediately, even when it degrades behavior. Second, it is commonly
+\emph{within-episode}: the lesson does not reliably survive to the next task. Reliability is a
+cross-episode property, so a mechanism that neither persists nor verifies corrections is poorly
+matched to it.
+
+\Harness closes the loop. It wraps an arbitrary agent as a non-blocking runtime envelope and
+runs four stages across episodes: \textbf{Detect}, \textbf{Notice}, \textbf{Heal}, and
+\textbf{Validate} (Figure~\ref{fig:overview}). PandaProbe scores completed sessions. Diagnostic
+notices are persisted in a filesystem workspace that the agent pulls from; the Harness does not
+write evaluator content into the transcript. The agent authors a corrective rule, but that rule
+enters as a provisional candidate and becomes active only after replay or forward-trial evidence.
+Validated rules are retrieved into later prompts, while a replayable eval-set protects previous
+wins against regression.
+
+PandaProbe Harness is a Python package developed and maintained by PandaProbe, a research lab at
+Chirpz AI building open infrastructure for reliable agent systems. The core has zero runtime
+dependencies and reaches the PandaProbe platform only through the public
+\texttt{pandaprobe} CLI. Project resources are available at:
+\begin{itemize}[leftmargin=*,itemsep=0pt,topsep=2pt]
+\item \textbf{GitHub repository:}\\[-1pt]
+  \href{https://github.com/chirpz-ai/pandaprobe-harness}{\nolinkurl{https://github.com/chirpz-ai/}}\\[-1pt]
+  \href{https://github.com/chirpz-ai/pandaprobe-harness}{\nolinkurl{pandaprobe-harness}}
+\item \textbf{Documentation:}\\[-1pt]
+  \url{https://docs.pandaprobe.com/harness}
+\end{itemize}
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+\item \textbf{Self-healing as a drop-in reliability layer.} PandaProbe Harness wraps raw loops
+and common agent frameworks without weight updates, transcript mutation, or a human healing loop.
+Its workspace and journal make adaptation inspectable and reversible.
+\item \textbf{An evidence gate for self-improvement.} We formalize replay-based paired
+improvement with a multi-metric non-regression constraint, a forward-trial test on breach
+proportions, and a corpus-level regression guard (\S\ref{sec:validate}--\S\ref{sec:regression}).
+\item \textbf{A reliability-first evaluation protocol.} We compare baseline and Harness arms
+using $\passone$, $\passk$, metric--failure calibration, rule-promotion checkpoints, paired
+statistics, and explicit overhead accounting across three public benchmarks.
+\item \textbf{An open implementation surface.} The released package provides a small facade,
+six framework adapters, 14 diagnostic tools, offline examples, operator CLIs, and a reproducible
+benchmark project for community extension.
+\end{enumerate}
+
+\section{Background and Related Work}
+\label{sec:related}
+
+\paragraph{Self-refinement and reflection.}
+Iterative self-refinement can improve an answer \citep{madaan2023selfrefine}. Reflection on failed
+episodes \citep{shinn2023reflexion} and tool-assisted critique \citep{gou2024critic} provide
+related feedback loops. They largely adopt corrections without an external test. PandaProbe
+Harness persists corrections across episodes and admits them only after measured evidence.
+
+\paragraph{Verification and self-consistency.}
+Sampling reasoning paths and voting \citep{wang2023selfconsistency}, or scoring outputs with an
+LLM judge \citep{zheng2023judging}, improves inference-time selection but does not change the
+agent's standing operating context. We apply outcome-based verification to durable rules rather
+than individual answers.
+
+\paragraph{Agent memory and experiential learning.}
+Long-lived agent memory \citep{packer2023memgpt,park2023generative}, skill libraries
+\citep{wang2023voyager}, and retrieval-augmented generation \citep{lewis2020rag} let systems
+reuse experience. Harness rules are a compact, human-readable memory with an admission-control
+step: candidates are evidence-gated and may be retired.
+
+\paragraph{Steering, guardrails, and observability.}
+Rule-based steering \citep{bai2022constitutional} and runtime guardrails constrain or monitor
+behavior. Here rules are self-authored in response to PandaProbe session signals, and monitoring
+is closed back into the agent's policy-inducing context. The deterministic Harness owns storage,
+retrieval, validation, and regression; the model owns only diagnosis and proposal.
+
+\paragraph{Reliability metrics and benchmarks.}
+We measure reliability with $\passk$ on AppWorld, Terminal-Bench, and $\tau^2$-bench
+\citep{trivedi2024appworld,merrill2026terminal,barres2025tau}. Comparisons use McNemar's test
+\citep{mcnemar1947note} and paired bootstrap confidence intervals
+\citep{efron1993bootstrap}.
+
+\section{PandaProbe Harness}
+\label{sec:harness}
+
+We first fix notation (Table~\ref{tab:notation}), then define the four stages and the objects
+they operate on. Predicates, constants, and defaults below match the open-source implementation.
+
+\begin{table}[t]
+\centering
+\caption{Notation used throughout the paper.}
+\label{tab:notation}
+\begin{tabularx}{\columnwidth}{@{}lX@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$\pi$ & fixed agent policy being wrapped \\
+$s$ & one task-trial session \\
+$\evalfn$ & PandaProbe session evaluator \\
+$\mvec(s)\in[0,1]^d$ & metric vector; here $d{=}2$ \\
+$\tau_j$ & metric threshold (default $0.5$) \\
+$\Rset$ & active $\cup$ candidate rule set \\
+$c(\Rset,q)$ & policy-inducing context \\
+$\rho$ & rule retrieval/render operator \\
+$\Heal$ & self-heal operator \\
+$\Breach_t$ & breaches observed at step $t$ \\
+$\dpromote,\dregress$ & margins (default $0.05$) \\
+$p_0,\hat p$ & baseline/trial breach rates \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{\input{figures/overview}}
+\caption{\textbf{The PandaProbe Harness self-heal loop.} After each turn or task,
+PandaProbe scores the session (\textbf{Detect}); breaches and declining trends become notices in
+the workspace (\textbf{Notice}); the agent pulls a notice, inspects traces, and writes a rule
+(\textbf{Heal}); the candidate is promoted only after replay or a forward trial and is retired if
+it regresses (\textbf{Validate}). The dashed line is the pull-model boundary: the workspace is not
+injected into the conversation.}
+\label{fig:overview}
+\end{figure*}
+
+\subsection{Agent, session, and evaluator}
+\label{sec:setup-formal}
+
+An agent is a policy $\pi$ producing actions over a session $s$. PandaProbe implements a
+session-level evaluator $\evalfn$ that maps a completed session to
+\begin{equation}
+  \mvec(s)=\bigl(m_1(s),\ldots,m_d(s)\bigr)\in[0,1]^d,
+  \label{eq:metricvec}
+\end{equation}
+with higher values better. Here $d{=}2$. The components $m_1$ and $m_2$ are
+\texttt{agent\_reliability} and \texttt{agent\_consistency}, respectively. The Harness reaches
+PandaProbe through a CLI/JSON seam, keeping the core dependency-free and easy to exercise against
+a stand-in.
+Failures degrade to pending scores and never raise into the host loop.
+
+\paragraph{Session-quality metrics.}
+Both metrics aggregate confidence, loop detection, tool correctness, and coherence signals.
+Reliability captures worst-case risk through a tail-risk aggregate over the most at-risk traces,
+following TRACER \citep{tayebati2026tracer}. Consistency captures stability by amplifying
+confidence-based uncertainty with the other signal penalties and combining trace uncertainties by
+root-mean-square, following SAUP \citep{zhao2024saup}. Reliability is sensitive to rare severe
+failures; consistency is sensitive to pervasive instability.
+
+For metric $j$, the point breach is
+\begin{equation}
+  b_j(s)=\ind\!\left[m_j(s)\ne\varnothing\ \wedge\ m_j(s)<\tau_j\right].
+  \label{eq:breach}
+  % source: evaluation/metrics.py MetricScore.breached; config.py
+\end{equation}
+The comparison is strict and a missing score is not a breach.
+
+\paragraph{Trend breaches.}
+PandaProbe Harness additionally detects slow drift using fast and slow exponentially weighted
+moving averages (spans $3$ and $10$):
+\begin{equation}
+ e_t^{(\cdot)}=\alpha m_j(s_t)+(1-\alpha)e_{t-1}^{(\cdot)},
+ \label{eq:ewma}
+\end{equation}
+and flags a decline after at least four samples when
+\begin{equation}
+ \mathrm{decl}_j(s_t)=\ind[n_t\ge4\ \wedge\ e_t^{\mathrm f}<e_t^{\mathrm s}-0.05].
+ \label{eq:trend}
+ % source: evaluation/trends.py TrendDetector.update
+\end{equation}
+Relative and percentile signals are optional and off by default. Fired conditions become
+\texttt{condition:metric} signatures used downstream.
+
+\subsection{Context composition and retrieval}
+\label{sec:retrieval}
+
+The agent's policy-inducing context is
+\begin{equation}
+ c(\Rset,q)=c_0\oplus\rho(\Rset,q),
+ \label{eq:context}
+\end{equation}
+where $q$ combines an optional task hint with pending-notice signatures and metric names. Let
+$Q$ be its case-folded token set; let $T_r$ be rule-tag tokens and $X_r$ tokens from rule text,
+rationale, and metric. Relevance is
+\begin{equation}
+ \mathrm{score}(r,Q)=
+ \frac{2|Q\cap T_r|+|Q\cap(X_r\setminus T_r)|}{\max(1,|Q|)}.
+ \label{eq:score}
+ % source: workspace/rules.py::_relevance
+\end{equation}
+All untagged global rules are included, plus the top $k{=}8$ tagged active rules. Ties resolve by
+score, recency, then identifier. Candidates render in full so retrieval cannot starve their trial;
+omitted rules remain available through search.
+
+\subsection{The self-heal operator}
+\label{sec:healop}
+
+The loop maps the rule set to its next state:
+\begin{equation}
+ \Rset_{t+1}=\Heal(\Rset_t,\Breach_t)
+ =\mathrm{gate}\bigl(\Rset_t,\mathrm{propose}(\Rset_t,\Breach_t)\bigr).
+ \label{eq:heal}
+\end{equation}
+The agent executes \emph{propose}: after pulling a notice it writes a candidate with rationale,
+target metric, and tags. Deterministic Harness code executes \emph{gate}. Live rules are
+deduplicated by normalized text and capped at 50.
+
+\begin{algorithm}[t]
+\caption{PandaProbe Harness self-heal loop}
+\label{alg:heal}
+\begin{algorithmic}[1]
+\STATE compose $c(\Rset,q)$; run agent turn $\to s$
+\STATE $\mvec(s)\gets\evalfn(s)$ \hfill{\footnotesize\itshape detached}
+\STATE compute point/trend breaches $\Breach$
+\IF{$\Breach\ne\varnothing$ and not deduplicated}
+  \STATE post notice; optionally capture replay case
+\ENDIF
+\IF{agent pulls notice}
+  \STATE inspect traces; author candidate $r$
+  \STATE $\Rset\gets\Rset\cup\{r\}$
+\ENDIF
+\STATE \textsc{ValidateCandidates}($\Rset$)
+\STATE \textbf{return} $\Rset$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Rule lifecycle as evidence-gating}
+\label{sec:validate}
+
+Candidates are provisional but in force so their effect is measurable. Replay is tried first;
+forward trial is the fallback.
+
+\paragraph{Forward trial.}
+Let $p_0$ be the rule-family breach rate in the recent pre-rule window, with $p_0{=}1$ when the
+window is empty. After $n$ distinct sessions, the trial breach rate is $\hat p$. The package
+default is $n{=}5$; the study uses $n{=}3$. Promote iff
+\begin{equation}
+ \hat p=0\quad\text{or}\quad\hat p\le p_0-\dpromote,
+ \label{eq:forward}
+\end{equation}
+with $\dpromote{=}0.05$; otherwise retire after the window fills. Before $n$, the candidate remains
+pending.
+
+\paragraph{Replay test.}
+For up to three captured failures and two protected wins, a developer-supplied replay function
+re-runs the case under the candidate context and returns a new session identifier. Define
+\begin{equation}
+ \Delta_j(s_i)=m'_j(s_i)-m_j(s_i).
+ \label{eq:delta}
+\end{equation}
+For target metric $\hat\jmath$, improvement requires
+\begin{equation}
+ \exists i:\Delta_{\hat\jmath}(s_i)\ge\dpromote,
+ \label{eq:improve}
+\end{equation}
+and non-regression over every comparable metric and replayed failure or win requires
+\begin{equation}
+ \forall i,j:\Delta_j(s_i)>-\dregress,
+ \label{eq:noregress}
+\end{equation}
+where $\dregress{=}0.05$. Regression dominates: a violation retires the rule even if another case
+improves. No comparable failure score remains pending; a conclusive failure with no improvement
+retires. After three inconclusive replay rounds, forward evidence is used.
+
+\begin{algorithm}[t]
+\caption{\textsc{ValidateCandidates}: evidence gate}
+\label{alg:validate}
+\begin{algorithmic}[1]
+\FORALL{candidate $r\in\Rset$}
+ \IF{replay available and attempts $<3$}
+  \STATE replay failures/wins; compute $\Delta$
+  \IF{$\exists i,j:\Delta_j(s_i)\le-\dregress$}
+   \STATE retire $r$
+  \ELSIF{$\exists i:\Delta_{\hat\jmath}(s_i)\ge\dpromote$}
+   \STATE promote $r$
+  \ELSIF{no conclusive failure}
+   \STATE pending; increment attempts
+  \ELSE
+   \STATE retire $r$ \hfill{\footnotesize\itshape no gain}
+  \ENDIF
+ \ELSE
+  \STATE observe $n$ sessions; compute $p_0,\hat p$
+  \STATE promote by Eq.~\eqref{eq:forward}, else pending/retire
+ \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+Absolute breaches create replay cases when capture is enabled. Softer trend, relative, and
+percentile signals post notices but do not alone create replay cases.
+
+\subsection{Regression guard against forgetting}
+\label{sec:regression}
+
+The corpus-level guard replays protected wins first and then failures under the current rule set:
+\begin{equation}
+\mathrm{cls}(s_i)=
+\begin{cases}
+\text{regressed} & \exists j:\Delta_j(s_i)\le-\dregress,\\
+\text{improved} & \text{else if }\exists j:\Delta_j(s_i)\ge\dpromote,\\
+\text{unchanged} & \text{otherwise.}
+\end{cases}
+\label{eq:regcls}
+\end{equation}
+The run is clean iff no case regresses. The guarantee is bounded by eval-set coverage; missing
+replay inputs and scores are explicitly skipped.
+
+\subsection{Pull model, action space, and workspace}
+\label{sec:actionspace}
+
+Notices, rules, replay cases, traces, state, and an append-only journal live under
+\texttt{HARNESS\_ROOT}. The standing system protocol tells the agent to pull notices and treat
+diagnostics as untrusted data. Fourteen structured tools cover mailbox list/read/ack, trace
+inspection, score history, journal access, rule add/retire/status/search/list, reflection, and
+eval-set list/attach. Every tool returns an \texttt{ok} envelope and folds errors into data.
+
+The workspace is intentionally ordinary and inspectable:
+\begin{lstlisting}[language={}]
+HARNESS_ROOT/
+  mailbox/{pending,processed}/
+  traces/       evalset/
+  rules.jsonl   harness_rules.md
+  journal.jsonl state/score_history.json
+\end{lstlisting}
+
+\subsection{Hyperparameters and open-source integration}
+\label{sec:hyper}
+
+\begin{table}[t]
+\centering\small
+\caption{Package defaults; the study overrides $n$ to $3$ and enables capture.}
+\label{tab:hyper}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Knob & Meaning & Default \\
+\midrule
+$\tau_j$ & breach threshold & $0.5$ \\
+$n_{\min}$ / $\kappa$ & trend samples/margin & $4/0.05$ \\
+$\sigma_f,\sigma_s$ & EWMA spans & $3,10$ \\
+$k$ & retrieved tagged rules & $8$ \\
+$n$ & forward window & $5$ \\
+$\dpromote,\dregress$ & validation margins & $0.05$ \\
+-- & live rule cap & $50$ \\
+-- & replay failures/wins & $3/2$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The minimal raw-loop integration is small:
+\begin{lstlisting}[language=Python]
+from pandaprobe_harness import Harness
+
+harness = Harness.create(replay=my_replay)
+prompt = harness.system_context(task_hint=task) + prompt
+
+async with harness.turn(session_id):
+    result = await agent_step(prompt, harness.toolset)
+\end{lstlisting}
+Install from PyPI with \texttt{pip install} \path{pandaprobe-harness}. Factories support LangGraph,
+LangChain, DeepAgents, CrewAI, Claude Agent SDK, and OpenAI Agents. Native exporters target
+Anthropic, LangChain, and OpenAI function tools. Operator CLIs run regression
+(\texttt{pandaprobe-harness-eval}) and threshold calibration
+(\texttt{pandaprobe-harness-calibrate}); offline examples require no credentials.
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+We evaluate PandaProbe Harness with a paired A/B protocol: the same agent code, models, prompts,
+and task sets in every arm, differing only in Harness wiring. Benchmark-native pass/fail remains
+ground truth; PandaProbe metrics drive only the healing mechanism.
+
+\subsection{Benchmarks}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{AppWorld} \citep{trivedi2024appworld}: multi-step app/API tasks with task-goal and
+scenario-goal checks, including collateral-damage tests; development split (57 tasks).
+\item \textbf{Terminal-Bench through Harbor} \citep{merrill2026terminal}: realistic command-line
+tasks in sandboxed containers with binary rewards; stratified subset ($\approx30$ tasks).
+\item \textbf{$\tau^2$-bench} \citep{barres2025tau}: dual-control tool dialogue between an agent
+and LLM user simulator in the retail domain; native $\passk$.
+\end{itemize}
+
+\subsection{Arms}
+\label{sec:arms}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{A, baseline}: plain agent loop, no Harness preamble or toolset.
+\item \textbf{B, PandaProbe Harness}: retrieved rules, 14 tools, per-trial evaluation, capture,
+replay, and candidate validation.
+\item \textbf{B$'$, no validation}: arm B with immediate activation, run where budget permits.
+\end{itemize}
+
+\subsection{Learning and frozen evaluation}
+For each benchmark--model cell, a seeded 35\% learning split lets arm B accumulate and validate
+rules; baseline runs the same split for symmetry. Both arms then run held-out frozen evaluation,
+with arm B carrying learned rules. The runner settles evaluation and drains validation between
+task-trials and at the phase boundary.
+
+\subsection{Models, trials, and estimators}
+The matrix spans frontier and smaller models from Google Gemini, OpenAI GPT, and Anthropic Claude.
+All calls use one provider abstraction. Each eval task runs $k{=}4$ times under at least three
+task-order seeds. For $X_{t,i}\in\{0,1\}$,
+\begin{align}
+ \passone&=\frac1{|T|}\sum_{t\in T}X_{t,1},\label{eq:pass1}\\
+ \passk&=\frac1{|T|}\sum_{t\in T}\prod_{i=1}^kX_{t,i}.\label{eq:passk}
+\end{align}
+The hypothesis is that PandaProbe Harness raises $\passk$ more than $\passone$ by removing
+trial-to-trial failures.
+
+\paragraph{Paired significance.}
+Let $b$ be baseline-fail/Harness-pass tasks and $c$ the reverse. McNemar uses a two-sided exact
+binomial when $b+c<25$ and a continuity-corrected $\chi^2$ otherwise:
+\begin{equation}
+p=\begin{cases}
+\min(1,2F_{\rm bin}(\min(b,c);b+c,\tfrac12))&b+c<25,\\
+\Pr[\chi_1^2\ge(|b-c|-1)^2/(b+c)]&b+c\ge25.
+\end{cases}
+\label{eq:mcnemar}
+\end{equation}
+A 10,000-resample percentile bootstrap on paired task differences gives the 95\% interval for the
+arm delta.
+
+\subsection{Methodological checkpoints and overhead}
+\label{sec:checkpoints}
+Checkpoint 1 calibrates PandaProbe breaches against benchmark failures using precision, recall,
+F1, and a threshold sweep. If no threshold yields usable signal, arm B is inert and the null
+mechanism is reported. Checkpoint 2 verifies that rules were promoted before evaluation; the study
+uses $n{=}3$ so the short learning phase can resolve candidates. The Harness preamble and 14 tool
+schemas consume tokens every turn, so token, latency, and cost overhead are reported alongside
+success.
+
+\begin{table}[t]
+\centering\small
+\caption{Study configuration; task counts are finalized by seed.}
+\label{tab:config}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Benchmark & Split & \#learn & \#eval & $k$ & turns \\
+\midrule
+AppWorld & dev & \TBD & \TBD & 4 & 100 \\
+Terminal-Bench & subset & \TBD & \TBD & 4 & 100 \\
+$\tau^2$-bench & retail & \TBD & \TBD & 4 & 100 \\
+\midrule
+\multicolumn{6}{l}{Seeds $\{1,2,3\}$; arms A/B/B$'$; study forward window $n{=}3$.}\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Reproducing the open benchmark suite}
+PandaBench is a separate \texttt{uv} project that installs the released Harness from PyPI. A
+dry-run smoke path covers every benchmark and both arms without external calls. Representative
+commands are:
+\begin{lstlisting}[language=bash]
+make bench-setup
+make bench-smoke
+make appworld ARM=harness MODEL=claude-sonnet-5 K=4
+make bench-report
+\end{lstlisting}
+AppWorld is end-to-end verified against its environment server. Harbor and $\tau^2$ adapters are
+implemented against inspected APIs; their live orchestration maturity is reported in limitations.
+
+\section{Results and Discussion}
+\label{sec:results}
+
+\noindent\textbf{Status.} Runs are in progress. Every numeric cell is a placeholder; no measured
+result is invented.
+
+\subsection{Main results}
+\label{sec:main}
+Table~\ref{tab:headline} compares $\passone$ and $\passk$ by benchmark and model. The hypothesis
+predicts a larger positive $\Delta\passk$ than $\Delta\passone$. A positive $\Delta\passk$ whose
+paired interval excludes zero, with a small McNemar $p$, supports a reliability gain; flat
+$\Delta\passk$ with positive $\Delta\passone$ instead suggests a capability shift.
+
+\begin{table*}[t]
+\centering\small
+\caption{Headline results (placeholder). Baseline (B) vs. Harness (H); $\Delta=H-B$.
+Numbers are pending completed runs.}
+\label{tab:headline}
+\begin{tabular}{@{}llcccccccc@{}}
+\toprule
+&&\multicolumn{3}{c}{$\passone$}&\multicolumn{3}{c}{$\passk$}&&\\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+Benchmark&Model&B&H&$\Delta$&B&H&$\Delta$&CI$_{95}(\Delta\passk)$&McNemar $p$\\
+\midrule
+AppWorld&frontier&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
+AppWorld&small&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
+Terminal-Bench&frontier&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
+Terminal-Bench&small&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
+$\tau^2$-bench&frontier&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
+$\tau^2$-bench&small&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Learning dynamics}
+Figure~\ref{fig:results} pairs learning-phase pass rate with cumulative promoted rules. An upward
+trend tracking promotion supports the proposed mechanism; a flat line despite promotions suggests
+rules do not generalize. A zero promotion curve identifies baseline-plus-overhead runs.
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/results}}
+\caption{\textbf{Learning dynamics (placeholder).} Harness pass rate (solid) and cumulative
+promoted rules (dashed). Curves are schematic, not measured.}
+\label{fig:results}
+\end{figure}
+
+\subsection{Harness telemetry and cost}
+\label{sec:telemetry}
+Telemetry reveals degenerate regimes: many notices with no promotions, or promotions without
+native success gains.
+
+\begin{table}[t]
+\centering\small
+\caption{Harness telemetry and overhead (placeholder).}
+\label{tab:telemetry}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Quantity&AppWorld&Terminal&$\tau^2$\\
+\midrule
+rules proposed&\TBD&\TBD&\TBD\\
+rules promoted&\TBD&\TBD&\TBD\\
+rules retired&\TBD&\TBD&\TBD\\
+notices / breach rate&\TBD&\TBD&\TBD\\
+mean rules in context&\TBD&\TBD&\TBD\\
+added tokens / turn&\TBD&\TBD&\TBD\\
+latency / cost overhead&\TBD&\TBD&\TBD\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablations}
+No-validation isolates the evidence gate; no-retrieval isolates task-conditioned context;
+replay-only and forward-only isolate the validators. Each row reports delta from the full Harness.
+
+\begin{table}[t]
+\centering\small
+\caption{Mechanism ablations (placeholder).}
+\label{tab:ablation}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Variant&$\passone$&$\passk$&$\Delta\passk$\\
+\midrule
+Full Harness&\TBD&\TBD&--\\
+No validation&\TBD&\TBD&\TBD\\
+No retrieval&\TBD&\TBD&\TBD\\
+Replay only&\TBD&\TBD&\TBD\\
+Forward trial only&\TBD&\TBD&\TBD\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Limitations and threats to validity}
+\label{sec:limitations}
+
+\paragraph{Statistical power.}
+At roughly 30--40 evaluation tasks per benchmark, paired tests detect only large effects. We
+report directional effects with confidence intervals and discordant counts.
+
+\paragraph{Dependence on the breach signal.}
+The causal chain begins with PandaProbe metrics tracking native task failure. Checkpoint 1 tests
+this directly; weak calibration makes the Harness arm inert regardless of rule quality.
+
+\paragraph{Token-overhead confound.}
+The preamble and 14 tools consume context every turn. Any $\passk$ change must be interpreted next
+to Table~\ref{tab:telemetry}.
+
+\paragraph{Integration coverage.}
+AppWorld is verified end to end against a live environment server with scripted model behavior.
+Harbor and $\tau^2$ integrations are implemented against their real APIs but were exercised only
+through the mock pipeline at build time. Full live-model runs and both checkpoints remain pending.
+
+\paragraph{Intrinsic variance and generality.}
+Models that reject temperature control retain unavoidable sampling variance. Results are specific
+to the tested domains, two PandaProbe metrics, and text rules; transfer to other metrics, richer
+rules, and architectures remains open.
+
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+PandaProbe Harness closes the loop on agent reliability: it detects degradation, lets an agent
+author durable corrections, and admits each correction only after replay or live evidence, with a
+regression guard for prior wins. The implementation makes that loop practical as an inspectable,
+dependency-free envelope around existing agent code. The empirical verdict is forthcoming.
+
+Future work includes structured rules with preconditions, vector-valued/Pareto validation,
+cross-agent rule sharing with provenance, causal attribution of regression, theoretical analysis
+of $\Heal$, online threshold adaptation, and human review before promotion in high-stakes settings.
+
+\paragraph{Availability and community.}
+PandaProbe Harness is developed and maintained by the PandaProbe research lab under the MIT
+license. Package source, examples, PandaBench, and integration guides are available through the
+project resources listed in the Introduction. Contributions of adapters, replay functions,
+benchmark integrations, and adversarial eval cases are welcome.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
