@@ -255,7 +255,9 @@ def test_candidate_renders_in_provisional_section(
     validating_rules: RulesStore, validating_config: HarnessConfig
 ) -> None:
     candidate = validating_rules.add("Never charge twice without verifying", "duplicates seen")
-    markdown = validating_config.rules_file.read_text(encoding="utf-8")
+    # The lifecycle plays out inside the rule file, not the skill root.
+    scope_file = validating_config.rules_scope_file(candidate.scope)
+    markdown = scope_file.read_text(encoding="utf-8")
 
     assert PROVISIONAL_HEADING in markdown
     assert f"**{candidate.id}** (candidate): Never charge twice" in markdown
@@ -263,7 +265,7 @@ def test_candidate_renders_in_provisional_section(
     assert "_No learned rules yet._" not in markdown
 
     validating_rules.promote(candidate.id)
-    markdown = validating_config.rules_file.read_text(encoding="utf-8")
+    markdown = scope_file.read_text(encoding="utf-8")
     assert PROVISIONAL_HEADING not in markdown
     assert f"**{candidate.id}**: Never charge twice" in markdown
 
