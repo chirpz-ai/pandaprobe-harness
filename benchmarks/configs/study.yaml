@@ -1,6 +1,6 @@
 # =============================================================================
 # Study design — arms, seeds, trials, splits, thresholds, harness knobs.
-# See docs/benchmark-study-brief.md §5. Nothing study-relevant is hardcoded.
+# See IMPLEMENTATION_NOTES.md. Nothing study-relevant is hardcoded.
 # =============================================================================
 arms: [baseline, harness]     # B' (harness-noval) is flag-gated, not in the default matrix
 seeds: [1, 2, 3]              # >=3 seeds; each shuffles task order (counterbalances learning)
@@ -57,7 +57,7 @@ benchmarks:
     learning_split: []        # explicit ids override the seeded partition
     eval_split: []
   terminal_bench:
-    dataset: terminal-bench-2
+    dataset: terminal-bench@2.0
     max_turns: 100            # Terminal-Bench has no native turn cap (timeout-driven);
     learning_fraction: 0.35   #   100 is our in-process agent budget
   tau2:
