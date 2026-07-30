@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -45,12 +45,20 @@ class HarnessTelemetry:
 
     session_id: str
     reliability: float | None
+    """v1 session composite; ``None`` under the trace trigger."""
     consistency: float | None
+    """v1 session composite; ``None`` under the trace trigger."""
     breached: bool
     rules_active: int
     rules_candidate: int
     rules_retired: int
     notices: int
+    scores: dict[str, float] = field(default_factory=dict)
+    """Every resolved metric of the turn, by name — under the trace trigger this
+    is where the actual signal lives (``task_completion``, ``tool_correctness``,
+    ``outcome_correct``, …), since the two composite fields above are ``None``."""
+    gate_breached: bool = False
+    """The trajectory gate fired (a stall or a regression) on this turn."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -180,6 +188,7 @@ _ARCHIVE_ENTRIES = (
     "rules.jsonl",
     "journal.jsonl",
     "harness_rules.md",
+    "rules",  # the agent-facing rule files (global.md, scoped.md, topics)
     "evalset",
     "mailbox",
     "state",
@@ -214,11 +223,19 @@ def collect_harness_telemetry(
 
     reliability = consistency = None
     breached = False
+    gate_breached = False
+    scores: dict[str, float] = {}
     if report is not None:
         try:
             breached = bool(report.any_breach)
+            gate_breached = bool(getattr(report, "gate_breached", False))
             for score in report.scores:
                 name = str(score.metric)
+                if score.value is not None:
+                    # Several traces can score the same Tier-1 metric in one turn;
+                    # keep the last (most recent trace) so the value matches the
+                    # gate's latest sample.
+                    scores[name] = score.value
                 if name == "agent_reliability":
                     reliability = score.value
                 elif name == "agent_consistency":
@@ -247,6 +264,8 @@ def collect_harness_telemetry(
         rules_candidate=candidate,
         rules_retired=retired,
         notices=notices,
+        scores=scores,
+        gate_breached=gate_breached,
     )
 
 
