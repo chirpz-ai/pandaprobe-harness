@@ -5,7 +5,7 @@ harness_telemetry.csv, report.md}`` plus an optional learning-curve plot. The
 headline table is a benchmark x model x arm view of pass@1 / pass^k with the
 harness-vs-baseline delta, bootstrap CIs, and McNemar p; the report prose states
 the power caveat, the temperature/nondeterminism note, and the preamble+toolset
-token-overhead confound (see docs/benchmark-study-brief.md §5, §9).
+token-overhead confound (see ``IMPLEMENTATION_NOTES.md``).
 """
 
 from __future__ import annotations
