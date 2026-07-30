@@ -192,5 +192,44 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     assert telemetry.breached is True
 
 
+async def test_settling_a_turn_twice_returns_the_first_diagnosis(tmp_path):
+    """At the turn cap the loop's last turn IS the trial's last, so the loop and
+    the runner can both settle the same index. The second call must not re-evaluate:
+    the traces have already been delivered, so a fresh report would carry none of
+    the tier scores, and a caller recording telemetry from it would write that
+    emptiness over the real diagnosis."""
+
+    cfg = HarnessConfig(
+        harness_root=tmp_path / "hroot",
+        poll_interval_s=0.0,
+        poll_max_attempts=3,
+        eval_retry_backoff_s=0.0,
+        eval_retry_attempts=1,
+        health_check=False,
+        gate_window=2,
+    )
+    cli = FakeCli()
+    harness = Harness.create(cfg, cli=cli)
+    wiring = HarnessWiring(
+        harness=harness, benchmark="appworld", task_id="t1", capture=True,
+        replay_descriptor={}, session_id="s-dup",
+    )
+
+    first = await wiring.settle_turn(7)
+    assert first is not None and first.report is not None
+    tier1 = {s.trace_id for s in first.report.scores_for_tier(1)}
+    assert tier1 == {"tr-1", "tr-2", "tr-3"}
+
+    runs_before = cli._n
+    again = await wiring.settle_turn(7)
+
+    assert again is first  # same answer, not a fresh (impoverished) one
+    assert cli._n == runs_before  # and no second platform eval run
+    assert wiring.turns_settled == 1
+
+    # A genuinely new turn still settles.
+    assert await wiring.settle_turn(8) is not first
+
+
 async def _noop_executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}

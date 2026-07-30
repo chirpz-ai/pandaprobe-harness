@@ -123,12 +123,17 @@ async def run_agent_loop(
                 }
             )
 
-        if wiring is not None:
-            # The per-turn barrier: block until the harness has evaluated this
-            # turn and posted any notice, so the next iteration's preamble and
-            # rule set already reflect it. This is what makes healing take effect
-            # *within* a session rather than after it. The final turn is settled
-            # by the runner at trial end.
+        # The per-turn barrier: block until the harness has evaluated this turn and
+        # posted any notice, so the next iteration's preamble and rule set already
+        # reflect it. This is what makes healing take effect *within* a session
+        # rather than after it.
+        #
+        # Only when another turn will actually follow. At the cap the next
+        # iteration returns immediately, so this turn is the trial's last and the
+        # runner settles it — settling here too would fire a second evaluation for
+        # the same turn, which finds no new traces and so reports none of the tier
+        # scores the runner then records as telemetry.
+        if wiring is not None and turns < max_turns:
             await wiring.settle_turn(turns)
 
 
