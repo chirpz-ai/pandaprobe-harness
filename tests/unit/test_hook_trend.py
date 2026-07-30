@@ -19,6 +19,7 @@ def _hook(
         eval_retry_backoff_s=0.0,
         eval_consistency=False,  # single metric series for deterministic EWMA
         trend_min_samples=4,
+        trigger_mode="session",  # the EWMA trend detector is the v1 path
         **kw,  # type: ignore[arg-type]
     )
     fs = HarnessFilesystem(cfg)

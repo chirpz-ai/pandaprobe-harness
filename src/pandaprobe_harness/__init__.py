@@ -33,14 +33,17 @@ from .cli.client import CliClient, CliResult
 from .cli.subprocess_client import SubprocessCliClient
 from .config import HarnessConfig
 from .evaluation.evaluator import MetricEvaluator
-from .evaluation.history import EwmaState, ScoreHistoryStore
+from .evaluation.history import EwmaState, GateState, ScoreHistoryStore
 from .evaluation.history_source import HistorySource
 from .evaluation.metrics import EvalReport, Metric, MetricScore
+from .evaluation.traces import TraceLocator, TraceRef
+from .evaluation.trajectory import GateVerdict, TrajectoryGate
 from .evaluation.trends import TrendDetector, TrendVerdict
 from .filesystem.layout import HarnessFilesystem
 from .harness import Harness
 from .hook.context import compose_system_preamble
-from .hook.core import PandaHarnessHook
+from .hook.core import PandaHarnessHook, SettleResult
+from .hook.tiers import TierRunner, VerifierFn
 from .hook.turn import TurnContext, parse_turn_payload
 from .monitors.client import MonitorClient, MonitorResponse
 from .sandbox.policy import ShellPolicy
@@ -85,6 +88,8 @@ __all__ = [
     "EwmaState",
     "ForwardTrialValidator",
     "FrameworkAdapter",
+    "GateState",
+    "GateVerdict",
     "Harness",
     "HarnessConfig",
     "HarnessFilesystem",
@@ -114,15 +119,21 @@ __all__ = [
     "RulesCapError",
     "RulesStore",
     "ScoreHistoryStore",
+    "SettleResult",
     "ShellPolicy",
     "ShellResult",
     "SubprocessCliClient",
     "ThresholdPoint",
+    "TierRunner",
     "ToolSpec",
+    "TraceLocator",
+    "TraceRef",
+    "TrajectoryGate",
     "TrendDetector",
     "TrendVerdict",
     "TrialState",
     "TurnContext",
+    "VerifierFn",
     "ValidationEngine",
     "ValidationVerdict",
     "__version__",

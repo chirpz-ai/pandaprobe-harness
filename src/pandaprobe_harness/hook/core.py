@@ -11,10 +11,16 @@ dump and posts a structured :class:`DiagnosticNotice` to the mailbox, where
 the agent will *pull* it via its harness toolset.
 
 Nothing is ever injected into the agent's input queue. Because handling lives
-inside the wrapper task, no next-turn drain barrier is required for
-correctness: evaluations resolve and post as soon as they finish. ``refresh``
-remains as a bounded await for callers and tests, and exceptions cannot
-vanish — every failure path is caught and logged inside the task.
+inside the wrapper task, evaluations resolve and post as soon as they finish;
+``refresh`` remains a bounded best-effort join for callers and tests, and
+exceptions cannot vanish — every failure path is caught and logged inside the
+task.
+
+:meth:`PandaHarnessHook.settle` is the opt-in **per-turn barrier** that makes
+healing take effect *within* a session: it blocks until the turn's evaluation has
+landed, any notice is posted and any candidate validation has finished, so the
+agent cannot run past the turn its own diagnosis is about. It costs wall-clock
+per turn, which is the deliberate trade for in-session self-healing.
 
 ``startup_context()`` returns the rendered rules + pull protocol + mailbox
 banner for prepending to the agent's system prompt.
@@ -36,23 +42,42 @@ from ..cli.errors import CliAuthError, CliError
 from ..config import HarnessConfig
 from ..evaluation.evaluator import MetricEvaluator
 from ..evaluation.history import ScoreHistoryStore
-from ..evaluation.metrics import EvalReport, MetricScore
+from ..evaluation.metrics import EvalReport
+from ..evaluation.traces import TraceLocator
+from ..evaluation.trajectory import TrajectoryGate
 from ..evaluation.trends import TrendDetector
 from ..workspace.evalset import EvalSet, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.mailbox import DiagnosticNotice, Mailbox, NoticeMetric, Severity
-from ..workspace.rules import RulesStore
+from ..workspace.rules import GLOBAL_SCOPE, SCOPED_SCOPE, RulesStore
 from ..workspace.sanitize import sanitize_text
 from .context import compose_system_preamble
+from .tiers import TierRunner, VerifierFn
 from .turn import TurnContext, parse_turn_payload
 
 if TYPE_CHECKING:
     from ..filesystem.layout import HarnessFilesystem
     from ..validation.validator import ValidationEngine, ValidationVerdict
 
-__all__ = ["PandaHarnessHook"]
+__all__ = ["PandaHarnessHook", "SettleResult"]
 
 logger = logging.getLogger("pandaprobe_harness.hook")
+
+
+@dataclass(frozen=True, slots=True)
+class SettleResult:
+    """Outcome of one per-turn barrier (:meth:`PandaHarnessHook.settle`)."""
+
+    session_id: str
+    report: EvalReport | None = None
+    #: True when the barrier's budget expired with work still in flight. The work
+    #: continues detached, so this is a latency signal, not an error.
+    timed_out: bool = False
+
+    @property
+    def alerting(self) -> bool:
+        return self.report is not None and self.report.any_alert
+
 
 # Bound per-session bookkeeping so a long-lived process handling many
 # short-lived session ids cannot grow memory without limit.
@@ -83,10 +108,19 @@ class PandaHarnessHook:
         evalset: EvalSet | None = None,
         validation: ValidationEngine | None = None,
         replay: ReplayFn | None = None,
+        verifier: VerifierFn | None = None,
+        locator: TraceLocator | None = None,
     ) -> None:
         self._cli = cli
         self._config = config or HarnessConfig()
+        trace_mode = self._config.trigger_mode != "session"
         self._evaluator = evaluator or MetricEvaluator(cli, self._config)
+        if verifier is not None and not trace_mode:
+            logger.warning(
+                "an outcome verifier was supplied but trigger_mode=%r; the verifier "
+                "only runs on the trace trigger and will be ignored",
+                self._config.trigger_mode,
+            )
         if filesystem is None:
             # Imported lazily to avoid a hard cycle at module import time.
             from ..filesystem.layout import HarnessFilesystem
@@ -125,6 +159,7 @@ class PandaHarnessHook:
                 evaluator=self._evaluator,
                 journal=self._journal,
                 replay=replay,
+                verifier=verifier,
             )
         self._validation_tasks: set[asyncio.Task[None]] = set()
 
@@ -132,12 +167,29 @@ class PandaHarnessHook:
         # memoizes its file cache), so the facade passes its instance in.
         self._history: ScoreHistoryStore | None = history
         if self._history is None and (
-            self._config.enable_trend or self._config.hydrate_history_from_backend
+            self._config.enable_trend
+            or self._config.hydrate_history_from_backend
+            # The trajectory gate keeps its peak/stall state in the same store,
+            # so the trace trigger needs it regardless of the trend knob.
+            or trace_mode
         ):
             self._history = ScoreHistoryStore(self._config)
         self._detector: TrendDetector | None = None
         if self._config.enable_trend and self._history is not None:
             self._detector = TrendDetector(self._config, self._history)
+
+        # The v2 trace trigger: trace discovery + trajectory gate + tier ladder.
+        # Share the evaluator's locator so one seen-set governs both paths.
+        self._locator = locator or self._evaluator.locator
+        self._tiers: TierRunner | None = None
+        if trace_mode and self._history is not None:
+            self._tiers = TierRunner(
+                self._config,
+                self._evaluator,
+                self._locator,
+                TrajectoryGate(self._config, self._history),
+                verifier=verifier,
+            )
 
         # Task tracking: per-session latest task (supersede + refresh) and a
         # strong-ref set so detached tasks are never garbage-collected early.
@@ -177,10 +229,28 @@ class PandaHarnessHook:
     def rules(self) -> RulesStore:
         return self._rules
 
-    def startup_context(self, *, task_hint: str | None = None) -> str:
-        """Rules + pull protocol + mailbox banner, for the agent's system prompt."""
+    @property
+    def pending_sessions(self) -> tuple[str, ...]:
+        """Sessions whose evaluation is still in flight.
 
-        return compose_system_preamble(self._rules, self._mailbox, task_hint=task_hint)
+        A read-only view for host-side phase barriers ("has everything landed
+        before I archive the workspace?"), so callers need not reach into the
+        task bookkeeping.
+        """
+
+        return tuple(
+            session_id
+            for session_id, task in self._pending.items()
+            if not task.done()
+        )
+
+    def startup_context(self) -> str:
+        """The skill root + mailbox banner, for the agent's system prompt.
+
+        Carries no rule text — the agent pulls that from ``rules/*.md``.
+        """
+
+        return compose_system_preamble(self._rules, self._mailbox)
 
     # -- producing side (turn end) -------------------------------------------
 
@@ -277,6 +347,9 @@ class PandaHarnessHook:
         self._hydrated.discard(oldest)
         self._notice_state.pop(oldest, None)
         self._replay_inputs.pop(oldest, None)
+        # The locator's seen-set is bounded on its own, but evict in step so a
+        # long-lived process does not retain trace ids for forgotten sessions.
+        self._locator.forget(oldest)
 
     def _journal_soon(self, event: dict[str, Any]) -> None:
         """Best-effort, non-blocking journal write from the sync path."""
@@ -303,8 +376,14 @@ class PandaHarnessHook:
             ):
                 await self._hydrate(ctx.session_id)
             async with self._semaphore:
-                report = await self._evaluator.evaluate_turn(ctx)
-            return await self._handle_report(report)
+                if self._tiers is not None:
+                    report = await self._tiers.run(ctx)
+                else:
+                    report = await self._evaluator.evaluate_turn(ctx)
+            # The trace path already folded every score into the gate (which
+            # records history itself), so re-running the trend detector here
+            # would double-count the series.
+            return await self._handle_report(report, apply_trends=self._tiers is None)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - degrade gracefully, never lose the error
@@ -350,12 +429,74 @@ class PandaHarnessHook:
         if tasks:
             await asyncio.wait(tasks, timeout=self._config.drain_timeout_s)
 
+    async def settle(self, session_id: str, *, timeout: float | None = None) -> SettleResult:
+        """Block until this turn's diagnosis has landed.
+
+        The per-turn barrier that makes healing *in-session*: it waits for the
+        turn's evaluation to resolve, its report to be handled (trial observation
+        recorded, eval case captured) and any notice to be posted, so the agent's
+        next turn sees the mailbox and rule set the harness just produced rather
+        than racing ahead of them.
+
+        It runs on ``barrier_timeout_s`` — deliberately generous, and separate
+        from ``drain_timeout_s``, which is only a best-effort join. On expiry the
+        work stays running detached and ``timed_out`` is set: a slow platform
+        degrades the loop's latency, never its correctness.
+
+        It deliberately does **not** wait for the candidate-validation *round*.
+        That round replays a captured case through the developer's agent, which
+        can need the very resource the current turn holds — an environment lock, a
+        world, a container — so awaiting it inside a per-turn barrier can deadlock
+        until the replay times out. Validation is single-flight and detached;
+        :meth:`drain_validation` awaits it at a phase boundary, where nothing is
+        held. Candidate *observation* is not deferred: it happens inside the eval
+        task this barrier does await.
+        """
+
+        budget = self._config.barrier_timeout_s if timeout is None else timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, budget)
+
+        report = await self._await_eval(session_id, deadline)
+        timed_out = report is None and self._pending.get(session_id) is not None
+        return SettleResult(session_id=session_id, report=report, timed_out=timed_out)
+
+    async def _await_eval(self, session_id: str, deadline: float) -> EvalReport | None:
+        """Join the session's in-flight eval within the shared deadline."""
+
+        task = self._pending.get(session_id)
+        if task is None:
+            return None
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), remaining)
+        except TimeoutError:
+            logger.warning(
+                "settle: eval for session=%s did not land within the barrier budget",
+                session_id,
+            )
+            return None
+        except asyncio.CancelledError:
+            # Same discipline as `refresh`: our caller being cancelled must
+            # propagate, but a superseded (cancelled) eval is benign.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+            if task.cancelled():
+                return None
+            raise
+
     # -- report handling ---------------------------------------------------------
 
-    async def _handle_report(self, report: EvalReport) -> EvalReport:
+    async def _handle_report(
+        self, report: EvalReport, *, apply_trends: bool = True
+    ) -> EvalReport:
         # 1. Feed every resolved score to the trend detector (records history +
         #    sets trend/relative flags). Runs in a thread (sync store I/O).
-        if self._detector is not None:
+        #    Skipped on the trace path, where the trajectory gate already did it.
+        if apply_trends and self._detector is not None:
             report = await asyncio.to_thread(self._apply_trends, report)
 
         # 2. Candidate-rule validation: every handled report (healthy or
@@ -552,18 +693,11 @@ class PandaHarnessHook:
 
     @staticmethod
     def _signatures(report: EvalReport) -> set[str]:
-        sigs: set[str] = set()
-        for score in report.scores:
-            metric = str(score.metric)
-            if score.breached:
-                sigs.add(f"breach:{metric}")
-            if score.relative_breach:
-                sigs.add(f"relative:{metric}")
-            if score.trend_declining:
-                sigs.add(f"trend:{metric}")
-            if score.percentile_breach:
-                sigs.add(f"percentile:{metric}")
-        return sigs
+        return {
+            f"{condition}:{score.metric}"
+            for score in report.scores
+            for condition in score.conditions
+        }
 
     def _should_notice(self, report: EvalReport) -> tuple[bool, bool]:
         """Dedup/cooldown gate → ``(post, recovered)``. Mutates per-session state."""
@@ -613,15 +747,22 @@ class PandaHarnessHook:
         summary: str | None = None,
     ) -> DiagnosticNotice:
         max_len = self._config.sanitize_max_len
+        # Both are derived views over a frozen report; bind once rather than
+        # rebuilding them per use.
+        alerting = report.alerting_scores
         metrics = tuple(
             NoticeMetric(
                 name=str(score.metric),
                 value=score.value,
                 threshold=score.threshold,
+                # The judge's free-text `reason` is the raw material the agent
+                # turns into a specific rule, so it must survive into the notice.
                 reason=sanitize_text(score.reason, max_len=max_len) or None,
-                conditions=self._conditions(score),
+                conditions=score.conditions,
+                trace_id=score.trace_id,
+                tier=score.tier,
             )
-            for score in report.alerting_scores
+            for score in alerting
         )
         return DiagnosticNotice(
             id=notice_id or DiagnosticNotice.new_id(),
@@ -635,30 +776,35 @@ class PandaHarnessHook:
             dump_path=dump_path,
             summary=sanitize_text(summary or self._summarize(report), max_len=max_len),
             signatures=tuple(sorted(self._signatures(report))),
+            scope_hint=self._scope_hint(report),
         )
 
     @staticmethod
-    def _conditions(score: MetricScore) -> tuple[str, ...]:
-        conditions: list[str] = []
-        if score.breached:
-            conditions.append("breach")
-        if score.relative_breach:
-            conditions.append("relative")
-        if score.trend_declining:
-            conditions.append("trend")
-        if score.percentile_breach:
-            conditions.append("percentile")
-        return tuple(conditions)
+    def _scope_hint(report: EvalReport) -> str:
+        """Coarse, deterministic scope for a mitigation rule.
+
+        The only mechanical scope decision the harness makes: a surgical Tier-2/3
+        breach is about a specific step, so it is ``scoped``; anything else (a
+        Tier-1 trajectory fire, a session composite, a verifier outcome) is a
+        whole-trajectory concern, so it is ``global``. Any finer organization is
+        the agent's to invent.
+        """
+
+        for score in report.alerting_scores:
+            if score.tier in (2, 3):
+                return SCOPED_SCOPE
+        return GLOBAL_SCOPE
 
     def _summarize(self, report: EvalReport) -> str:
         parts: list[str] = []
         for score in report.alerting_scores:
             value = f"{score.value:.2f}" if score.value is not None else "n/a"
-            conds = "+".join(self._conditions(score)) or "ok"
+            conds = "+".join(score.conditions) or "ok"
             parts.append(f"{score.metric}={value} [{conds}, threshold {score.threshold:.2f}]")
         line = "; ".join(parts) if parts else "no alerting scores"
-        if report.flagged_traces:
-            line += f"; flagged traces: {', '.join(report.flagged_traces[:5])}"
+        flagged = report.flagged_traces
+        if flagged:
+            line += f"; flagged traces: {', '.join(flagged[:5])}"
         return line
 
     async def _build_dump(self, report: EvalReport) -> dict[str, Any]:

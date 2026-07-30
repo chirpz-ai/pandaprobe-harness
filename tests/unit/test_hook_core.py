@@ -7,6 +7,7 @@ from pathlib import Path
 from pandaprobe_harness import HarnessConfig, HarnessFilesystem, Mailbox, RawLoopAdapter
 from pandaprobe_harness.cli.errors import CliError
 from pandaprobe_harness.evaluation.metrics import EvalReport
+from pandaprobe_harness.evaluation.traces import TraceLocator
 from pandaprobe_harness.hook.core import PandaHarnessHook
 from pandaprobe_harness.hook.turn import TurnContext
 from tests.fakes.fake_cli_client import FakeCliClient
@@ -24,6 +25,7 @@ def _make(
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
+        trigger_mode="session",
         **kw,  # type: ignore[arg-type]
     )
     fs = HarnessFilesystem(cfg)
@@ -31,11 +33,19 @@ def _make(
     return PandaHarnessHook(cli, config=cfg, filesystem=fs), fs, cfg
 
 
+def _stub_locator() -> TraceLocator:
+    """The hook adopts its evaluator's locator; these stubs drive only the
+    session path, so an unused one satisfies the seam."""
+
+    return TraceLocator(FakeCliClient(), HarnessConfig())
+
+
 class _BlockingEvaluator:
     """Blocks until released — exercises the refresh-timeout path."""
 
     def __init__(self) -> None:
         self.event = asyncio.Event()
+        self.locator = _stub_locator()
 
     async def evaluate_turn(self, ctx: TurnContext) -> EvalReport:
         await self.event.wait()
@@ -43,6 +53,9 @@ class _BlockingEvaluator:
 
 
 class _RaisingEvaluator:
+    def __init__(self) -> None:
+        self.locator = _stub_locator()
+
     async def evaluate_turn(self, ctx: TurnContext) -> EvalReport:
         raise RuntimeError("unexpected eval failure")
 
@@ -161,7 +174,11 @@ async def test_enrichment_failure_still_writes_dump_and_posts(tmp_path: Path) ->
 
 async def test_refresh_timeout_keeps_task_for_later(tmp_path: Path) -> None:
     evaluator = _BlockingEvaluator()
-    cfg = HarnessConfig(harness_root=tmp_path / "h", drain_timeout_s=0.02)
+    # A stub evaluator stands in for the platform, so pin the session path: the
+    # task lifecycle under test here is trigger-agnostic.
+    cfg = HarnessConfig(
+        harness_root=tmp_path / "h", drain_timeout_s=0.02, trigger_mode="session"
+    )
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(
@@ -179,7 +196,9 @@ async def test_refresh_timeout_keeps_task_for_later(tmp_path: Path) -> None:
 
 
 async def test_eval_failure_is_contained_in_the_task(tmp_path: Path) -> None:
-    cfg = HarnessConfig(harness_root=tmp_path / "h", drain_timeout_s=1.0)
+    cfg = HarnessConfig(
+        harness_root=tmp_path / "h", drain_timeout_s=1.0, trigger_mode="session"
+    )
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(
@@ -193,7 +212,9 @@ async def test_eval_failure_is_contained_in_the_task(tmp_path: Path) -> None:
 
 async def test_superseding_turn_cancels_prior_eval(tmp_path: Path) -> None:
     evaluator = _BlockingEvaluator()
-    cfg = HarnessConfig(harness_root=tmp_path / "h", drain_timeout_s=0.5)
+    cfg = HarnessConfig(
+        harness_root=tmp_path / "h", drain_timeout_s=0.5, trigger_mode="session"
+    )
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(

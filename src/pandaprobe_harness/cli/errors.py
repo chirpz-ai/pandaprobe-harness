@@ -32,6 +32,7 @@ __all__ = [
     "CliApiError",
     "CliTimeoutError",
     "CliOutputError",
+    "is_transient",
     "raise_for_exit_code",
 ]
 
@@ -93,6 +94,27 @@ def _fallback_for_unknown(result: CliResult) -> type[CliError]:
     if any(h in text for h in _NOTFOUND_HINTS):
         return CliNotFoundError
     return CliGeneralError
+
+
+#: Stderr hints that mean "the platform has not caught up yet", not "no data".
+#: Trace ingestion lags turn end (the SDK flushes on a background thread), so a
+#: freshly-ended session can legitimately look empty for a moment.
+_TRANSIENT_HINTS = ("no traces", "no session", "not yet", "empty", "pending", "no data")
+
+
+def is_transient(exc: CliError) -> bool:
+    """Whether ``exc`` is worth retrying.
+
+    Not-found (404 / eventual-consistency lag) and server errors (5xx / 429, exit
+    code 5) are retry-worthy; auth (2), validation (4), general (1), timeout and
+    output-parse failures are not. Lives here beside the exit-code contract it
+    encodes, so every caller shares one retry policy.
+    """
+
+    if isinstance(exc, (CliNotFoundError, CliApiError)):
+        return True
+    text = (exc.result.stderr if exc.result else "").lower()
+    return any(hint in text for hint in _TRANSIENT_HINTS)
 
 
 def raise_for_exit_code(result: CliResult) -> None:

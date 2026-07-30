@@ -88,13 +88,20 @@ class PandaTracer:
         if not self._enabled or not session_id:
             yield
             return
+        # Guard only the *binding*, never the body. Wrapping the `yield` in a
+        # try/except and yielding again in the handler makes a generator-based
+        # context manager yield twice when the body raises, which Python reports
+        # as "generator didn't stop after throw()" — masking the real exception
+        # from the LLM call with a confusing tracing error.
+        bind: contextlib.AbstractContextManager[object]
         try:
             import pandaprobe
 
-            with pandaprobe.session(session_id):
-                yield
+            bind = pandaprobe.session(session_id)
         except Exception as exc:  # pragma: no cover - telemetry must never crash a trial
             logger.warning("pandaprobe session bind failed for %s: %s", session_id, exc)
+            bind = contextlib.nullcontext()
+        with bind:
             yield
 
     def flush(self, timeout: float = 30.0) -> None:

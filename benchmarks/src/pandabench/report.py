@@ -49,9 +49,13 @@ def _flatten(rec: dict[str, Any]) -> dict[str, Any]:
     flat["output_tokens"] = usage.get("output_tokens", 0)
     flat["cost_usd"] = usage.get("cost_usd", 0.0)
     flat["has_harness"] = bool(harness)
-    for key in ("reliability", "consistency", "breached", "rules_active",
-                "rules_candidate", "rules_retired", "notices"):
+    for key in ("reliability", "consistency", "breached", "gate_breached",
+                "rules_active", "rules_candidate", "rules_retired", "notices"):
         flat[f"h_{key}"] = harness.get(key)
+    # Under the trace trigger the composites above are None and the signal lives
+    # here, so flatten each resolved metric into its own column.
+    for name, value in (harness.get("scores") or {}).items():
+        flat[f"h_score_{name}"] = value
     nm = rec.get("native_metrics") or {}
     flat["native_metrics"] = json.dumps(nm)
     return flat

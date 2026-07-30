@@ -3,8 +3,10 @@
 Manages the persistent ``/harness`` workspace the agent reads and rewrites to
 self-heal:
 
-- ``harness_rules.md`` — the living rules (seeded from the template; rendered
-  by ``workspace.RulesStore`` once structured rules exist).
+- ``harness_rules.md`` — the skill root: protocol plus a generated References
+  index (seeded from the template, then rendered by ``workspace.RulesStore``).
+- ``rules/`` — the rule files themselves, one per scope, written by
+  ``RulesStore.sync_markdown``.
 - ``traces/latest_eval.json`` — the most recent eval dump (written atomically).
 - ``traces/<notice_id>.json`` — one immutable dump per diagnostic notice.
 
@@ -37,16 +39,18 @@ class HarnessFilesystem:
     # -- provisioning ---------------------------------------------------------
 
     def provision(self) -> None:
-        """Create the ``/harness`` tree and seed ``harness_rules.md`` if absent.
+        """Create the ``/harness`` tree and seed the skill root if absent.
 
-        Idempotent: an existing rules file (which may have accumulated learned
-        mitigations) is never overwritten.
+        Idempotent: an existing root (which the agent or a prior run may have
+        rewritten) is never overwritten here — ``RulesStore.sync_markdown``
+        regenerates it, and the ``rules/`` subtree with it.
         """
 
         cfg = self._config
         cfg.harness_root.mkdir(parents=True, exist_ok=True)
         cfg.traces_dir.mkdir(parents=True, exist_ok=True)
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        cfg.rules_dir.mkdir(parents=True, exist_ok=True)
         if not cfg.rules_file.exists():
             cfg.rules_file.write_text(self._default_rules_template(), encoding="utf-8")
 

@@ -7,33 +7,40 @@ from pathlib import Path
 import pytest
 
 from pandaprobe_harness import HarnessConfig, Journal, Rule, RulesCapError, RulesStore
-from pandaprobe_harness.workspace.rules import RULES_MARKER
+from pandaprobe_harness.workspace.rules import REFERENCES_MARKER
 
 
-def test_add_returns_rule_appends_jsonl_and_renders_markdown(
+def test_add_returns_rule_appends_jsonl_and_renders_its_scope_file(
     rules: RulesStore, config: HarnessConfig
 ) -> None:
     rule = rules.add(
         "Never retry a failed charge blindly",
         "Duplicate charges were observed on retries",
         source_notice_id="n-123",
-        metric="agent_reliability",
+        metric="tool_correctness",
+        scope="payments",
     )
 
     assert isinstance(rule, Rule)
     assert rule.status == "candidate"  # rules start unproven (rule_validation default)
     assert rule.source_notice_id == "n-123"
-    assert rule.metric == "agent_reliability"
+    assert rule.metric == "tool_correctness"
+    assert rule.scope == "payments"
 
     lines = config.rules_store_file.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
 
-    markdown = config.rules_file.read_text(encoding="utf-8")
-    assert "Never retry a failed charge blindly" in markdown
-    assert "Duplicate charges were observed on retries" in markdown
-    assert "from notice n-123" in markdown
-    assert "Learned Mitigations" in markdown
-    assert RULES_MARKER in markdown
+    # The rule body lands in its own file under rules/ …
+    scope_file = config.rules_scope_file("payments").read_text(encoding="utf-8")
+    assert "Never retry a failed charge blindly" in scope_file
+    assert "Duplicate charges were observed on retries" in scope_file
+    assert "from notice n-123" in scope_file
+
+    # … and the root only *indexes* it, so the skill root stays small and stable.
+    root = config.rules_file.read_text(encoding="utf-8")
+    assert "rules/payments.md" in root
+    assert REFERENCES_MARKER in root
+    assert "Never retry a failed charge blindly" not in root
 
 
 def test_add_dedups_on_normalized_text(rules: RulesStore) -> None:
@@ -66,9 +73,12 @@ def test_retire_excludes_rule_and_latest_record_wins(
     assert retired.status == "retired"
 
     assert rules.active() == []
-    markdown = config.rules_file.read_text(encoding="utf-8")
-    assert "Prefer reads before writes" not in markdown
-    assert "_No learned rules yet._" in markdown
+    # The scope file is rewritten empty rather than left holding a retired rule.
+    scope_file = config.rules_scope_file("global").read_text(encoding="utf-8")
+    assert "Prefer reads before writes" not in scope_file
+    assert "_No learned rules yet._" in scope_file
+    # With nothing live, the root's References says so.
+    assert "No rules recorded yet" in config.rules_file.read_text(encoding="utf-8")
 
     # Retirement is an appended record; the latest record per id wins.
     lines = config.rules_store_file.read_text(encoding="utf-8").splitlines()

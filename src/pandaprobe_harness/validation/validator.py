@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from ..config import HarnessConfig
 from ..evaluation.evaluator import MetricEvaluator
-from ..hook.turn import TurnContext
+from ..evaluation.metrics import Metric
+from ..hook.tiers import VerifierFn, run_verifier
 from ..workspace.evalset import EvalCase, EvalSet, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.rules import Rule, RulesStore, TrialState
@@ -98,6 +100,22 @@ def _target_signatures(rule: Rule) -> tuple[str, ...]:
     return tuple(signatures)
 
 
+def _target_for(
+    preference: Sequence[str | None], deltas: Mapping[str, float]
+) -> str | None:
+    """The most authoritative metric in ``preference`` that this case measured.
+
+    Falling back down the list matters: a verifier that cannot grade a particular
+    task contributes no delta, and treating its absence as a failed target would
+    veto promotion for every such case.
+    """
+
+    return next(
+        (name for name in preference if name and name in deltas),
+        None,
+    )
+
+
 def _metric_of(signature: str) -> str | None:
     _, sep, metric = signature.partition(":")
     return metric if sep else None
@@ -161,12 +179,14 @@ class ReplayValidator:
         evalset: EvalSet,
         evaluator: MetricEvaluator,
         replay: ReplayFn,
+        verifier: VerifierFn | None = None,
     ) -> None:
         self._config = config
         self._rules = rules
         self._evalset = evalset
         self._evaluator = evaluator
         self._replay = replay
+        self._verifier = verifier
 
     async def validate(self, rule: Rule) -> ValidationVerdict:
         targets = _target_signatures(rule)
@@ -185,9 +205,14 @@ class ReplayValidator:
         # The full render includes the candidate (provisional section), so the
         # replayed run executes with the rule in force.
         context = await asyncio.to_thread(self._rules.render_markdown)
-        target_metric = rule.metric or _metric_of(failures[0].signature[0])
+        # Trust order, most authoritative first. Resolved per case against the
+        # deltas that actually arrived (see `_target_for`) rather than up front:
+        # a verifier may legitimately have no verdict for a given task, and
+        # picking `outcome_correct` anyway would then veto every promotion.
+        preference = (str(Metric.OUTCOME), rule.metric, _metric_of(failures[0].signature[0]))
 
         improved = False
+        improved_on: str | None = None
         regression: str | None = None
         inconclusive = 0
         conclusive_failures = 0
@@ -220,8 +245,11 @@ class ReplayValidator:
             for metric, delta in deltas.items():
                 if delta <= -self._config.rule_regress_margin:
                     regression = f"case {case.id} metric {metric} (Δ={delta:+.2f})"
-            if case.kind == "failure" and self._improved(target_metric, deltas):
-                improved = True
+            if case.kind == "failure":
+                target_metric = _target_for(preference, deltas)
+                if self._improved(target_metric, deltas):
+                    improved = True
+                    improved_on = target_metric
 
         details = {"cases": case_details, "inconclusive": inconclusive}
         if regression is not None:
@@ -233,7 +261,7 @@ class ReplayValidator:
                 details=details,
             )
         if improved:
-            metric_label = target_metric or "the targeted metric"
+            metric_label = improved_on or "the targeted metric"
             return ValidationVerdict(
                 rule_id=rule.id,
                 outcome="promote",
@@ -287,20 +315,20 @@ class ReplayValidator:
             logger.warning("replay failed for case %s: %s", case.id, exc or type(exc).__name__)
             return None
         try:
-            report = await self._evaluator.evaluate_turn(
-                TurnContext(session_id=new_session, turn_index=0)
-            )
+            resolved = await self._evaluator.score_for_trigger(new_session)
         except Exception as exc:  # noqa: BLE001 - scoring failure is inconclusive
             logger.warning("scoring replayed session %s failed: %s", new_session, exc)
             return None
-        scores = {
-            str(score.metric): score.value
-            for score in report.scores
-            if score.value is not None
-        }
-        if not scores:
+        # The case's `replay_input` is the same payload the live turn carried, so
+        # it stands in for the end state — which is what lets a verifier keyed on a
+        # task id grade a replay at all.
+        payload = case.replay_input if isinstance(case.replay_input, Mapping) else {}
+        outcome = await run_verifier(self._verifier, new_session, payload)
+        if outcome is not None:
+            resolved[str(Metric.OUTCOME)] = outcome
+        if not resolved:
             return None
-        return new_session, scores
+        return new_session, resolved
 
 
 class ValidationEngine:
@@ -315,6 +343,7 @@ class ValidationEngine:
         evaluator: MetricEvaluator,
         journal: Journal,
         replay: ReplayFn | None = None,
+        verifier: VerifierFn | None = None,
     ) -> None:
         self._config = config
         self._rules = rules
@@ -328,6 +357,7 @@ class ValidationEngine:
                 evalset=evalset,
                 evaluator=evaluator,
                 replay=replay,
+                verifier=verifier,
             )
         self._no_replay_logged = False
         # (rules.jsonl mtime_ns + size, candidates) — the per-report observation

@@ -43,17 +43,19 @@ in-process `CliClient` and a throwaway temp workspace — no network, no real
 `pandaprobe` binary:
 
 1. **trace** — the agent repeats an identical tool call (the seeded failure);
-2. **eval** — the turn-end hook runs the session metrics
-   (`agent_reliability` / `agent_consistency`) and they breach;
+2. **eval** — the turn-end hook scores every trace of the turn on Tier 1
+   (`task_completion` / `coherence`); the trajectory is flat below target so the
+   gate fires a STALL, and Tier 2 (`tool_correctness` /
+   `argument_correctness`) then confirms the step-level breach on the last trace;
 3. **notice** — a structured `DiagnosticNotice` (flagged trace + per-trace
    signal breakdown + dump) is posted to `mailbox/pending/`, and the
    `⚠ HARNESS` banner appears in `harness.system_context()`;
 4. **pull** — the agent works the mailbox with its harness toolset:
    `harness_mailbox_list` → `harness_mailbox_read` → `harness_trace_inspect`
-   → `harness_journal`;
+   → `harness_rules_read`;
 5. **rule** — it records a permanent mitigation rule with provenance
-   (`harness_rule_add`), which lands in `harness_rules.md` and re-enters the
-   system context;
+   (`harness_rule_add`), which lands in `rules/<scope>.md` and is listed in the
+   References section of `harness_rules.md`, so the agent can pull it back;
 6. **ack** — it acknowledges the notice (`harness_mailbox_ack`), clearing the
    banner;
 7. **recovery** — the corrected behaviour scores healthy, no new notice is

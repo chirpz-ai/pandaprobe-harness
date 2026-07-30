@@ -53,6 +53,14 @@ class ResolvedModel:
     param_allowlist: frozenset[str]
     """Sampler/params LiteLLM may forward; everything else is dropped (Claude 5
     and GPT-5 400 on ``temperature``)."""
+    default_params: dict[str, Any]
+    """Provider-required constants sent on **every** call to this model, e.g.
+    ``reasoning_effort: none`` for GPT-5.6 (which otherwise 400s when function
+    tools are combined with reasoning on ``/v1/chat/completions``).
+
+    Distinct from ``param_allowlist``, which gates *caller-supplied* sampler
+    knobs: these are not the caller's choice, they are what the model requires.
+    A caller-supplied value of the same name wins, so a run can still override."""
     price_per_mtok: dict[str, float] | None
     """Fallback USD price per 1M tokens ``{input, output}`` when
     ``litellm.completion_cost`` lacks a price."""
@@ -80,6 +88,7 @@ class _ModelSpec:
     backends: dict[str, str]
     default_backend: str | None
     param_allowlist: frozenset[str]
+    default_params: dict[str, Any]
     price_per_mtok: dict[str, float] | None
     is_mock: bool
 
@@ -151,6 +160,7 @@ class ModelRegistry:
             provider=provider_of(litellm_model),
             backend=resolved_backend,
             param_allowlist=spec.param_allowlist,
+            default_params=dict(spec.default_params),
             price_per_mtok=spec.price_per_mtok,
             is_mock=spec.is_mock,
         )
@@ -166,6 +176,7 @@ def _parse_spec(key: str, raw: Mapping[str, Any]) -> _ModelSpec:
         backends={str(k): str(v) for k, v in backends.items()},
         default_backend=raw.get("default_backend"),
         param_allowlist=frozenset(raw.get("param_allowlist") or ()),
+        default_params=dict(raw.get("default_params") or {}),
         price_per_mtok={str(k): float(v) for k, v in price.items()} if price else None,
         is_mock=bool(raw.get("mock", False)),
     )

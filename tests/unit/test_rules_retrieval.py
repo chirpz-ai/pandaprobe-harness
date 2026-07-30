@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from pandaprobe_harness import HarnessConfig, HarnessToolset, Journal, Mailbox, RulesStore
-from pandaprobe_harness.evaluation.history import ScoreHistoryStore
 from pandaprobe_harness.hook.context import compose_system_preamble
 from pandaprobe_harness.workspace.rules import _tokenize
 from tests.fakes.fake_cli_client import FakeCliClient
@@ -50,25 +49,38 @@ def test_tag_match_outranks_text_match_outranks_unrelated(tmp_path: Path) -> Non
     assert scores[tagged.id] > scores[text_only.id] > scores[unrelated.id] == 0.0
 
 
-def test_relevant_keeps_globals_and_caps_tagged(tmp_path: Path) -> None:
+def test_relevant_keeps_globals_and_caps_scoped(tmp_path: Path) -> None:
+    """Eligibility is decided by *scope*, not by whether a rule carries tags —
+    v1 conflated the two, so any rule added without a notice became a permanent
+    global by accident."""
+
     store = _store(tmp_path, topk=1)
-    global_rule = store.add("always read before writing", "x")  # untagged = global
-    relevant = store.add("verify payments", "x", tags=["payment"])
-    other_a = store.add("rule about databases", "x", tags=["database"])
-    other_b = store.add("rule about emails", "x", tags=["email"])
+    global_rule = store.add("always read before writing", "x", scope="global")
+    relevant = store.add("verify payments", "x", tags=["payment"], scope="scoped")
+    other_a = store.add("rule about databases", "x", tags=["database"], scope="scoped")
+    other_b = store.add("rule about emails", "x", tags=["email"], scope="scoped")
 
     selected = store.relevant("payment failed", k=1)
     ids = [rule.id for rule in selected]
-    assert global_rule.id in ids  # globals always render, exempt from k
+    assert global_rule.id in ids  # globals are always eligible, exempt from k
     assert relevant.id in ids
-    assert len(ids) == 2  # 1 global + top-1 tagged
+    assert len(ids) == 2  # 1 global + top-1 scoped
     assert other_a.id not in ids and other_b.id not in ids
+
+
+def test_a_tagged_rule_filed_as_global_is_still_always_eligible(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, topk=1)
+    tagged_global = store.add("hold the invariant", "x", tags=["email"], scope="global")
+
+    assert tagged_global.id in {r.id for r in store.relevant("payment", k=1)}
 
 
 def test_relevant_falls_back_to_recency_without_overlap(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.add("older tagged rule", "x", tags=["alpha"])
-    newer = store.add("newer tagged rule", "x", tags=["beta"])
+    store.add("older scoped rule", "x", tags=["alpha"], scope="scoped")
+    newer = store.add("newer scoped rule", "x", tags=["beta"], scope="scoped")
 
     selected = store.relevant("zzz-no-overlap", k=1)
     assert [rule.id for rule in selected] == [newer.id]
@@ -81,32 +93,48 @@ def test_query_none_renders_everything(tmp_path: Path) -> None:
     assert {rule.id for rule in store.relevant(None, k=1)} == {a.id, b.id}
 
 
-def test_render_markdown_notes_omitted_rules(tmp_path: Path) -> None:
+def test_render_scope_notes_omitted_rules(tmp_path: Path) -> None:
     store = _store(tmp_path, topk=1)
-    store.add("rule about payments", "x", tags=["payment"])
-    store.add("rule about databases", "x", tags=["database"])
-    store.add("rule about emails", "x", tags=["email"])
+    store.add("rule about payments", "x", tags=["payment"], scope="scoped")
+    store.add("rule about databases", "x", tags=["database"], scope="scoped")
+    store.add("rule about emails", "x", tags=["email"], scope="scoped")
 
-    markdown = store.render_markdown(query="payment")
-    assert "rule about payments" in markdown
-    assert "rule about databases" not in markdown
-    assert "2 more active rule(s) available" in markdown
-    assert "harness_rules_search" in markdown
+    narrowed = store.render_scope("scoped", query="payment")
+    assert "rule about payments" in narrowed
+    assert "rule about databases" not in narrowed
+    assert "2 more active rule(s) available" in narrowed
+    assert "harness_rules_search" in narrowed
 
     # The on-disk artifact is always the full render.
-    full = store.render_markdown()
+    full = store.render_scope("scoped")
     assert "rule about databases" in full and "more active rule(s)" not in full
 
 
-def test_retrieval_off_reproduces_v05_rendering(tmp_path: Path) -> None:
-    store = _store(tmp_path, retrieval=False)
-    store.add("rule about payments", "x", tags=["payment"])
-    store.add("rule about databases", "x", tags=["database"])
+def test_render_markdown_covers_every_scope(tmp_path: Path) -> None:
+    """The full-corpus render is the *replay* context, so it must reach across
+    every scope — a rule is only validated fairly if it was actually in force."""
 
-    markdown = store.render_markdown(query="payment")
-    assert "rule about payments" in markdown
-    assert "rule about databases" in markdown  # nothing filtered
-    assert "more active rule(s)" not in markdown
+    store = _store(tmp_path)
+    store.add("global lesson", "x", scope="global")
+    store.add("scoped lesson", "x", scope="scoped")
+    store.add("payments lesson", "x", scope="payments")
+
+    full = store.render_markdown()
+
+    assert "global lesson" in full
+    assert "scoped lesson" in full
+    assert "payments lesson" in full
+
+
+def test_retrieval_off_renders_every_active_rule(tmp_path: Path) -> None:
+    store = _store(tmp_path, retrieval=False)
+    store.add("rule about payments", "x", tags=["payment"], scope="scoped")
+    store.add("rule about databases", "x", tags=["database"], scope="scoped")
+
+    rendered = store.render_scope("scoped", query="payment")
+    assert "rule about payments" in rendered
+    assert "rule about databases" in rendered  # nothing filtered
+    assert "more active rule(s)" not in rendered
 
 
 def test_search_filters_by_status(tmp_path: Path) -> None:
@@ -122,7 +150,11 @@ def test_search_filters_by_status(tmp_path: Path) -> None:
     assert [rule.id for rule, _ in retired_only] == [gone.id]
 
 
-def test_preamble_task_hint_drives_retrieval(tmp_path: Path) -> None:
+def test_preamble_never_carries_rule_text_however_it_is_hinted(tmp_path: Path) -> None:
+    """v1 selected rules with a task hint and inlined them. v2 does not inline any
+    rule text at all, so the hint has nothing to select — the agent conditions its
+    own retrieval through `harness_rules_search` / `harness_rules_read`."""
+
     config = HarnessConfig(
         harness_root=tmp_path / "harness",
         rule_validation=False,
@@ -133,18 +165,16 @@ def test_preamble_task_hint_drives_retrieval(tmp_path: Path) -> None:
     rules = RulesStore(config, journal=journal)
     mailbox = Mailbox(config)
     mailbox.provision()
-    rules.add("verify payment status first", "x", tags=["payment"])
-    rules.add("email retries must back off", "x", tags=["email"])
+    rules.add("verify payment status first", "x", tags=["payment"], scope="scoped")
+    rules.add("email retries must back off", "x", tags=["email"], scope="scoped")
 
-    hinted = compose_system_preamble(rules, mailbox, task_hint="charge a payment")
-    assert "verify payment status first" in hinted
-    assert "email retries must back off" not in hinted
-    assert "1 more active rule(s) available" in hinted
-
-    # No hint and no pending notices → no signal → everything renders.
-    unhinted = compose_system_preamble(rules, mailbox)
-    assert "verify payment status first" in unhinted
-    assert "email retries must back off" in unhinted
+    for preamble in (
+        compose_system_preamble(rules, mailbox),
+        compose_system_preamble(rules, mailbox),
+    ):
+        assert "verify payment status first" not in preamble
+        assert "email retries must back off" not in preamble
+        assert "rules/scoped.md" in preamble  # named, so it is one call away
 
 
 async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
@@ -163,7 +193,6 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
         mailbox=mailbox,
         journal=journal,
         rules=rules,
-        history=ScoreHistoryStore(config),
     )
     payment = rules.add("verify payments", "x", tags=["payment"])
     retired = rules.add("old email rule", "x", tags=["email"])
@@ -186,47 +215,29 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
     assert [r["id"] for r in searched_retired["rules"]] == [retired.id]
 
 
-def test_pending_notice_signatures_drive_retrieval_without_a_hint(
-    tmp_path: Path,
-) -> None:
-    """The retrieval query must come from the mailbox too: with no task hint,
-    a pending notice's signatures/metrics select the matching rule."""
+def test_notice_signature_tokens_still_rank_the_matching_rule(tmp_path: Path) -> None:
+    """A notice's signatures are auto-derived into a rule's tags, so a later query
+    built from those signatures still finds it — the ranking is unchanged, only
+    the *caller* moved from the preamble to the agent's own search."""
 
-    from pandaprobe_harness.workspace.mailbox import DiagnosticNotice, NoticeMetric
-
-    config = HarnessConfig(
-        harness_root=tmp_path / "harness",
-        rule_validation=False,
-        rule_retrieval=True,
-        rules_context_topk=1,
+    store = _store(tmp_path, topk=1)
+    matching = store.add(
+        "verify payment status first",
+        "x",
+        tags=["breach:tool_correctness"],
+        scope="scoped",
     )
-    journal = Journal(config)
-    rules = RulesStore(config, journal=journal)
-    mailbox = Mailbox(config)
-    mailbox.provision()
-    rules.add("verify payment status first", "x", tags=["breach:agent_reliability"])
-    rules.add("email retries must back off", "x", tags=["email"])
-    mailbox.post(
-        DiagnosticNotice(
-            id="n-retr-1",
-            created_at="2026-07-03T00:00:00+00:00",
-            session_id="s-1",
-            turn_index=1,
-            severity="breach",
-            metrics=(NoticeMetric(name="agent_reliability", value=0.3, threshold=0.5),),
-            signatures=("breach:agent_reliability",),
-        )
-    )
+    store.add("email retries must back off", "x", tags=["email"], scope="scoped")
 
-    preamble = compose_system_preamble(rules, mailbox)  # no task_hint
-    assert "verify payment status first" in preamble
-    assert "email retries must back off" not in preamble
-    assert "1 more active rule(s) available" in preamble
+    selected = store.relevant("breach:tool_correctness tool_correctness", k=1)
+
+    assert [rule.id for rule in selected] == [matching.id]
 
 
-def test_candidates_render_even_when_query_filters_actives(tmp_path: Path) -> None:
-    """Retrieval must never starve a trial: candidates render in full under
-    any query, outside the top-k budget."""
+def test_candidates_render_even_when_a_query_filters_actives(tmp_path: Path) -> None:
+    """Retrieval must never starve a trial: candidates render in full under any
+    query, outside the top-k budget, because they have to be in force to be
+    measurable."""
 
     from pandaprobe_harness.workspace.rules import PROVISIONAL_HEADING
 
@@ -237,14 +248,15 @@ def test_candidates_render_even_when_query_filters_actives(tmp_path: Path) -> No
         rules_context_topk=1,
     )
     store = RulesStore(config, journal=Journal(config))
-    candidate = store.add("candidate about databases", "x", tags=["database"])
-    active_a = store.add("payment rule", "x", tags=["payment"])
+    store.add("candidate about databases", "x", tags=["database"], scope="scoped")
+    active_a = store.add("payment rule", "x", tags=["payment"], scope="scoped")
     store.promote(active_a.id)
-    active_b = store.add("email rule", "x", tags=["email"])
+    active_b = store.add("email rule", "x", tags=["email"], scope="scoped")
     store.promote(active_b.id)
 
-    markdown = store.render_markdown(query="payment")
-    assert "payment rule" in markdown
-    assert "email rule" not in markdown  # trimmed by top-k
-    assert PROVISIONAL_HEADING in markdown
-    assert candidate.rule in markdown  # the candidate survives the filter
+    rendered = store.render_scope("scoped", query="payment")
+
+    assert "payment rule" in rendered
+    assert "email rule" not in rendered  # trimmed by top-k
+    assert PROVISIONAL_HEADING in rendered
+    assert "candidate about databases" in rendered  # survives the filter

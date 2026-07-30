@@ -38,6 +38,7 @@ def _compat_config(tmp_path: Path) -> HarnessConfig:
         drain_timeout_s=5.0,
         rule_validation=False,
         rule_retrieval=False,
+        trigger_mode="session",
     )
 
 
@@ -123,12 +124,19 @@ async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
     assert active[0].status == "active"
     assert active[0].source_notice_id == notice.id
     assert active[0].metric in {"agent_reliability", "agent_consistency"}
-    assert MITIGATION_RULE[:30] in config.rules_file.read_text(encoding="utf-8")
+    # The rule body lands in its scope file; the skill root only indexes it.
+    scope_file = config.rules_scope_file(active[0].scope)
+    assert MITIGATION_RULE[:30] in scope_file.read_text(encoding="utf-8")
 
-    # The banner cleared; the learned rule re-enters context (loop closed).
+    # The banner cleared, and the learned rule is back within the agent's reach:
+    # named in the References and one `harness_rules_read` away. That pull — not
+    # an injection into the prompt — is what closes the loop in v2.
     context = harness.system_context()
     assert "⚠ HARNESS" not in context
-    assert "payment tool twice" in context
+    assert f"rules/{active[0].scope}.md" in context
+    assert MITIGATION_RULE[:30] not in context
+    fetched = await harness.toolset.call("harness_rules_read", {"scope": active[0].scope})
+    assert MITIGATION_RULE[:30] in fetched["content"]
 
     # --- Turns 3-4: corrected behaviour, no further notices -----------------
     await run_turn()
@@ -157,6 +165,7 @@ async def test_gradual_decline_posts_single_trend_notice(tmp_path: Path) -> None
         eval_consistency=False,  # isolate a single metric series
         trend_min_samples=4,
         trend_margin_cross=0.05,
+        trigger_mode="session",
     )
     cli = FakeCliClient(metric_values={"agent_reliability": 0.80})
     harness = Harness.create(cfg, cli=cli)
@@ -190,10 +199,13 @@ async def test_rules_and_journal_persist_across_runs(tmp_path: Path) -> None:
         await harness1.refresh(SESSION)
     assert agent.healed
 
-    # Run 2: a fresh process over the same workspace.
+    # Run 2: a fresh process over the same workspace. The learned rule survives
+    # and is still reachable — the References index is regenerated from the store,
+    # so a new process rediscovers the rule files without being told about them.
     harness2 = Harness.create(config, cli=FakeCliClient())
-    context = harness2.system_context()
-    assert "payment tool twice" in context  # learned rule re-enters context
+    assert "rules/global.md" in harness2.system_context()
+    fetched = await harness2.toolset.call("harness_rules_read", {"scope": "global"})
+    assert "payment tool twice" in fetched["content"]
 
     events = harness2.journal.recent(types=("notice", "rule_add", "ack"))
     assert {e["type"] for e in events} == {"notice", "rule_add", "ack"}

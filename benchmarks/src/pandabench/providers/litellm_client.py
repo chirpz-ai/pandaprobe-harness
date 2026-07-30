@@ -127,7 +127,9 @@ class LiteLLMClient:
     ) -> dict[str, Any]:
         """Build the allowlisted per-call params (drops disallowed samplers)."""
 
-        params: dict[str, Any] = {}
+        # Provider-required constants first, so an allowlisted caller value of the
+        # same name still wins.
+        params: dict[str, Any] = dict(model.default_params)
         if "max_tokens" in model.param_allowlist:
             params["max_tokens"] = max_tokens or self._default_max_tokens
         for name in _SAMPLER_PARAMS:
@@ -135,7 +137,7 @@ class LiteLLMClient:
                 params[name] = extra[name]
         # Any explicitly-requested extra that is allowlisted passes through.
         for name, value in (extra or {}).items():
-            if name in model.param_allowlist and name not in params:
+            if name in model.param_allowlist:
                 params[name] = value
         return params
 
