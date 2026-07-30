@@ -25,6 +25,7 @@ def _config(tmp_path: Path, **overrides: object) -> HarnessConfig:
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
         drain_timeout_s=5.0,
+        trigger_mode="session",
         **overrides,  # type: ignore[arg-type]
     )
 
@@ -146,6 +147,7 @@ async def test_advisory_trend_notice_captures_no_eval_case(tmp_path: Path) -> No
         eval_consistency=False,  # isolate one declining metric
         trend_min_samples=4,
         trend_margin_cross=0.05,
+        trigger_mode="session",
     )
     cli = FakeCliClient(metric_values={"agent_reliability": 0.80})
     harness = Harness.create(cfg, cli=cli)
