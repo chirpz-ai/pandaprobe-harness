@@ -25,12 +25,16 @@ from typing import Any
 from ..cli.client import CliClient
 from ..cli.errors import CliError
 from ..config import HarnessConfig
-from ..evaluation.history import ScoreHistoryStore
 from ..workspace._io import load_json
-from ..workspace.evalset import CaseKind, EvalSet
 from ..workspace.journal import Journal
 from ..workspace.mailbox import Mailbox
-from ..workspace.rules import Rule, RulesStore, RuleStatus, derive_notice_tags
+from ..workspace.rules import (
+    Rule,
+    RulesStore,
+    RuleStatus,
+    derive_notice_tags,
+    normalize_scope,
+)
 from .spec import ToolSpec
 
 __all__ = ["OP_SCHEMAS", "HarnessToolset"]
@@ -85,31 +89,15 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["trace_id"],
         },
     },
-    "harness_history": {
+    "harness_rules_read": {
         "description": (
-            "Score trajectory for a metric: the local per-session series and, "
-            "when available, the backend session scores."
+            "Read one rule file. Pass the scope named in the References — "
+            "'global' for the always-in-force rules, 'scoped' for step-level "
+            "ones, or a topic file you created. Defaults to 'global'."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {
-                "metric": {"type": "string"},
-                "session_id": {"type": "string"},
-            },
-            "required": ["metric"],
-        },
-    },
-    "harness_journal": {
-        "description": (
-            "Recent harness journal events (notices, acks, rules, reflections) "
-            "— the cross-run memory for spotting recurring failure patterns."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer"},
-                "types": {"type": "array", "items": {"type": "string"}},
-            },
+            "properties": {"scope": {"type": "string"}},
             "required": [],
         },
     },
@@ -118,7 +106,10 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
             "Record a permanent mitigation rule (with rationale and the notice "
             "that motivated it). Dedup-safe; fails at the rule cap. When rule "
             "validation is enabled the rule starts as a CANDIDATE and is "
-            "promoted automatically once evidence shows it helps."
+            "promoted automatically once evidence shows it helps. 'scope' picks "
+            "the rule file: 'global' (always in force), 'scoped' (step-level "
+            "default), or any topic name to create/target your own file. "
+            "Defaults to the scope the source notice suggests."
         ),
         "input_schema": {
             "type": "object",
@@ -128,6 +119,7 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
                 "notice_id": {"type": "string"},
                 "metric": {"type": "string"},
                 "tags": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "string"},
             },
             "required": ["rule", "rationale"],
         },
@@ -154,9 +146,9 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "harness_rules_search": {
         "description": (
-            "Search the rule set by lexical relevance. The system context only "
-            "carries the rules relevant to the current situation — everything "
-            "else stays reachable here."
+            "Search every rule by lexical relevance, across all scopes. Use this "
+            "when you do not know which rule file a lesson would be in; use "
+            "harness_rules_read when you do."
         ),
         "input_schema": {
             "type": "object",
@@ -187,38 +179,6 @@ OP_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": [],
         },
     },
-    "harness_reflect": {
-        "description": (
-            "Assembled cross-run context for a rules refactor: recent notices, "
-            "active rules, and per-rule effectiveness counts."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    "harness_evalset_list": {
-        "description": (
-            "List captured eval cases: failure scenarios and protected wins "
-            "used for rule validation and regression runs."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"kind": {"type": "string", "enum": ["failure", "win"]}},
-            "required": [],
-        },
-    },
-    "harness_evalset_attach": {
-        "description": (
-            "Attach a replay input (the original task/prompt payload) to an "
-            "eval case so it becomes replayable for validation and regression."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "case_id": {"type": "string"},
-                "replay_input": {},
-            },
-            "required": ["case_id", "replay_input"],
-        },
-    },
 }
 
 
@@ -233,16 +193,12 @@ class HarnessToolset:
         mailbox: Mailbox,
         journal: Journal,
         rules: RulesStore,
-        history: ScoreHistoryStore,
-        evalset: EvalSet | None = None,
     ) -> None:
         self._config = config
         self._cli = cli
         self._mailbox = mailbox
         self._journal = journal
         self._rules = rules
-        self._history = history
-        self._evalset = evalset
         self._specs = tuple(
             ToolSpec(
                 name=name,
@@ -257,16 +213,12 @@ class HarnessToolset:
                     ("harness_mailbox_read", self.mailbox_read),
                     ("harness_mailbox_ack", self.mailbox_ack),
                     ("harness_trace_inspect", self.trace_inspect),
-                    ("harness_history", self.history),
-                    ("harness_journal", self.journal_recent),
+                    ("harness_rules_read", self.rules_read),
                     ("harness_rule_add", self.rule_add),
                     ("harness_rule_retire", self.rule_retire),
                     ("harness_rule_status", self.rule_status),
                     ("harness_rules_search", self.rules_search),
                     ("harness_rules_list", self.rules_list),
-                    ("harness_reflect", self.reflect),
-                    ("harness_evalset_list", self.evalset_list),
-                    ("harness_evalset_attach", self.evalset_attach),
                 )
             )
         )
@@ -354,20 +306,6 @@ class HarnessToolset:
             ),
         }
 
-    async def history(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        metric = str(args["metric"])
-        session_id = str(args["session_id"]) if args.get("session_id") is not None else None
-        local: list[dict[str, Any]] = []
-        backend: Any = None
-        if session_id:
-            samples = await asyncio.to_thread(self._history.series, session_id, metric)
-            local = [{"value": s.value, "ts": s.ts, "run_id": s.run_id} for s in samples]
-            backend = await self._cli_json(
-                "evals", "scores", "list", "--target", "session", "--session-id", session_id
-            )
-        return {"ok": True, "metric": metric, "session_id": session_id,
-                "local": local, "backend": backend}
-
     async def _cli_json(self, *argv: str) -> Any:
         """Best-effort CLI call: ``None`` on any error (partial results are fine)."""
 
@@ -378,24 +316,14 @@ class HarnessToolset:
             logger.debug("cli call %s degraded", argv, exc_info=True)
             return None
 
-    # -- cross-run memory ---------------------------------------------------------
+    # -- rules ---------------------------------------------------------------------
 
-    async def journal_recent(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        limit_raw = args.get("limit", 20)
-        try:
-            limit = int(limit_raw) if isinstance(limit_raw, (int, str)) else 20
-        except ValueError:
-            limit = 20
-        # A non-positive limit means "no limit" to Journal.recent, which would
-        # dump the entire append-only journal into the tool result. Clamp to a
-        # sane bound for an agent-facing call.
-        limit = 500 if limit <= 0 else min(limit, 500)
-        types_raw = args.get("types")
-        types = (
-            tuple(str(t) for t in types_raw) if isinstance(types_raw, list) else None
+    async def rules_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        scope = normalize_scope(
+            str(args["scope"]) if args.get("scope") is not None else None
         )
-        events = await asyncio.to_thread(self._journal.recent, limit, types=types)
-        return {"ok": True, "events": events}
+        content = await asyncio.to_thread(self._rules.read_scope, scope)
+        return {"ok": True, "scope": scope, "path": f"rules/{scope}.md", "content": content}
 
     async def rule_add(self, args: Mapping[str, Any]) -> dict[str, Any]:
         rule_text = str(args["rule"])
@@ -406,21 +334,27 @@ class HarnessToolset:
         explicit_tags = (
             [str(tag) for tag in tags_raw] if isinstance(tags_raw, list) else []
         )
+        explicit_scope = str(args["scope"]) if args.get("scope") is not None else None
 
         def _add() -> Rule:
             # Auto-derive retrieval tags from the source notice (signatures,
-            # metric names, signal names); explicit tags come first.
+            # metric names, signal names); explicit tags come first. The notice
+            # also supplies the default scope, which an explicit one overrides.
             derived: tuple[str, ...] = ()
+            scope = explicit_scope
             if notice_id:
                 notice = self._mailbox.read(notice_id)
                 if notice is not None:
                     derived = derive_notice_tags(notice)
+                    if scope is None:
+                        scope = notice.scope_hint
             return self._rules.add(
                 rule_text,
                 rationale,
                 source_notice_id=notice_id,
                 metric=metric,
                 tags=(*explicit_tags, *derived),
+                scope=normalize_scope(scope),
             )
 
         rule = await asyncio.to_thread(_add)
@@ -485,61 +419,3 @@ class HarnessToolset:
             return {"ok": True, "rule": rule.to_json(), "lifecycle": lifecycle}
         return {"ok": False, "error": f"no rule {rule_id!r}"}
 
-    # -- eval-set ------------------------------------------------------------------
-
-    async def evalset_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        evalset = self._evalset
-        if evalset is None:
-            return {"ok": False, "error": "eval-set store unavailable"}
-        kind_raw = args.get("kind")
-        kind: CaseKind | None
-        if kind_raw == "failure" or kind_raw == "win":
-            kind = kind_raw
-        else:
-            kind = None
-        cases = await asyncio.to_thread(lambda: evalset.cases(kind=kind))
-        return {"ok": True, "cases": [case.summary() for case in cases]}
-
-    async def evalset_attach(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        evalset = self._evalset
-        if evalset is None:
-            return {"ok": False, "error": "eval-set store unavailable"}
-        case_id = str(args["case_id"])
-        if "replay_input" not in args:
-            return {"ok": False, "error": "replay_input is required"}
-        payload = args["replay_input"]
-        try:
-            case = await asyncio.to_thread(evalset.attach_input, case_id, payload)
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": True, "case": case.summary()}
-
-    async def reflect(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        recent_notices = await asyncio.to_thread(
-            lambda: self._journal.recent(20, types=("notice",))
-        )
-        active = await asyncio.to_thread(self._rules.active)
-        candidates = await asyncio.to_thread(self._rules.candidates)
-        effectiveness = await asyncio.to_thread(self._rules.effectiveness)
-        # Validation outcomes are part of the cross-run memory: the reflection
-        # cycle should learn which kinds of rules survive their trials.
-        recent_validations = await asyncio.to_thread(
-            lambda: self._journal.recent(20, types=("rule_promote", "rule_retire"))
-        )
-        await asyncio.to_thread(
-            self._journal.record,
-            {
-                "type": "reflect",
-                "notice_count": len(recent_notices),
-                "active_rule_count": len(active),
-                "candidate_rule_count": len(candidates),
-            },
-        )
-        return {
-            "ok": True,
-            "recent_notices": recent_notices,
-            "active_rules": [r.to_json() for r in active],
-            "candidate_rules": [r.to_json() for r in candidates],
-            "recent_validations": recent_validations,
-            "effectiveness": effectiveness,
-        }
