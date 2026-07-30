@@ -78,7 +78,7 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
     def _system_prompt(self) -> str:
         policy = str(self.domain_policy)
         if self._wiring is not None:
-            return self._wiring.system_preamble(policy[:400]) + "\n\n" + policy
+            return self._wiring.system_preamble() + "\n\n" + policy
         return policy
 
     def _tool_schemas(self) -> list[dict[str, Any]]:
