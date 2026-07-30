@@ -32,7 +32,6 @@ from typing import Any, Literal
 
 from ..config import HarnessConfig
 from ..evaluation.evaluator import MetricEvaluator
-from ..hook.turn import TurnContext
 from ..workspace.evalset import EvalCase, EvalSet, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.rules import RulesStore
@@ -176,15 +175,12 @@ async def replay_case(
         logger.warning("replay failed for case %s: %s", case.id, exc or type(exc).__name__)
         return _skipped(case, f"replay failed: {exc or type(exc).__name__}")
     try:
-        report = await evaluator.evaluate_turn(
-            TurnContext(session_id=new_session, turn_index=0)
-        )
+        # Graded on whichever signal the configured trigger uses, so drift is
+        # judged on the same axis a breach would have been.
+        replay_scores = await evaluator.score_for_trigger(new_session)
     except Exception as exc:  # noqa: BLE001 - degrade to a skip, never crash the run
         logger.warning("scoring replayed session %s failed: %s", new_session, exc)
         return _skipped(case, f"scoring failed: {exc}")
-    replay_scores = {
-        str(score.metric): score.value for score in report.scores if score.value is not None
-    }
     if not replay_scores:
         return CaseResult(
             case_id=case.id,
