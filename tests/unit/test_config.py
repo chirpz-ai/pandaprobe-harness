@@ -9,6 +9,8 @@ def test_derived_paths_from_root() -> None:
     cfg = HarnessConfig(harness_root=Path("/tmp/harness"))
     assert cfg.traces_dir == Path("/tmp/harness/traces")
     assert cfg.rules_file == Path("/tmp/harness/harness_rules.md")
+    assert cfg.rules_dir == Path("/tmp/harness/rules")
+    assert cfg.rules_scope_file("payments") == Path("/tmp/harness/rules/payments.md")
     assert cfg.latest_eval_file == Path("/tmp/harness/traces/latest_eval.json")
 
 
@@ -155,3 +157,58 @@ def test_replay_timeout_knob(monkeypatch) -> None:
     assert HarnessConfig().replay_timeout_s == 300.0
     monkeypatch.setenv("HARNESS_REPLAY_TIMEOUT_S", "12.5")
     assert HarnessConfig.from_env().replay_timeout_s == 12.5
+
+
+# -- v2 trace trigger --------------------------------------------------------------
+
+
+def test_trace_trigger_defaults() -> None:
+    """Adopting the harness should need almost no configuration: the trace trigger
+    is the default and every tier/gate knob is pre-set."""
+
+    cfg = HarnessConfig()
+    assert cfg.trigger_mode == "trace"
+    assert cfg.trace_metrics_tier1 == ("task_completion", "coherence")
+    assert cfg.trace_metrics_tier2 == ("tool_correctness", "argument_correctness")
+    assert cfg.enable_tier3 is False  # opt-in: every judge metric costs a read
+    assert cfg.gate_window == 5
+    assert cfg.gate_target == 0.5
+    assert cfg.barrier_timeout_s == 180.0
+    assert cfg.outcome_threshold == 0.9
+
+
+def test_tier_metrics_resolution() -> None:
+    cfg = HarnessConfig()
+    assert cfg.tier_metrics(1) == ("task_completion", "coherence")
+    assert cfg.tier_metrics(2) == ("tool_correctness", "argument_correctness")
+    # Tier 3 collapses to empty while it is off, so callers need no flag check.
+    assert cfg.tier_metrics(3) == ()
+    assert HarnessConfig(enable_tier3=True).tier_metrics(3) == (
+        "plan_adherence",
+        "plan_quality",
+        "step_efficiency",
+    )
+    assert cfg.tier_metrics(9) == ()
+
+
+def test_thresholds_cover_the_trace_metrics_and_the_verifier() -> None:
+    cfg = HarnessConfig(outcome_threshold=0.8)
+    assert cfg.threshold_for("task_completion") == 0.5
+    assert cfg.threshold_for("tool_correctness") == 0.5
+    assert cfg.threshold_for("outcome_correct") == 0.8
+    # An explicit override still wins.
+    assert HarnessConfig(thresholds={"task_completion": 0.3}).threshold_for(
+        "task_completion"
+    ) == 0.3
+
+
+def test_from_env_binds_the_four_primary_knobs(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_TRIGGER_MODE", "session")
+    monkeypatch.setenv("HARNESS_GATE_WINDOW", "8")
+    monkeypatch.setenv("HARNESS_BARRIER_TIMEOUT_S", "42.5")
+    monkeypatch.setenv("HARNESS_ENABLE_TIER3", "yes")
+    cfg = HarnessConfig.from_env()
+    assert cfg.trigger_mode == "session"
+    assert cfg.gate_window == 8
+    assert cfg.barrier_timeout_s == 42.5
+    assert cfg.enable_tier3 is True
