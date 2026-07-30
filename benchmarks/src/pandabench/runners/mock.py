@@ -15,7 +15,7 @@ from ..agents.harness_wiring import HarnessWiring
 from ..agents.loop import run_agent_loop
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
-from .base import TaskOutcome
+from .base import SingleTaskRunner, TaskOutcome
 
 __all__ = ["MockTaskRunner"]
 
@@ -29,7 +29,7 @@ _NOOP_TOOL: dict[str, Any] = {
 }
 
 
-class MockTaskRunner:
+class MockTaskRunner(SingleTaskRunner):
     """Drives the shared loop against a canned task; no external dependencies."""
 
     def __init__(self, name: str, *, tasks: int = 4) -> None:
