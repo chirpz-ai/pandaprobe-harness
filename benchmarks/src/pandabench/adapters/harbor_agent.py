@@ -137,22 +137,21 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             wiring = HarnessWiring(
                 harness=self._harness, benchmark="terminal_bench", task_id=session_id,
                 capture=self._capture, replay_descriptor=descriptor,
+                # The loop settles each turn through this wiring; see
+                # HarnessWiring.settle_turn for why per-turn rather than per-trial.
+                session_id=session_id, flush=self._client.flush,
             )
 
         result = await run_agent_loop(
             client=self._client, model=self._model, session_id=session_id,
             system_prompt=TB_SYSTEM, tools=[_BASH_TOOL], tool_executor=executor,
             initial_messages=[{"role": "user", "content": instruction}],
-            max_turns=self._max_turns, wiring=wiring, task_hint=instruction,
+            max_turns=self._max_turns, wiring=wiring,
         )
 
         if self._harness is not None and wiring is not None:
-            self._harness.on_turn_end(
-                {"session_id": session_id, "turn_index": max(result.turns, 1),
-                 "end_state": wiring.end_state()}
-            )
-            await self._harness.refresh(session_id)
-            await self._harness.drain_validation()
+            # Covers the final turn, whose trace only exists once the loop returned.
+            await wiring.settle_turn(max(result.turns, 1))
 
         # Report usage/cost back to Harbor (best-effort; fields are optional).
         try:
