@@ -31,6 +31,7 @@ async def test_eight_sessions_bounded_concurrency_and_deduped_notices(
         # All 8 sessions breach at once; disable the global circuit breaker so
         # each session's single notice reaches the mailbox (dedup is under test).
         circuit_breaker_max_notices=0,
+        trigger_mode="session",
     )
     cli = FakeCliClient(
         latency_s=0.01,
