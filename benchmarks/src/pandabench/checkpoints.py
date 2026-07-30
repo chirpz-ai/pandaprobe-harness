@@ -4,8 +4,7 @@ Turns a run's benchmark pass/fail records into the ``pandaprobe-harness-calibrat
 label format, points the CLI at that run's archived harness workspace, and
 records precision/recall/F1 + the recommended threshold into IMPLEMENTATION_NOTES.
 The harness metrics were designed for production sessions; this verifies they
-actually correlate with benchmark task failure before the full matrix is run
-(docs/benchmark-study-brief.md §5.1).
+actually correlate with benchmark task failure before the full matrix is run.
 """
 
 from __future__ import annotations
