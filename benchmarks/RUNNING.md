@@ -38,7 +38,7 @@ make report       # regenerate results/summary/
 ## 3. Run a benchmark
 
 Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
-`gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.6-luna`, `claude-sonnet-5`, `claude-haiku-4-5`.
+`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `claude-sonnet-5`, `claude-haiku-4-5`.
 
 **Knobs:**
 
@@ -85,7 +85,7 @@ Needs its own isolated venv (`git+…/tau2-bench.git@v0.2.0` + `pandabench`) and
 `TAU2_DATA_DIR` (data is not shipped). See IMPLEMENTATION_NOTES.md for the recipe.
 
 ```bash
-make tau2 ARM=harness MODEL=gpt-5.4-mini SEED=1 K=4
+make tau2 ARM=harness MODEL=gpt-5.6-terra SEED=1 K=4
 ```
 
 ## 4. Report — aggregate results into paper-ready tables
@@ -137,7 +137,7 @@ commands (edit the lists to your models/seeds/benchmarks):
 
 ```bash
 for bench in appworld terminal tau2; do
-  for model in claude-sonnet-5 gpt-5.4-mini gemini-3.1-pro; do
+  for model in claude-sonnet-5 gpt-5.6-terra gemini-3.1-pro; do
     for seed in 1 2 3; do
       for arm in baseline harness; do
         make $bench ARM=$arm MODEL=$model SEED=$seed K=4
