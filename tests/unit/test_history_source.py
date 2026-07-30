@@ -79,6 +79,7 @@ async def test_hook_hydrates_backend_history_once_per_session(
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
         hydrate_history_from_backend=True,
+        trigger_mode="session",
     )
     fs = HarnessFilesystem(cfg)
     fs.provision()

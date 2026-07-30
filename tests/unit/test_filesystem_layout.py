@@ -9,8 +9,13 @@ def test_provision_creates_tree_and_rules(config: HarnessConfig) -> None:
     assert config.harness_root.is_dir()
     assert config.traces_dir.is_dir()
     assert config.state_dir.is_dir()
+    assert config.rules_dir.is_dir()
     assert config.rules_file.exists()
-    assert "Learned Mitigations" in fs.read_rules()
+    root = fs.read_rules()
+    # The seeded root is the skill root: protocol + a References section, and no
+    # rule bodies (those live under rules/).
+    assert "## References" in root
+    assert "harness_rules_read" in root
 
 
 def test_provision_idempotent_does_not_clobber(config: HarnessConfig) -> None:

@@ -2,9 +2,19 @@
 # PandaBench — the benchmark A/B study suite for the PandaProbe Harness.
 #
 # This is a SELF-CONTAINED uv project, deliberately NOT a workspace member of
-# the parent `pandaprobe-harness` repo. It depends on the RELEASED harness
-# package from PyPI (never a path/editable dependency on ../src) so the study
-# measures the shipped artifact. See ../docs/benchmark-study-brief.md.
+# the parent `pandaprobe-harness` repo. It normally depends on the RELEASED
+# harness package from PyPI so the study measures the shipped artifact.
+# See ../docs/benchmark-study-brief.md.
+#
+# >>> PRE-RELEASE OVERRIDE (temporary) <<<
+# The harness v2 trigger (trace tiers + trajectory gate + per-turn barrier) is
+# not on PyPI yet, and this project's source now uses its API (`Harness.settle`,
+# `verifier=`). The `[tool.uv.sources]` block below therefore points at ../ as an
+# editable dependency so the study can be exercised before the release.
+#   REMOVE that block and pin `pandaprobe-harness==0.7.0` once v0.7.0 ships.
+# Until then the study is measuring the WORKING TREE, not a shipped artifact, so
+# any numbers produced now must be re-run against the released package before
+# they are reported.
 # =============================================================================
 [project]
 name = "pandabench"
@@ -14,8 +24,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
-    # The released harness (exact-pinned; only 0.6.3 is on PyPI). NEVER ../src.
-    "pandaprobe-harness==0.6.3",
+    # The harness. Normally exact-pinned to a released version; currently
+    # satisfied by the pre-release path source below (see the header note).
+    "pandaprobe-harness>=0.6.3",
     # The PandaProbe SDK: session binding + the native LiteLLM wrapper (>=0.5)
     # that auto-traces every litellm call so sessions are scoreable.
     "pandaprobe>=0.5",
@@ -67,6 +78,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pandabench"]
+
+# >>> PRE-RELEASE OVERRIDE — DELETE THIS BLOCK WHEN v0.7.0 IS ON PyPI <<<
+# Resolves the harness from the working tree so the v2 API is available before
+# release. While this exists the study measures the working tree, not a shipped
+# artifact — see the header note.
+[tool.uv.sources]
+pandaprobe-harness = { path = "..", editable = true }
 
 # -- Tooling: independent of the parent repo's config -------------------------
 [tool.ruff]

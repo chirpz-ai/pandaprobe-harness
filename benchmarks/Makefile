@@ -24,7 +24,7 @@ LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
 MAXTURNS_FLAG := $(if $(MAXTURNS),--max-turns $(MAXTURNS),)
 BACKEND_FLAG := $(if $(BACKEND),--backend $(BACKEND),)
 
-.PHONY: help setup sync smoke run appworld terminal tau2 matrix report calibrate check lint typecheck test preflight
+.PHONY: help setup sync smoke run appworld terminal terminal_bench tau2 matrix report calibrate check lint typecheck test preflight
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -48,9 +48,13 @@ run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K
 	uv run pandabench-run --benchmark $(BENCHMARK) --arm $(ARM) --model $(MODEL) \
 		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(MAXTURNS_FLAG)
 
-appworld terminal tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/MAXTURNS
+# The `terminal` target keeps its short name but must pass the CLI's actual
+# choice, `terminal_bench` — `--benchmark terminal` is rejected.
+appworld terminal_bench tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/MAXTURNS
 	uv run pandabench-run --benchmark $@ --arm $(ARM) --model $(MODEL) \
 		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(MAXTURNS_FLAG)
+
+terminal: terminal_bench ## Alias for terminal_bench
 
 matrix: ## Full study matrix — NOT yet wired; prints how to run per-arm loops (see RUNNING.md §6)
 	uv run pandabench-run --matrix configs/study.yaml

@@ -39,6 +39,11 @@ class MockTaskRunner:
     def list_tasks(self, dataset: str) -> list[str]:
         return [f"{self.name}_{i}" for i in range(1, self._tasks + 1)]
 
+    def outcome_for(self, task_id: str) -> float | None:
+        """No ground-truth grader here, so the harness falls back to its own tiers."""
+
+        return None
+
     async def run_once(
         self,
         *,
@@ -62,7 +67,7 @@ class MockTaskRunner:
             client=client, model=model, session_id=session_id,
             system_prompt=system_prompt, tools=[_NOOP_TOOL], tool_executor=executor,
             initial_messages=[{"role": "user", "content": f"do {task_id}"}],
-            max_turns=max_turns, wiring=wiring, task_hint=f"do {task_id}",
+            max_turns=max_turns, wiring=wiring,
         )
         # Deterministic pseudo-outcome: even-indexed tasks "pass".
         idx = int(task_id.rsplit("_", 1)[-1]) if task_id.rsplit("_", 1)[-1].isdigit() else 0

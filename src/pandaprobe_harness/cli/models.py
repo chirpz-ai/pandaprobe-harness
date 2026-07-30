@@ -11,7 +11,34 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["RunCreated", "ScoreRecord", "RunScores"]
+__all__ = ["RunCreated", "ScoreRecord", "RunScores", "unwrap_items"]
+
+
+def unwrap_items(payload: Any, *keys: str) -> list[Mapping[str, Any]]:
+    """The CLI's list payloads, unwrapped forgivingly.
+
+    Accepts either a bare list of objects or an object wrapping them under one of
+    ``keys`` (the CLI uses ``items`` for paginated listings and ``scores`` for eval
+    runs). Non-object entries are dropped rather than raising, so a payload that
+    gains fields or nests differently degrades instead of breaking.
+    """
+
+    raw: Sequence[Any]
+    if isinstance(payload, Mapping):
+        raw = next(
+            (
+                value
+                for key in keys
+                if isinstance(value := payload.get(key), Sequence)
+                and not isinstance(value, (str, bytes))
+            ),
+            [],
+        )
+    elif isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
+        raw = payload
+    else:
+        raw = []
+    return [item for item in raw if isinstance(item, Mapping)]
 
 # Score statuses that mean the platform has finished computing (terminal).
 # The backend uses SUCCESS / FAILED / PENDING; synonyms kept for tolerance.
@@ -53,6 +80,9 @@ class ScoreRecord:
     status: str
     reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: The trace this score was computed against. Present on trace-target
+    #: payloads; ``None`` for session-target scores.
+    trace_id: str | None = None
 
     @property
     def is_terminal(self) -> bool:
@@ -61,12 +91,14 @@ class ScoreRecord:
     @classmethod
     def parse(cls, payload: Mapping[str, Any]) -> ScoreRecord:
         metadata = payload.get("metadata")
+        trace_id = payload.get("trace_id") or payload.get("target_id")
         return cls(
             name=str(payload.get("name", "")),
             value=_as_float(payload.get("value")),
             status=str(payload.get("status", "pending")),
             reason=payload.get("reason"),
             metadata=dict(metadata) if isinstance(metadata, Mapping) else {},
+            trace_id=str(trace_id) if trace_id is not None else None,
         )
 
 
@@ -91,20 +123,25 @@ class RunScores:
                 return score
         return None
 
+    def for_trace(self, name: str, trace_id: str) -> ScoreRecord | None:
+        """Look a score up by ``(name, trace_id)``.
+
+        Needed whenever a run covers more than one trace: ``by_name`` returns the
+        first match, which would silently mis-attribute a multi-trace batch.
+        Records without a ``trace_id`` still match on name alone so a payload
+        that omits the field degrades rather than disappearing.
+        """
+
+        for score in self.scores:
+            if score.name == name and (score.trace_id in (trace_id, None)):
+                return score
+        return None
+
     @classmethod
     def parse(cls, run_id: str, payload: Any) -> RunScores:
-        # Accept either a bare list of scores or an object wrapping them under
-        # common keys ("scores" / "items").
-        raw_scores: Sequence[Any]
         if isinstance(payload, Mapping):
-            candidate = payload.get("scores", payload.get("items", []))
-            raw_scores = candidate if isinstance(candidate, Sequence) else []
             run_id = str(payload.get("run_id", run_id))
-        elif isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
-            raw_scores = payload
-        else:
-            raw_scores = []
         scores = tuple(
-            ScoreRecord.parse(item) for item in raw_scores if isinstance(item, Mapping)
+            ScoreRecord.parse(item) for item in unwrap_items(payload, "scores", "items")
         )
         return cls(run_id=run_id, scores=scores)

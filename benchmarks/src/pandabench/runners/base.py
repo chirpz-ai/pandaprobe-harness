@@ -29,6 +29,7 @@ from ..harness_glue import (
     harness_root_for,
     make_replay_fn,
     make_session_id,
+    make_verifier_fn,
 )
 from ..providers.litellm_client import ChatClient, LiteLLMClient, MockClient, Usage
 from ..providers.models import ModelRegistry, ResolvedModel
@@ -91,6 +92,17 @@ class SingleTaskRunner(Protocol):
         wiring: HarnessWiring | None,
         preamble: str | None = None,
     ) -> TaskOutcome: ...
+
+    def outcome_for(self, task_id: str) -> float | None:
+        """This benchmark's own verdict for ``task_id``, as a score in ``[0, 1]``.
+
+        The gold signal for the harness's outcome verifier. Default ``None`` means
+        "this benchmark has no grader", so a runner opts in by overriding — and the
+        capability is named in the type rather than discovered by ``getattr``,
+        where a misspelling would silently produce a verifier-less run.
+        """
+
+        return None
 
     async def aclose(self) -> None: ...
 
@@ -250,6 +262,10 @@ class BenchmarkRunner:
             wiring = HarnessWiring(
                 harness=harness, benchmark=benchmark, task_id=task_id,
                 capture=(phase == "learning"), replay_descriptor=descriptor,
+                # The loop settles every turn through this wiring, so the harness
+                # sees the trajectory one trace at a time instead of once at the
+                # end — the precondition for the trajectory gate having a series.
+                session_id=session_id, flush=client.flush,
             )
 
         outcome = await self._single.run_once(
@@ -260,13 +276,13 @@ class BenchmarkRunner:
         report = None
         telemetry = None
         if harness is not None and wiring is not None:
-            harness.on_turn_end(
-                {"session_id": session_id, "turn_index": max(outcome.turns, 1),
-                 "end_state": wiring.end_state()}
-            )
-            client.flush()   # push buffered traces so the eval scores the full session
-            report = await harness.refresh(session_id)   # bounded; posts notices + captures
-            await harness.drain_validation()              # bounded; completes promotion
+            # The loop settles every turn that continues; this covers the final
+            # turn, whose trace only exists once the loop has returned. Take the
+            # report from this call — the barrier consumes the pending evaluation,
+            # so settling again would yield an empty report (v1 recorded null
+            # scores on every row for exactly that reason).
+            settled = await wiring.settle_turn(max(outcome.turns, 1))
+            report = settled.report if settled is not None else None
             telemetry = collect_harness_telemetry(harness, session_id, report).to_dict()
 
         return TrialRecord(
@@ -301,7 +317,11 @@ class BenchmarkRunner:
             harness_root=harness_root, phase=phase, study=self._study,
             benchmark=benchmark, noval=noval,
         )
-        return build_harness(cfg=cfg, replay=self._make_replay(benchmark, model, seed))
+        return build_harness(
+            cfg=cfg,
+            replay=self._make_replay(benchmark, model, seed),
+            verifier=make_verifier_fn(outcome_for=self._single.outcome_for),
+        )
 
     def _make_replay(self, benchmark: str, model: ResolvedModel, seed: int) -> Any:
         """Build the harness ReplayFn: re-run a captured task under candidate rules.
@@ -349,7 +369,7 @@ class BenchmarkRunner:
             except Exception as exc:  # noqa: BLE001 - never crash the run on settle
                 logger.warning("settle(%s): drain error: %s", label, exc)
                 return
-            pending = [t for t in getattr(harness.hook, "_pending", {}).values() if not t.done()]
+            pending = harness.hook.pending_sessions
             if not pending:
                 break
             logger.info("settle(%s): %d session eval(s) still pending...", label, len(pending))

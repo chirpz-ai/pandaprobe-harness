@@ -54,6 +54,7 @@ def _config(tmp_path: Path, **overrides: Any) -> HarnessConfig:
         eval_retry_backoff_s=0.0,
         drain_timeout_s=5.0,
         capture_eval_cases=True,
+        trigger_mode="session",
         **overrides,
     )
 
@@ -121,13 +122,16 @@ async def test_closed_loop_replay_validates_promotes_and_stays_regression_clean(
     assert events[2]["validator"] == "replay"
     assert "improved" in events[2]["reason"]
 
-    # The promoted rule re-enters context as a validated rule; banner cleared.
-    # Retrieval is on by default: a task hint matching the rule's derived tags
-    # (breach:agent_reliability, payment vocabulary) keeps it in the top-k.
-    context = harness.system_context(task_hint="charge a customer payment")
+    # Banner cleared, and the promoted rule is back within the agent's reach as a
+    # *validated* rule: its file is named in the References and, once pulled, it
+    # no longer sits under the provisional heading.
+    context = harness.system_context()
     assert "⚠ HARNESS" not in context
-    assert MITIGATION_RULE[:30] in context
-    assert PROVISIONAL_HEADING not in context
+    promoted = harness.rules.active()[0]
+    assert f"rules/{promoted.scope}.md" in context
+    fetched = await harness.toolset.call("harness_rules_read", {"scope": promoted.scope})
+    assert MITIGATION_RULE[:30] in fetched["content"]
+    assert PROVISIONAL_HEADING not in fetched["content"]
 
     # --- Turns 3-4: corrected behaviour, nothing new posts. -----------------
     await run_turn()

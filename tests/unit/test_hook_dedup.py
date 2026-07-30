@@ -15,6 +15,7 @@ def _hook(
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
+        trigger_mode="session",
         **cfgkw,  # type: ignore[arg-type]
     )
     fs = HarnessFilesystem(cfg)

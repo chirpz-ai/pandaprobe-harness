@@ -1,10 +1,16 @@
-"""Local, persistent per-(session, metric) score history with EWMA state.
+"""Local, persistent per-(session, metric) score history with EWMA + gate state.
 
-This store is the substrate for low-latency trend detection (see ``trends.py``):
-each resolved turn appends one score and incrementally updates a fast and a slow
-EWMA in **O(1)**, so the detector never needs to re-scan a window or make a
-network call on the turn path. Persisted as a single atomically-written JSON
-file under ``<harness_root>/state/`` so trend state survives process restarts.
+This store is the substrate for both local detectors:
+
+* **trend** (``trends.py``) — each resolved turn appends one score and
+  incrementally updates a fast and a slow EWMA in **O(1)**, so the detector never
+  re-scans a window or makes a network call on the turn path.
+* **trajectory** (``trajectory.py``) — the running peak and stall counter live in
+  the same entry under a ``"gate"`` key, mutated through
+  :meth:`ScoreHistoryStore.update_gate`.
+
+Persisted as a single atomically-written JSON file under
+``<harness_root>/state/`` so both survive process restarts.
 
 All methods are synchronous blocking I/O; async callers wrap them in
 ``asyncio.to_thread`` (the hook does). Because ``asyncio.to_thread`` uses a
@@ -20,14 +26,18 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from ..config import HarnessConfig
 
-__all__ = ["EwmaState", "ScoreSample", "ScoreHistoryStore"]
+__all__ = ["EwmaState", "GateFold", "GateState", "ScoreSample", "ScoreHistoryStore"]
+
+#: A gate fold: given the current state, return the next one. Run under the store
+#: lock so it always sees fresh state.
+GateFold = Callable[["GateState"], "GateState"]
 
 # Cap retained per-key samples so the file cannot grow without bound.
 _MAX_SAMPLES = 500
@@ -40,6 +50,32 @@ class EwmaState:
     fast: float
     slow: float
     count: int
+
+
+@dataclass(frozen=True, slots=True)
+class GateState:
+    """Trajectory-gate state for one series: the running peak and stall counter.
+
+    Lives alongside the EWMA state in the same entry so the gate never needs a
+    second file or a second lock.
+    """
+
+    peak: float | None = None
+    turns_since_gain: int = 0
+
+    def to_json(self) -> dict[str, Any]:
+        return {"peak": self.peak, "turns_since_gain": self.turns_since_gain}
+
+    @classmethod
+    def from_json(cls, data: Any) -> GateState:
+        if not isinstance(data, dict):
+            return cls()
+        peak = data.get("peak")
+        turns = data.get("turns_since_gain")
+        return cls(
+            peak=float(peak) if isinstance(peak, (int, float)) else None,
+            turns_since_gain=int(turns) if isinstance(turns, int) else 0,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,28 +138,39 @@ class ScoreHistoryStore:
         """Append a score and incrementally update its EWMA state (O(1))."""
 
         with self._lock:
-            data = self._load()
-            key = self._key(session_id, metric)
-            entry = data.setdefault(key, {"series": [], "ewma": None})
-
-            prev = entry.get("ewma")
-            if prev is None:
-                state = EwmaState(fast=value, slow=value, count=1)
-            else:
-                fast = self._alpha_fast * value + (1.0 - self._alpha_fast) * prev["fast"]
-                slow = self._alpha_slow * value + (1.0 - self._alpha_slow) * prev["slow"]
-                state = EwmaState(fast=fast, slow=slow, count=int(prev["count"]) + 1)
-
-            entry["ewma"] = {"fast": state.fast, "slow": state.slow, "count": state.count}
-            series: list[dict[str, Any]] = entry["series"]
-            series.append(
-                {"value": value, "ts": ts or datetime.now(UTC).isoformat(), "run_id": run_id}
+            entry = self._load().setdefault(
+                self._key(session_id, metric), {"series": [], "ewma": None}
             )
-            if len(series) > _MAX_SAMPLES:
-                del series[: len(series) - _MAX_SAMPLES]
-
+            state = self._append_locked(entry, value, run_id=run_id, ts=ts)
             self._persist()
             return state
+
+    def _append_locked(
+        self,
+        entry: dict[str, Any],
+        value: float,
+        *,
+        run_id: str | None,
+        ts: str | None,
+    ) -> EwmaState:
+        """Fold one sample into ``entry`` in place. Caller holds the lock and persists."""
+
+        prev = entry.get("ewma")
+        if prev is None:
+            state = EwmaState(fast=value, slow=value, count=1)
+        else:
+            fast = self._alpha_fast * value + (1.0 - self._alpha_fast) * prev["fast"]
+            slow = self._alpha_slow * value + (1.0 - self._alpha_slow) * prev["slow"]
+            state = EwmaState(fast=fast, slow=slow, count=int(prev["count"]) + 1)
+
+        entry["ewma"] = {"fast": state.fast, "slow": state.slow, "count": state.count}
+        series: list[dict[str, Any]] = entry["series"]
+        series.append(
+            {"value": value, "ts": ts or datetime.now(UTC).isoformat(), "run_id": run_id}
+        )
+        if len(series) > _MAX_SAMPLES:
+            del series[: len(series) - _MAX_SAMPLES]
+        return state
 
     def seed(
         self,
@@ -171,6 +218,35 @@ class ScoreHistoryStore:
                 del series[: len(series) - _MAX_SAMPLES]
             if inserted:
                 self._persist()
+
+    def record_gated(
+        self,
+        session_id: str,
+        samples: Sequence[tuple[str, float, GateFold]],
+    ) -> dict[str, GateState]:
+        """Append samples and fold their gate state in **one** locked write.
+
+        Each item is ``(metric, value, fold)``, where ``fold`` receives the *fresh*
+        gate state read under the store lock — so two concurrent sessions folding
+        their own trajectories cannot clobber each other's peak.
+
+        Batching matters: the store persists by re-serializing the whole file, so
+        the naive shape (append, then separately fold) costs two whole-file writes
+        per metric — four per trace at Tier 1. This does one, for a whole trace.
+        """
+
+        results: dict[str, GateState] = {}
+        with self._lock:
+            data = self._load()
+            for metric, value, fold in samples:
+                key = self._key(session_id, metric)
+                entry = data.setdefault(key, {"series": [], "ewma": None})
+                self._append_locked(entry, value, run_id=None, ts=None)
+                results[metric] = fold(GateState.from_json(entry.get("gate")))
+                entry["gate"] = results[metric].to_json()
+            if samples:
+                self._persist()
+        return results
 
     def ewma(self, session_id: str, metric: str) -> EwmaState | None:
         with self._lock:

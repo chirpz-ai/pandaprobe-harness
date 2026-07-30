@@ -82,7 +82,7 @@ def test_roles(registry):
 
 def test_provider_of():
     assert provider_of("vertex_ai/claude-haiku-4-5") == "vertex"
-    assert provider_of("openai/gpt-5.4-mini") == "openai"
+    assert provider_of("openai/gpt-5.6-terra") == "openai"
     assert provider_of("something/weird") == "something"
 
 
