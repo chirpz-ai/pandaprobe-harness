@@ -88,9 +88,26 @@ class AppWorldRunner:
         # serializes the harness arm; the cost is that replays no longer
         # overlap live trials.
         self._server_lock = asyncio.Lock()
+        # The most recent /evaluate verdict per task, as a pass ratio. This is the
+        # harness's optional outcome verifier (`outcome_for`), and caching is what
+        # makes it safe: the per-turn barrier runs *inside* `_server_lock`, so a
+        # verifier that re-acquired it would deadlock, and calling /evaluate
+        # mid-task would cost a full test run every turn for a partial answer.
+        self._outcomes: dict[str, float] = {}
 
     def list_tasks(self, dataset: str) -> list[str]:
         return self._env.list_task_ids(dataset or "dev")
+
+    def outcome_for(self, task_id: str) -> float | None:
+        """AppWorld's own verdict for ``task_id`` as a pass ratio, if one exists.
+
+        Deliberately the *continuous* ``num_passes / num_tests`` rather than the
+        binary ``success``: in a measured 40-trial run binary success was 1/40
+        while the mean pass ratio was 0.70, so the binary would breach on ~97% of
+        sessions — exactly the non-discriminating signal v2 exists to replace.
+        """
+
+        return self._outcomes.get(task_id)
 
     async def run_once(
         self,
@@ -147,7 +164,7 @@ class AppWorldRunner:
             client=client, model=model, session_id=session_id,
             system_prompt=system_prompt, tools=[_EXECUTE_TOOL], tool_executor=executor,
             initial_messages=[{"role": "user", "content": user_msg}],
-            max_turns=max_turns, wiring=wiring, task_hint=info.instruction,
+            max_turns=max_turns, wiring=wiring,
         )
 
         try:
@@ -163,6 +180,7 @@ class AppWorldRunner:
             await asyncio.to_thread(self._env.close, task_id)
 
         pass_ratio = verdict.num_passes / verdict.num_tests if verdict.num_tests else 0.0
+        self._outcomes[task_id] = pass_ratio
         return TaskOutcome(
             passed=verdict.success,
             native_metrics={
