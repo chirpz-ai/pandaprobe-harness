@@ -7,14 +7,14 @@ loop + harness verbatim — the bash tool is just ``environment.exec``.
 
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
   --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-5 \
-  --ak backend=vertex_ai --ak capture=true --ak harness_root=/abs/path
+  --ak backend=vertex_ai --ak capture=true --ak harness_root=/abs/path --ak noval=false
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
 the arm-B learning pass to keep workspace writes serial.
 
 VERIFICATION: implemented against harbor 0.18.0's ``harbor.agents.base.BaseAgent``
-(4 abstract methods) and ``BaseEnvironment.exec -> ExecResult``. A live run needs
-Docker + Harbor's env to also contain ``pandabench`` (see IMPLEMENTATION_NOTES).
+(4 abstract methods) and ``BaseEnvironment.exec -> ExecResult``. Harbor is a
+project dependency so its process can import this package; a live run needs Docker.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from ..harness_glue import (
 from ..providers.litellm_client import LiteLLMClient
 from ..providers.models import load_registry
 from ..providers.tracing import PandaTracer
+from ..results import collect_harness_telemetry
 
 logger = logging.getLogger("pandabench.harbor")
 
@@ -80,6 +81,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         capture: bool = False,
         harness_root: str | None = None,
         max_turns: int = 100,
+        noval: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir, *args, model_name=model_name, logger=logger, **kwargs)
@@ -87,6 +89,9 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._seed = seed
         self._capture = capture
         self._max_turns = max_turns
+        # Harbor trial directories are <task[:32]>__<shortuuid>. Its BaseAgent
+        # receives <trial>/agent as logs_dir, so the parent carries the task key.
+        self._task_id = Path(logs_dir).parent.name.rsplit("__", 1)[0]
         registry = load_registry(_CONFIGS / "models.yaml")
         self._model = registry.resolve(
             model_key or model_name or "gemini-3.1-flash-lite", backend=backend
@@ -100,7 +105,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             phase = "learning" if capture else "eval"
             cfg = build_harness_config(
                 harness_root=Path(harness_root), phase=phase, study=_load_study(),
-                benchmark="terminal_bench",
+                benchmark="terminal_bench", noval=noval,
             )
             self._harness = build_harness(cfg=cfg)
 
@@ -116,7 +121,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         session_id = self.session_id or make_session_id(
-            benchmark="terminal_bench", task_id="tb", arm=self._arm,
+            benchmark="terminal_bench", task_id=self._task_id, arm=self._arm,
             model_key=self._model.key, seed=self._seed, trial=0,
         )
 
@@ -132,10 +137,10 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
 
         wiring: HarnessWiring | None = None
         if self._harness is not None:
-            descriptor = {"benchmark": "terminal_bench", "task_id": session_id,
+            descriptor = {"benchmark": "terminal_bench", "task_id": self._task_id,
                           "arm": self._arm, "model_key": self._model.key, "seed": self._seed}
             wiring = HarnessWiring(
-                harness=self._harness, benchmark="terminal_bench", task_id=session_id,
+                harness=self._harness, benchmark="terminal_bench", task_id=self._task_id,
                 capture=self._capture, replay_descriptor=descriptor,
                 # The loop settles each turn through this wiring; see
                 # HarnessWiring.settle_turn for why per-turn rather than per-trial.
@@ -149,17 +154,29 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             max_turns=self._max_turns, wiring=wiring,
         )
 
+        telemetry: dict[str, Any] | None = None
         if self._harness is not None and wiring is not None:
             # Covers the final turn, whose trace only exists once the loop returned.
-            await wiring.settle_turn(max(result.turns, 1))
+            settled = await wiring.settle_turn(max(result.turns, 1))
+            report = settled.report if settled is not None else None
+            telemetry = collect_harness_telemetry(
+                self._harness, session_id, report
+            ).to_dict()
 
         # Report usage/cost back to Harbor (best-effort; fields are optional).
         try:
             context.n_input_tokens = result.usage.input_tokens
             context.n_output_tokens = result.usage.output_tokens
             context.cost_usd = result.usage.cost_usd
-            context.metadata = {"arm": self._arm, "seed": self._seed,
-                                "stopped_reason": result.stopped_reason}
+            context.metadata = {
+                "arm": self._arm,
+                "seed": self._seed,
+                "task_id": self._task_id,
+                "session_id": session_id,
+                "stopped_reason": result.stopped_reason,
+                "turns": result.turns,
+                "harness": telemetry,
+            }
         except Exception as exc:  # noqa: BLE001
             logger.debug("could not populate Harbor context: %s", exc)
 
