@@ -19,6 +19,27 @@ DEFAULT_SESSION_METRICS: frozenset[str] = frozenset(
 )
 DEFAULT_THRESHOLD = 0.5
 
+# -- v2 trace-level trigger ---------------------------------------------------
+# Tier 1 is the always-on progress signal: `task_completion` is the outcome
+# trajectory and `coherence` is an embedding-based (free) co-gate.
+DEFAULT_TIER1_METRICS: tuple[str, ...] = ("task_completion", "coherence")
+# Tier 2 is the surgical step-level diagnosis, run only once Tier 1 breaches.
+DEFAULT_TIER2_METRICS: tuple[str, ...] = ("tool_correctness", "argument_correctness")
+# Tier 3 only enriches the reasoning behind a confirmed Tier-2 breach; it is
+# never a breach source of its own, and it is opt-in because every LLM-judge
+# metric reads the whole trace (cost scales with metric count).
+DEFAULT_TIER3_METRICS: tuple[str, ...] = (
+    "plan_adherence",
+    "plan_quality",
+    "step_efficiency",
+)
+# NOTE: the trace metrics deliberately have no per-metric threshold table. They
+# all sit at DEFAULT_THRESHOLD, and the platform reports its own `threshold` in
+# each score's metadata (which the evaluator prefers when no local override
+# exists), so a table of identical values would only be a second place to spell
+# a metric name — and one that has already drifted once. Calibrate by setting
+# `thresholds={...}` on the config; Checkpoint 1 records the chosen values.
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -41,10 +62,10 @@ def _env_bool(name: str, default: bool) -> bool:
 class HarnessConfig:
     """Immutable harness configuration.
 
-    Path fields ``traces_dir``, ``rules_file``, ``latest_eval_file``,
-    ``state_dir``, ``history_file`` and the mailbox/journal/rules-store paths
-    are derived from ``harness_root`` in ``__post_init__`` and should not be
-    passed explicitly.
+    Path fields ``traces_dir``, ``rules_file``, ``rules_dir``,
+    ``latest_eval_file``, ``state_dir``, ``history_file`` and the
+    mailbox/journal/rules-store paths are derived from ``harness_root`` in
+    ``__post_init__`` and should not be passed explicitly.
     """
 
     harness_root: Path = Path("/harness")
@@ -52,6 +73,7 @@ class HarnessConfig:
     # Derived paths (init=False; computed from harness_root).
     traces_dir: Path = field(init=False)
     rules_file: Path = field(init=False)
+    rules_dir: Path = field(init=False)
     latest_eval_file: Path = field(init=False)
     state_dir: Path = field(init=False)
     history_file: Path = field(init=False)
@@ -78,6 +100,35 @@ class HarnessConfig:
 
     # Bounded await-barrier drained at the start of the next turn.
     drain_timeout_s: float = 15.0
+    # The per-turn self-heal barrier (``settle``) runs on its own, deliberately
+    # generous budget: it must actually wait for the turn's evaluation to land,
+    # where ``drain_timeout_s`` is only a best-effort join.
+    barrier_timeout_s: float = 180.0
+
+    # -- v2 trace-level trigger ------------------------------------------------
+    # "trace" runs the three-tier per-trace trigger (the v2 default); "session"
+    # restores the v1 session-composite trigger for the ablation.
+    trigger_mode: str = "trace"
+    trace_metrics_tier1: tuple[str, ...] = DEFAULT_TIER1_METRICS
+    trace_metrics_tier2: tuple[str, ...] = DEFAULT_TIER2_METRICS
+    trace_metrics_tier3: tuple[str, ...] = DEFAULT_TIER3_METRICS
+    enable_tier3: bool = False
+    # Max traces fetched per session when discovering newly-completed traces.
+    trace_list_limit: int = 50
+
+    # -- trajectory gate (the primary knob is ``gate_window``) -----------------
+    # A Tier-1 metric breaches on a *trajectory*, never a single low value:
+    # STALL (no gain toward the target for ``gate_window`` traces) or REGRESSION
+    # (a drop of ``gate_drop`` from the running peak). Any gain of at least
+    # ``gate_gain`` resets the window, so a healthy climb never breaches.
+    gate_window: int = 5
+    gate_target: float = 0.5
+    gate_gain: float = 0.02
+    gate_drop: float = 0.15
+
+    # -- optional developer outcome verifier ----------------------------------
+    # Threshold for the synthetic ``outcome_correct`` score a verifier emits.
+    outcome_threshold: float = 0.9
 
     # -- metrics & thresholds -------------------------------------------------
     # The session metrics to evaluate each turn. Both built-ins by default.
@@ -183,6 +234,7 @@ class HarnessConfig:
         object.__setattr__(self, "harness_root", root)
         object.__setattr__(self, "traces_dir", root / "traces")
         object.__setattr__(self, "rules_file", root / "harness_rules.md")
+        object.__setattr__(self, "rules_dir", root / "rules")
         object.__setattr__(self, "latest_eval_file", root / "traces" / "latest_eval.json")
         object.__setattr__(self, "state_dir", root / "state")
         object.__setattr__(self, "history_file", root / "state" / "score_history.json")
@@ -205,7 +257,44 @@ class HarnessConfig:
             return self.reliability_threshold
         if metric == "agent_consistency":
             return self.consistency_threshold
+        if metric == "outcome_correct":
+            return self.outcome_threshold
         return DEFAULT_THRESHOLD
+
+    def tier_metrics(self, tier: int) -> tuple[str, ...]:
+        """The trace metrics to run for ``tier`` (1, 2 or 3).
+
+        Tier 3 resolves to an empty tuple while ``enable_tier3`` is off, so the
+        caller never needs to special-case the flag.
+        """
+
+        if tier == 1:
+            return tuple(self.trace_metrics_tier1)
+        if tier == 2:
+            return tuple(self.trace_metrics_tier2)
+        if tier == 3:
+            return tuple(self.trace_metrics_tier3) if self.enable_tier3 else ()
+        return ()
+
+    def replay_metrics(self) -> tuple[str, ...]:
+        """The trace metrics a replayed session is graded on: Tier 1 plus Tier 2.
+
+        Tier 1 carries the outcome trajectory and Tier 2 the step-level verdict, so
+        between them they cover whatever a notice can have triggered on. Tier 3 is
+        deliberately excluded — it never triggers a breach, so re-scoring it would
+        only add cost.
+        """
+
+        return tuple(dict.fromkeys((*self.tier_metrics(1), *self.tier_metrics(2))))
+
+    def rules_scope_file(self, scope: str) -> Path:
+        """Path of the agent-facing rule file for ``scope``.
+
+        ``scope`` is agent-supplied and becomes a filename, so callers must pass
+        a value already normalized by ``workspace.rules.normalize_scope``.
+        """
+
+        return self.rules_dir / f"{scope}.md"
 
     def active_metrics(self) -> tuple[str, ...]:
         """The session metrics to evaluate, honoring back-compat flags."""
@@ -234,6 +323,13 @@ class HarnessConfig:
             "eval_retry_attempts": _env_int("HARNESS_EVAL_RETRY_ATTEMPTS", 3),
             "eval_retry_backoff_s": _env_float("HARNESS_EVAL_RETRY_BACKOFF_S", 1.0),
             "drain_timeout_s": _env_float("HARNESS_DRAIN_TIMEOUT_S", 15.0),
+            # The four primary v2 knobs. Everything else about the trace
+            # trigger is defaulted on purpose — adopting the harness should
+            # need almost no configuration.
+            "barrier_timeout_s": _env_float("HARNESS_BARRIER_TIMEOUT_S", 180.0),
+            "trigger_mode": os.environ.get("HARNESS_TRIGGER_MODE", "trace"),
+            "gate_window": _env_int("HARNESS_GATE_WINDOW", 5),
+            "enable_tier3": _env_bool("HARNESS_ENABLE_TIER3", False),
             "reliability_threshold": _env_float("HARNESS_RELIABILITY_THRESHOLD", DEFAULT_THRESHOLD),
             "consistency_threshold": _env_float("HARNESS_CONSISTENCY_THRESHOLD", DEFAULT_THRESHOLD),
             "eval_reliability": _env_bool("HARNESS_EVAL_RELIABILITY", True),
