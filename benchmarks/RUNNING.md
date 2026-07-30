@@ -17,7 +17,7 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 
 ```bash
 cp .env.example .env          # fill in credentials
-make setup                    # uv sync, harbor tool, isolated AppWorld env, preflight
+make setup                    # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # re-check tools + creds + a 1-token ping
 ```
 
@@ -71,18 +71,21 @@ make appworld ARM=harness  MODEL=claude-sonnet-5 SEED=1 BACKEND=vertex_ai K=4 LI
 
 ### Terminal-Bench (Harbor)
 
-Needs **Docker running** + `harbor` installed in an env that also has `pandabench`
-(see IMPLEMENTATION_NOTES.md). Real runs are Harbor-driven (see the runner's message
-for the exact `harbor run …` command).
+Needs **Docker running**. Harbor is installed into this project so its CLI can import
+the custom `pandabench` agent. Real runs are driven by the Terminal-Bench runner.
 
 ```bash
 make terminal ARM=baseline MODEL=gemini-3.1-pro SEED=1 K=4
+
+# Override the configured dataset for a small live smoke:
+uv run pandabench-run --benchmark terminal_bench -d terminal-bench-sample@2.0 \
+  --arm harness --model gpt-5.6-terra --seed 1 -k 1 --limit 2
 ```
 
 ### τ²-bench (retail)
 
-Needs its own isolated venv (`git+…/tau2-bench.git@v0.2.0` + `pandabench`) and
-`TAU2_DATA_DIR` (data is not shipped). See IMPLEMENTATION_NOTES.md for the recipe.
+Install the optional dependency with `uv sync --extra tau2` and set `TAU2_DATA_DIR`
+(the data is not shipped). tau2 runs in the same Python 3.13 environment as PandaBench.
 
 ```bash
 make tau2 ARM=harness MODEL=gpt-5.6-terra SEED=1 K=4
@@ -127,7 +130,7 @@ make calibrate BENCH=appworld
 - **When:** right after the first harness learning run of a benchmark, and *before*
   launching the full study. If the metrics don't separate pass/fail (low F1), the harness
   arm would be inert — adjust the breach threshold in `study.yaml` (per the CLI's sweep)
-  and re-run, or record the null result and stop. See the brief §5.1.
+  and re-run, or record the null result and stop. See `IMPLEMENTATION_NOTES.md`.
 
 ## 6. Full study (all models × seeds × arms)
 
