@@ -28,6 +28,7 @@ def _make(tmp_path: Path, cli: FakeCliClient) -> PandaHarnessHook:
         alert_cooldown_turns=0,
         circuit_breaker_max_notices=3,
         circuit_breaker_window_s=600.0,
+        trigger_mode="session",
     )
     fs = HarnessFilesystem(cfg)
     fs.provision()
