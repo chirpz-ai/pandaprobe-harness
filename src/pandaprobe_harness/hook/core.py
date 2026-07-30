@@ -430,18 +430,27 @@ class PandaHarnessHook:
             await asyncio.wait(tasks, timeout=self._config.drain_timeout_s)
 
     async def settle(self, session_id: str, *, timeout: float | None = None) -> SettleResult:
-        """Block until this turn's self-heal cycle has completed.
+        """Block until this turn's diagnosis has landed.
 
         The per-turn barrier that makes healing *in-session*: it waits for the
-        turn's evaluation to resolve, any notice to be posted, and any candidate
-        validation to finish, so the agent's next turn sees the mailbox and rule
-        set the harness just produced rather than racing ahead of them.
+        turn's evaluation to resolve, its report to be handled (trial observation
+        recorded, eval case captured) and any notice to be posted, so the agent's
+        next turn sees the mailbox and rule set the harness just produced rather
+        than racing ahead of them.
 
         It runs on ``barrier_timeout_s`` — deliberately generous, and separate
-        from ``drain_timeout_s``, which is only a best-effort join. Both phases
-        share one deadline, so a slow evaluation cannot make the barrier wait
-        twice. On expiry the work stays running detached and ``timed_out`` is set:
-        a slow platform degrades the loop's latency, never its correctness.
+        from ``drain_timeout_s``, which is only a best-effort join. On expiry the
+        work stays running detached and ``timed_out`` is set: a slow platform
+        degrades the loop's latency, never its correctness.
+
+        It deliberately does **not** wait for the candidate-validation *round*.
+        That round replays a captured case through the developer's agent, which
+        can need the very resource the current turn holds — an environment lock, a
+        world, a container — so awaiting it inside a per-turn barrier can deadlock
+        until the replay times out. Validation is single-flight and detached;
+        :meth:`drain_validation` awaits it at a phase boundary, where nothing is
+        held. Candidate *observation* is not deferred: it happens inside the eval
+        task this barrier does await.
         """
 
         budget = self._config.barrier_timeout_s if timeout is None else timeout
@@ -449,14 +458,8 @@ class PandaHarnessHook:
         deadline = loop.time() + max(0.0, budget)
 
         report = await self._await_eval(session_id, deadline)
-        eval_timed_out = report is None and self._pending.get(session_id) is not None
-
-        validation_timed_out = await self._await_validation(deadline)
-        return SettleResult(
-            session_id=session_id,
-            report=report,
-            timed_out=eval_timed_out or validation_timed_out,
-        )
+        timed_out = report is None and self._pending.get(session_id) is not None
+        return SettleResult(session_id=session_id, report=report, timed_out=timed_out)
 
     async def _await_eval(self, session_id: str, deadline: float) -> EvalReport | None:
         """Join the session's in-flight eval within the shared deadline."""
@@ -484,20 +487,6 @@ class PandaHarnessHook:
             if task.cancelled():
                 return None
             raise
-
-    async def _await_validation(self, deadline: float) -> bool:
-        """Await in-flight validation within the deadline; True if it overran."""
-
-        tasks = [task for task in self._validation_tasks if not task.done()]
-        if not tasks:
-            return False
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            return True
-        _, pending = await asyncio.wait(tasks, timeout=remaining)
-        if pending:
-            logger.info("settle: %s validation task(s) still running", len(pending))
-        return bool(pending)
 
     # -- report handling ---------------------------------------------------------
 
