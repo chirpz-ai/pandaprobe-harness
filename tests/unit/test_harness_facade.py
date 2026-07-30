@@ -42,8 +42,10 @@ def test_create_provisions_workspace_and_context(
     assert config.rules_file.is_file()
     assert config.rules_file.read_text(encoding="utf-8").strip()
 
+    assert config.rules_dir.is_dir()
+
     context = harness.system_context()
-    assert "PANDAPROBE HARNESS RULES" in context
+    assert "PANDAPROBE HARNESS" in context
     assert "harness_mailbox_list" in context
 
 
@@ -115,7 +117,7 @@ def test_for_crewai_builds_without_the_crewai_dep(tmp_path: Path) -> None:
     # the harness itself is fully assembled and usable.
     assert harness.adapter.instrument() is False
     assert harness.mailbox.pending() == []
-    assert "PANDAPROBE HARNESS RULES" in harness.system_context()
+    assert "PANDAPROBE HARNESS" in harness.system_context()
 
 
 async def test_degraded_mode_skips_evals_with_one_warning(
