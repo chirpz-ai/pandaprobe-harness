@@ -218,12 +218,15 @@ def _ping(model_key: str) -> tuple[bool, str]:
     try:
         import litellm
 
+        # 16, not 1: a reasoning model spends output tokens before it can emit a
+        # stop, so a 1-token budget 400s ("max_tokens or model output limit was
+        # reached") on models that are in fact perfectly reachable.
         litellm.completion(
             model=model.litellm_model,
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1, num_retries=0, timeout=30,
+            max_tokens=16, num_retries=0, timeout=30,
         )
-        return True, "1-token completion ok"
+        return True, "completion ok"
     except Exception as exc:  # noqa: BLE001
         return False, f"call failed: {type(exc).__name__}"
 
