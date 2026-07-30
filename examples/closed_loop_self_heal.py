@@ -198,7 +198,7 @@ async def main() -> None:
     (promote,) = harness.journal.recent(types=("rule_promote",))
     print(f"[turn 2] promoted by {promote['validator']}: {promote['reason']}")
 
-    context = harness.system_context(task_hint="charge a customer payment")
+    context = harness.system_context()
     assert "payment tool twice" in context
     assert "### Provisional rules" not in context  # no provisional section left
     print("[turn 2] the validated rule re-enters the system context (no longer provisional)")
