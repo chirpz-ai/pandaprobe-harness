@@ -72,6 +72,11 @@ class NoticeMetric:
     threshold: float
     reason: str | None = None
     conditions: tuple[str, ...] = ()
+    #: The trace this metric was scored against (trace-tier metrics only), so the
+    #: agent can inspect exactly the trace that triggered.
+    trace_id: str | None = None
+    #: Which tier produced it: 1/2/3 for the trace tiers, 0 otherwise.
+    tier: int = 0
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -80,6 +85,8 @@ class NoticeMetric:
             "threshold": self.threshold,
             "reason": self.reason,
             "conditions": list(self.conditions),
+            "trace_id": self.trace_id,
+            "tier": self.tier,
         }
 
     @classmethod
@@ -87,12 +94,15 @@ class NoticeMetric:
         value = data.get("value")
         threshold = data.get("threshold")
         conditions = data.get("conditions")
+        tier = data.get("tier")
         return cls(
             name=str(data.get("name", "")),
             value=float(value) if isinstance(value, (int, float)) else None,
             threshold=float(threshold) if isinstance(threshold, (int, float)) else 0.0,
             reason=str(data["reason"]) if data.get("reason") is not None else None,
             conditions=tuple(str(c) for c in conditions) if isinstance(conditions, list) else (),
+            trace_id=str(data["trace_id"]) if data.get("trace_id") is not None else None,
+            tier=int(tier) if isinstance(tier, int) else 0,
         )
 
 
@@ -131,6 +141,11 @@ class DiagnosticNotice:
     dump_path: str = ""
     summary: str = ""
     signatures: tuple[str, ...] = ()
+    #: Coarse, tier-derived hint for where a mitigation rule belongs:
+    #: ``"global"`` for a Tier-1 trajectory fire, ``"scoped"`` for a surgical
+    #: Tier-2/3 breach. It is only the default for ``harness_rule_add`` — the
+    #: agent may file the rule under any scope it prefers.
+    scope_hint: str = "global"
     status: Literal["pending", "acknowledged"] = "pending"
     resolution: Resolution | None = None
 
@@ -154,6 +169,7 @@ class DiagnosticNotice:
             "dump_path": self.dump_path,
             "summary": self.summary,
             "signatures": list(self.signatures),
+            "scope_hint": self.scope_hint,
             "status": self.status,
             "resolution": self.resolution.to_json() if self.resolution else None,
         }
@@ -188,6 +204,7 @@ class DiagnosticNotice:
             dump_path=str(data.get("dump_path", "")),
             summary=str(data.get("summary", "")),
             signatures=tuple(str(s) for s in signatures) if isinstance(signatures, list) else (),
+            scope_hint=str(data.get("scope_hint") or "global"),
             status="acknowledged" if status == "acknowledged" else "pending",
             resolution=(
                 Resolution.from_json(resolution_raw) if isinstance(resolution_raw, dict) else None
