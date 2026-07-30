@@ -33,8 +33,7 @@ help: ## Show this help message
 sync: ## uv sync with all extras + dev group
 	uv sync --all-extras --group dev
 
-setup: sync ## Full setup: deps, harbor tool, isolated AppWorld env, preflight
-	uv tool install harbor || echo "harbor install skipped (already installed or unavailable)"
+setup: sync ## Full setup: deps (including harbor), isolated AppWorld env, preflight
 	bash scripts/setup_appworld.sh || echo "appworld setup skipped (see scripts/setup_appworld.sh)"
 	uv run pandabench-run --preflight || true
 
