@@ -37,7 +37,8 @@ from .evaluation.evaluator import MetricEvaluator
 from .evaluation.history import ScoreHistoryStore
 from .evaluation.metrics import EvalReport
 from .filesystem.layout import HarnessFilesystem
-from .hook.core import PandaHarnessHook
+from .hook.core import PandaHarnessHook, SettleResult
+from .hook.tiers import VerifierFn
 from .sandbox.policy import ShellPolicy
 from .sandbox.shell import RestrictedShellTool
 from .validation.regression import RegressionReport, run_regression
@@ -56,11 +57,18 @@ R = TypeVar("R")
 
 
 class _TurnScope:
-    """Async context manager *and* decorator delimiting one agent turn."""
+    """Async context manager *and* decorator delimiting one agent turn.
 
-    def __init__(self, harness: Harness, session_id: str) -> None:
+    With ``settle=True`` the scope also **waits** for the turn's self-heal cycle
+    before returning, so a rule the agent learns from this turn is in force for
+    the next one. Off by default: it adds per-turn latency, and every existing
+    caller's semantics are fire-and-forget.
+    """
+
+    def __init__(self, harness: Harness, session_id: str, *, settle: bool = False) -> None:
         self._harness = harness
         self._session_id = session_id
+        self._settle = settle
 
     async def __aenter__(self) -> _TurnScope:
         return self
@@ -72,7 +80,7 @@ class _TurnScope:
         tb: TracebackType | None,
     ) -> bool:
         # A failed turn is still an evaluable turn — fire on exceptional exit too.
-        self._harness._notify_turn(self._session_id)
+        await self._finish()
         return False
 
     def __call__(self, fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
@@ -81,9 +89,14 @@ class _TurnScope:
             try:
                 return await fn(*args, **kwargs)
             finally:
-                self._harness._notify_turn(self._session_id)
+                await self._finish()
 
         return wrapper
+
+    async def _finish(self) -> None:
+        self._harness._notify_turn(self._session_id)
+        if self._settle:
+            await self._harness.settle(self._session_id)
 
 
 class Harness:
@@ -133,6 +146,7 @@ class Harness:
         *,
         cli: CliClient | None = None,
         replay: ReplayFn | None = None,
+        verifier: VerifierFn | None = None,
     ) -> Harness:
         """Provision the workspace and assemble the full harness (no adapter).
 
@@ -140,9 +154,19 @@ class Harness:
         candidate-rule validation and :meth:`run_regression`; without it the
         harness falls back to forward-trial validation and regression runs
         degrade to skips.
+
+        ``verifier`` is an optional outcome oracle — ``(session_id, end_state) ->
+        float | bool`` — for developers who already know what success means (a
+        golden dataset, a benchmark evaluator, a business rule). When supplied it
+        becomes an authoritative ``outcome_correct`` signal that drives breaches
+        and rule promotion. Prefer a *continuous* score over a pass/fail flag: a
+        binary that is almost always 0 discriminates no better than the degenerate
+        session metrics v2 exists to replace.
         """
 
-        return cls._build(config=config, cli=cli, adapter=None, replay=replay)
+        return cls._build(
+            config=config, cli=cli, adapter=None, replay=replay, verifier=verifier
+        )
 
     @classmethod
     def _build(
@@ -152,6 +176,7 @@ class Harness:
         cli: CliClient | None,
         adapter: Any | None,
         replay: ReplayFn | None = None,
+        verifier: VerifierFn | None = None,
     ) -> Harness:
         cfg = config or HarnessConfig.from_env()
         client = cli or SubprocessCliClient(cfg.cli_binary, default_timeout=cfg.cli_timeout_s)
@@ -179,6 +204,7 @@ class Harness:
             history=history,
             evalset=evalset,
             replay=replay,
+            verifier=verifier,
             parser=adapter.parse_turn if adapter is not None else None,
         )
         if adapter is not None:
@@ -190,8 +216,6 @@ class Harness:
             mailbox=mailbox,
             journal=journal,
             rules=rules,
-            history=history,
-            evalset=evalset,
         )
         shell = RestrictedShellTool(ShellPolicy(workdir=cfg.harness_root))
 
@@ -376,15 +400,16 @@ class Harness:
 
         return self._adapter
 
-    def system_context(self, task_hint: str | None = None) -> str:
-        """Rules + pull protocol + mailbox banner, for the agent's system prompt.
+    def system_context(self) -> str:
+        """The block to prepend to the agent's system prompt.
 
-        ``task_hint`` (e.g. the user's current task) sharpens rule retrieval:
-        with ``rule_retrieval`` on, only global rules plus the top-k rules
-        relevant to the hint and any pending notices are injected.
+        The skill root — self-heal protocol, tool list, and a generated index of
+        the agent's rule files — plus a banner when notices are pending. It carries
+        **no rule text**: the agent reads the files it judges relevant with
+        ``harness_rules_read``, so the workspace stays its own.
         """
 
-        return self._hook.startup_context(task_hint=task_hint)
+        return self._hook.startup_context()
 
     def on_turn_end(self, raw_turn: object) -> None:
         self._hook.on_turn_end(raw_turn)
@@ -394,6 +419,23 @@ class Harness:
 
     async def refresh_all(self) -> None:
         await self._hook.refresh_all()
+
+    async def settle(
+        self, session_id: str, *, timeout: float | None = None
+    ) -> SettleResult:
+        """Wait for this turn's self-heal cycle: evaluation, notice, validation.
+
+        Call once per turn to get **in-session** healing — the agent then starts
+        its next turn already able to see the notice its last turn produced and
+        any rule promoted from it. Without this barrier the agent can run several
+        turns ahead of the (slower) evaluation, which is how a session ends before
+        its own diagnosis arrives.
+
+        Bounded by ``barrier_timeout_s``; on expiry the work continues detached
+        and ``SettleResult.timed_out`` is set.
+        """
+
+        return await self._hook.settle(session_id, timeout=timeout)
 
     async def check_health(self) -> bool:
         return await self._hook.check_health()
@@ -428,10 +470,14 @@ class Harness:
 
     # -- zero-adapter turn helpers ---------------------------------------------
 
-    def turn(self, session_id: str) -> _TurnScope:
-        """Delimit one agent turn: ``async with`` context manager or decorator."""
+    def turn(self, session_id: str, *, settle: bool = False) -> _TurnScope:
+        """Delimit one agent turn: ``async with`` context manager or decorator.
 
-        return _TurnScope(self, session_id)
+        Pass ``settle=True`` to also await the turn's self-heal cycle on exit
+        (see :meth:`settle`).
+        """
+
+        return _TurnScope(self, session_id, settle=settle)
 
     async def run_turn(
         self,
@@ -441,7 +487,13 @@ class Harness:
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> R:
-        """Run one arbitrary agent step, firing turn-end on completion."""
+        """Run one arbitrary agent step, firing turn-end on completion.
+
+        To also await the turn's self-heal cycle, use
+        ``async with harness.turn(session_id, settle=True):`` instead — this
+        signature forwards ``**kwargs`` verbatim to ``fn``, so it cannot claim a
+        keyword of its own without risking a collision.
+        """
 
         try:
             return await fn(*args, **kwargs)
