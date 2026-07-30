@@ -52,7 +52,6 @@ async def run_agent_loop(
     initial_messages: Sequence[dict[str, Any]],
     max_turns: int,
     wiring: HarnessWiring | None = None,
-    task_hint: str = "",
     max_tokens: int | None = None,
 ) -> LoopResult:
     """Drive one task-trial to completion (final answer, cap, or error).
@@ -77,7 +76,7 @@ async def run_agent_loop(
             )
 
         if wiring is not None:
-            system = wiring.system_preamble(task_hint) + "\n\n" + system_prompt
+            system = wiring.system_preamble() + "\n\n" + system_prompt
             call_tools: list[dict[str, Any]] = [*tools, *wiring.harness_tools()]
         else:
             system = system_prompt
@@ -123,6 +122,14 @@ async def run_agent_loop(
                     "content": _as_tool_content(output),
                 }
             )
+
+        if wiring is not None:
+            # The per-turn barrier: block until the harness has evaluated this
+            # turn and posted any notice, so the next iteration's preamble and
+            # rule set already reflect it. This is what makes healing take effect
+            # *within* a session rather than after it. The final turn is settled
+            # by the runner at trial end.
+            await wiring.settle_turn(turns)
 
 
 async def _dispatch(
