@@ -9,7 +9,7 @@
 #     `CLAUDE_BACKEND`, or the per-model `default_backend` below.
 #
 # `param_allowlist` gates which sampler params LiteLLM may forward: Claude 5 and
-# GPT-5 reject temperature/top_p/top_k (400), so those keys omit them; Gemini
+# GPT-5.x reject temperature/top_p/top_k (400), so those keys omit them; Gemini
 # accepts them. `price_per_mtok` is a FALLBACK only, used when
 # litellm.completion_cost has no price for a model. Verify current model IDs and
 # the Vertex partner-model form for Claude against the installed LiteLLM at run time.
@@ -34,23 +34,26 @@ models:
     param_allowlist: [temperature, top_p, max_tokens]
     price_per_mtok: {input: 2.00, output: 12.0}
 
-  gpt-5.4-mini:
-    provider_family: openai
-    litellm_model: "openai/gpt-5.4-mini"
-    param_allowlist: [max_tokens]
-    price_per_mtok: {input: 0.75, output: 4.50}
-
-  gpt-5.4-nano:
-    provider_family: openai
-    litellm_model: "openai/gpt-5.4-nano"
-    param_allowlist: [max_tokens]
-    price_per_mtok: {input: 0.20, output: 1.25}
-
   gpt-5.6-luna:
     provider_family: openai
     litellm_model: "openai/gpt-5.6-luna"
     param_allowlist: [max_tokens]
+    default_params: {reasoning_effort: none}
     price_per_mtok: {input: 1.00, output: 6.00}
+
+  gpt-5.6-terra:
+    provider_family: openai
+    litellm_model: "openai/gpt-5.6-terra"
+    param_allowlist: [max_tokens]
+    default_params: {reasoning_effort: none}
+    price_per_mtok: {input: 2.50, output: 15.00}
+
+  gpt-5.6-sol:
+    provider_family: openai
+    litellm_model: "openai/gpt-5.6-sol"
+    param_allowlist: [max_tokens]
+    default_params: {reasoning_effort: none}
+    price_per_mtok: {input: 5.00, output: 30.00}
 
   claude-sonnet-5:
     provider_family: claude
