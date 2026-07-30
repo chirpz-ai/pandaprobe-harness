@@ -80,6 +80,9 @@ class HarnessWiring:
         # Cache the tool JSON once; the spec set is stable for a harness.
         self._tools = specs_to_openai(harness.toolset.specs())
         self.turns_settled = 0
+        # The most recent (turn_index, result), so settling a turn twice returns
+        # the first answer instead of re-evaluating. See settle_turn.
+        self._settled: tuple[int, SettleResult | None] | None = None
 
     def system_preamble(self) -> str:
         """The preamble to prepend to the benchmark system prompt this turn.
@@ -114,6 +117,15 @@ class HarnessWiring:
         again to get the report would get an empty one — which is how v1 ended up
         with null score telemetry on every recorded row.
 
+        **Idempotent per turn.** Settling the same index twice returns the first
+        answer rather than firing a second evaluation. Two callers legitimately
+        settle turns — the agent loop for turns that continue, the runner for the
+        trial's last one — and their hand-off is easy to get wrong (at the turn cap
+        the loop's last turn *is* the trial's last). A repeat would find no new
+        traces, so its report would carry none of the tier scores, and the caller
+        recording telemetry from it would write that emptiness over the real
+        diagnosis. It would also spend a second platform eval run for nothing.
+
         Ordering matters too: traces are flushed *before* ``on_turn_end`` so the
         trace listing that follows can already see this turn's trace. Never raises
         — a harness hiccup must degrade the study's telemetry, not fail the trial.
@@ -121,6 +133,11 @@ class HarnessWiring:
 
         if not self._settle_each_turn or self.session_id is None:
             return None
+        if self._settled is not None and self._settled[0] == turn_index:
+            return self._settled[1]
+        # Claimed before awaiting, so a failed settle still counts as attempted
+        # rather than inviting a duplicate from the next caller.
+        self._settled = (turn_index, None)
         try:
             if self._flush is not None:
                 self._flush()  # push buffered traces so this turn is scorable
@@ -139,6 +156,7 @@ class HarnessWiring:
                     self.session_id,
                     turn_index,
                 )
+            self._settled = (turn_index, result)
             return result
         except Exception as exc:  # noqa: BLE001 - never fail a trial on harness trouble
             logger.warning(
