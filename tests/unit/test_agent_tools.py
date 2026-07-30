@@ -13,7 +13,6 @@ from pandaprobe_harness import (
     Journal,
     Mailbox,
     RulesStore,
-    ScoreHistoryStore,
 )
 from pandaprobe_harness.cli.errors import CliError
 from tests.fakes.fake_cli_client import FakeCliClient
@@ -150,10 +149,10 @@ async def test_trace_inspect_returns_trace_spans_and_scores(
     assert result["trace"] == {"trace_id": "t-1", "spans": []}
     assert result["tool_spans"] == {"trace_id": "t-1", "spans": []}
     assert result["scores"]["id"] == "t-1"
-    assert {s["name"] for s in result["scores"]["scores"]} == {
-        "agent_reliability",
-        "agent_consistency",
-    }
+    # The tool passes the platform's `evals scores get --target trace` payload
+    # straight through, so the trace-scoped metrics come with it.
+    names = {s["name"] for s in result["scores"]["scores"]}
+    assert {"task_completion", "tool_correctness", "coherence"} <= names
 
 
 async def test_trace_inspect_degrades_partially_on_cli_error(
@@ -169,63 +168,61 @@ async def test_trace_inspect_degrades_partially_on_cli_error(
     assert result["scores"] is not None
 
 
-# -- history -----------------------------------------------------------------------
+# -- rule files --------------------------------------------------------------------
 
 
-async def test_history_with_session_returns_local_and_backend(
-    toolset: HarnessToolset, config: HarnessConfig, fake_cli: FakeCliClient
-) -> None:
-    store = ScoreHistoryStore(config)
-    store.record("s-1", "agent_reliability", 0.4, run_id="run-1", ts="2026-07-01T00:00:00+00:00")
-    store.record("s-1", "agent_reliability", 0.6, run_id="run-2", ts="2026-07-01T00:01:00+00:00")
-    backend_items = [{"metric_name": "agent_reliability", "value": "0.5", "run_id": "run-0"}]
-    fake_cli.session_scores_list["s-1"] = backend_items
-
-    result = await toolset.call(
-        "harness_history", {"metric": "agent_reliability", "session_id": "s-1"}
+async def test_rules_read_returns_a_scope_file(toolset: HarnessToolset) -> None:
+    await toolset.call(
+        "harness_rule_add",
+        {"rule": "validate the amount", "rationale": "learned", "scope": "payments"},
     )
 
+    result = await toolset.call("harness_rules_read", {"scope": "payments"})
+
     assert result["ok"] is True
-    assert result["metric"] == "agent_reliability"
-    assert result["session_id"] == "s-1"
-    assert result["local"] == [
-        {"value": 0.4, "ts": "2026-07-01T00:00:00+00:00", "run_id": "run-1"},
-        {"value": 0.6, "ts": "2026-07-01T00:01:00+00:00", "run_id": "run-2"},
-    ]
-    assert result["backend"] == {"items": backend_items}
+    assert result["path"] == "rules/payments.md"
+    assert "validate the amount" in result["content"]
 
 
-async def test_history_without_session_is_empty_local_and_no_backend(
+async def test_rules_read_defaults_to_global(toolset: HarnessToolset) -> None:
+    await toolset.call("harness_rule_add", {"rule": "check state first", "rationale": "r"})
+
+    result = await toolset.call("harness_rules_read", {})
+
+    assert result["scope"] == "global"
+    assert "check state first" in result["content"]
+
+
+async def test_rules_read_cannot_escape_the_rules_directory(
     toolset: HarnessToolset,
 ) -> None:
-    result = await toolset.call("harness_history", {"metric": "agent_reliability"})
+    """Scope is agent-supplied and becomes a filename, so it is slugified rather
+    than trusted."""
+
+    result = await toolset.call("harness_rules_read", {"scope": "../../etc/passwd"})
 
     assert result["ok"] is True
-    assert result["session_id"] is None
-    assert result["local"] == []
-    assert result["backend"] is None
+    assert "/" not in result["scope"]
+    assert result["path"] == "rules/etc-passwd.md"
 
 
-# -- journal -----------------------------------------------------------------------
+async def test_dropped_tools_are_no_longer_exposed(toolset: HarnessToolset) -> None:
+    """v1 shipped 14 tools plus a check-your-mailbox-every-turn mandate, and a
+    capable agent spent its turns operating the harness instead of doing the task.
+    These four earned their removal: the trajectory and the notice now carry what
+    `harness_history` reported, and the eval-set/reflect tools are operator-facing."""
 
+    names = {spec.name for spec in toolset.specs()}
 
-async def test_journal_honors_limit_and_types(
-    toolset: HarnessToolset, journal: Journal
-) -> None:
-    journal.record({"type": "notice", "id": "n-1"})
-    journal.record({"type": "ack", "notice_id": "n-1"})
-    journal.record({"type": "notice", "id": "n-2"})
-    journal.record({"type": "notice", "id": "n-3"})
-
-    limited = await toolset.call("harness_journal", {"limit": 2, "types": ["notice"]})
-    assert limited["ok"] is True
-    assert [e["id"] for e in limited["events"]] == ["n-2", "n-3"]
-
-    acks = await toolset.call("harness_journal", {"types": ["ack"]})
-    assert [e["type"] for e in acks["events"]] == ["ack"]
-
-    everything = await toolset.call("harness_journal", {})
-    assert len(everything["events"]) == 4
+    assert names.isdisjoint(
+        {"harness_history", "harness_journal", "harness_reflect",
+         "harness_evalset_list", "harness_evalset_attach"}
+    )
+    for dropped in ("harness_history", "harness_reflect"):
+        assert await toolset.call(dropped, {}) == {
+            "ok": False,
+            "error": f"unknown tool {dropped!r}",
+        }
 
 
 # -- rules -------------------------------------------------------------------------
@@ -265,7 +262,6 @@ async def test_rule_add_at_cap_is_error_mentioning_retire(tmp_path: Path) -> Non
         mailbox=Mailbox(cfg),
         journal=journal,
         rules=RulesStore(cfg, journal=journal),
-        history=ScoreHistoryStore(cfg),
     )
 
     first = await capped.call(
@@ -294,38 +290,6 @@ async def test_rule_retire_ok_and_unknown_is_error(toolset: HarnessToolset) -> N
     unknown = await toolset.call("harness_rule_retire", {"rule_id": "r-missing"})
     assert unknown["ok"] is False
     assert "r-missing" in unknown["error"]
-
-
-# -- reflection ----------------------------------------------------------------------
-
-
-async def test_reflect_assembles_context_and_journals(
-    toolset: HarnessToolset, journal: Journal
-) -> None:
-    journal.record(
-        {"type": "notice", "id": "n-1", "metrics": [{"name": "agent_reliability"}]}
-    )
-    added = await toolset.call(
-        "harness_rule_add",
-        {"rule": "reflect on failures", "rationale": "why", "metric": "agent_reliability"},
-    )
-    rule_id = added["rule"]["id"]
-
-    result = await toolset.call("harness_reflect", {})
-
-    assert result["ok"] is True
-    assert [e["id"] for e in result["recent_notices"]] == ["n-1"]
-    # The fresh rule is still a candidate; reflection sees both partitions.
-    assert result["active_rules"] == []
-    assert [r["id"] for r in result["candidate_rules"]] == [rule_id]
-    assert rule_id in result["effectiveness"]
-    assert result["effectiveness"][rule_id]["metric"] == "agent_reliability"
-
-    reflections = journal.recent(types=("reflect",))
-    assert len(reflections) == 1
-    assert reflections[0]["notice_count"] == 1
-    assert reflections[0]["active_rule_count"] == 0
-    assert reflections[0]["candidate_rule_count"] == 1
 
 
 # -- dispatch ------------------------------------------------------------------------
