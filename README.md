@@ -55,14 +55,20 @@ from pandaprobe_harness.agent_tools.native import as_anthropic_tools
 
 harness = Harness.create()                              # provisions the workspace
 
-system_prompt = harness.system_context() + MY_PROMPT    # rules + protocol + banner
-specs, dispatch = as_anthropic_tools(harness.toolset)   # the 14 self-diagnostic tools
+system_prompt = harness.system_context() + MY_PROMPT    # protocol + references + banner
+specs, dispatch = as_anthropic_tools(harness.toolset)   # the self-diagnostic tools
 tools = my_tools + specs
 
 async def one_turn(session_id: str, user_input: str) -> str:
-    async with harness.turn(session_id):                # evaluates on exit
+    # `settle=True` waits for this turn's evaluation and any notice before
+    # returning, so a rule learned now is in force for the next turn.
+    async with harness.turn(session_id, settle=True):
         return await my_agent_step(system_prompt, tools, user_input)
 ```
+
+The system context carries the protocol, the tool list, and an index of the
+agent's rule files — never the rule bodies. The agent pulls those on demand with
+`harness_rules_read`, so the workspace stays its own.
 
 Using a framework? `Harness.for_langgraph()`, `for_langchain()`,
 `for_deepagents()`, `for_crewai()`, `for_claude_agent_sdk()`, and
