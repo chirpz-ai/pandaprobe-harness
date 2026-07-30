@@ -16,6 +16,7 @@ from pandaprobe_harness import (
 from pandaprobe_harness.evaluation.metrics import EvalReport
 from pandaprobe_harness.evaluation.traces import TraceLocator
 from pandaprobe_harness.hook.turn import TurnContext
+from pandaprobe_harness.workspace.evalset import EvalCase
 from tests.fakes.fake_cli_client import FakeCliClient
 
 
@@ -43,8 +44,7 @@ def _cfg(tmp_path: Path, **kw: object) -> HarnessConfig:
         eval_retry_attempts=1,
         eval_retry_backoff_s=0.0,
         gate_window=2,
-        rule_validation=False,
-        **kw,  # type: ignore[arg-type]
+        **{"rule_validation": False, **kw},  # type: ignore[arg-type]
     )
 
 
@@ -120,6 +120,46 @@ async def test_settle_reports_a_timeout_and_leaves_the_work_running(
 
     evaluator.event.set()
     assert await hook.refresh("s") is not None
+
+
+async def test_settle_does_not_wait_for_the_validation_replay_round(
+    tmp_path: Path,
+) -> None:
+    """A replay re-runs the developer's agent, which can need the very resource the
+    current turn holds — an environment lock, a world, a container. Awaiting it
+    inside a per-turn barrier deadlocks until the replay times out, so the barrier
+    covers the diagnosis only; drain_validation handles the round at a phase
+    boundary, where nothing is held."""
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def replay(case: EvalCase, context: str) -> str:
+        del case, context
+        started.set()
+        await release.wait()  # stands in for blocking on a held resource
+        return "s-replay"
+
+    cli = FakeCliClient(metric_values={"tool_correctness": 0.1})
+    cli.script_trajectory("s", "task_completion", [0.2, 0.2, 0.2])
+    cfg = _cfg(tmp_path, rule_validation=True, capture_eval_cases=True)
+    harness = Harness.create(cfg, cli=cli, replay=replay)
+    await harness.toolset.call(
+        "harness_rule_add", {"rule": "check first", "rationale": "why",
+                             "metric": "tool_correctness"}
+    )
+
+    harness.on_turn_end(
+        {"session_id": "s", "turn_index": 1, "end_state": {"task": "t"}}
+    )
+    # Completes despite the replay being wedged.
+    result = await asyncio.wait_for(harness.settle("s"), timeout=5.0)
+
+    assert result.report is not None
+    assert len(harness.mailbox.pending()) == 1  # the diagnosis did land
+
+    release.set()
+    await harness.drain_validation()
 
 
 async def test_settle_with_nothing_in_flight_is_a_no_op(tmp_path: Path) -> None:
