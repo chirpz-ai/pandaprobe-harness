@@ -1564,7 +1564,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandaprobe", specifier = ">=0.5" },
-    { name = "pandaprobe-harness", specifier = "==0.6.3" },
+    { name = "pandaprobe-harness", editable = "../" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -1597,11 +1597,46 @@ wheels = [
 
 [[package]]
 name = "pandaprobe-harness"
-version = "0.6.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c0/50/e5042f5ee11398750f988a40a29f5e98913df292f5fddcb2df9f2a63c284/pandaprobe_harness-0.6.3.tar.gz", hash = "sha256:95d747f762e89b74dcc3a0d71a7c5bc9f40f0208119f2e8d13c6a6979e8a9d5e", size = 377718, upload_time = "2026-07-05T22:46:06.427Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/f6/bc2e1a409b9b5696a9201548dddfcc1eb359550cc16316715d4ef6f5ba7d/pandaprobe_harness-0.6.3-py3-none-any.whl", hash = "sha256:9d6f031cd6c654bbb8f870094f57424ccf1cb34d7e96c89a6622e9ed54a859f9", size = 114455, upload_time = "2026-07-05T22:46:05.11Z" },
+source = { editable = "../" }
+
+[package.metadata]
+requires-dist = [
+    { name = "claude-agent-sdk", marker = "extra == 'all'", specifier = ">=0.1.0" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.1.0" },
+    { name = "crewai", marker = "extra == 'all'", specifier = ">=0.100" },
+    { name = "crewai", marker = "extra == 'crewai'", specifier = ">=0.100" },
+    { name = "deepagents", marker = "extra == 'all'", specifier = ">=0.6.1" },
+    { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.6.1" },
+    { name = "langchain", marker = "extra == 'all'", specifier = ">=1.0.0" },
+    { name = "langchain", marker = "extra == 'langchain'", specifier = ">=1.0.0" },
+    { name = "langchain-core", marker = "extra == 'all'", specifier = ">=0.3.0" },
+    { name = "langchain-core", marker = "extra == 'deepagents'", specifier = ">=0.3.0" },
+    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3.0" },
+    { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=0.3" },
+    { name = "langgraph", marker = "extra == 'all'", specifier = ">=0.2" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.2" },
+    { name = "openai-agents", marker = "extra == 'all'", specifier = ">=0.13.0" },
+    { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.13.0" },
+    { name = "pandaprobe", marker = "extra == 'all'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'crewai'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'deepagents'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'langchain'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'langgraph'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'openai-agents'", specifier = ">=0.4" },
+    { name = "wrapt", marker = "extra == 'all'", specifier = ">=1.14.0" },
+    { name = "wrapt", marker = "extra == 'claude-agent-sdk'", specifier = ">=1.14.0" },
+    { name = "wrapt", marker = "extra == 'crewai'", specifier = ">=1.14" },
+]
+provides-extras = ["all", "claude-agent-sdk", "crewai", "deepagents", "langchain", "langgraph", "openai-agents"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "ruff", specifier = ">=0.5" },
+    { name = "twine", specifier = ">=5.0" },
 ]
 
 [[package]]
