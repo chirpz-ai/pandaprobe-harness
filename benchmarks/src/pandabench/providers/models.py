@@ -1,7 +1,7 @@
 """Model registry: resolve a study model key to a LiteLLM model string.
 
-The study's provider-routing constraints (Vertex primary; OpenAI via OpenAI's
-API; Claude switchable across Anthropic API and Vertex partner models) are
+The study's provider-routing constraints (Gemini via Vertex; OpenAI via OpenAI's
+API; Claude switchable across AWS Bedrock and Anthropic API) are
 encoded entirely in ``configs/models.yaml`` — switching a model or backend is a
 config change, never a code change. This module turns a config key + optional
 backend into a fully-resolved :class:`ResolvedModel` that the LiteLLM wrapper
@@ -43,16 +43,15 @@ class ResolvedModel:
     """A model key resolved to a concrete LiteLLM call target."""
 
     key: str
-    """The models.yaml key, e.g. ``claude-sonnet-5`` — recorded in results."""
+    """The models.yaml key, e.g. ``claude-sonnet-4-6`` — recorded in results."""
     litellm_model: str
-    """The full LiteLLM string actually called, e.g. ``vertex_ai/claude-sonnet-5``."""
+    """The LiteLLM string, e.g. ``bedrock/global.anthropic.claude-sonnet-4-6``."""
     provider: str
-    """Coarse provider label, e.g. ``vertex`` / ``anthropic`` / ``openai``."""
+    """Coarse provider label, e.g. ``bedrock`` / ``anthropic`` / ``openai``."""
     backend: str | None
-    """The chosen backend for dual-backend (Claude) models, else ``None``."""
+    """The chosen backend for dual-backend models, else ``None``."""
     param_allowlist: frozenset[str]
-    """Sampler/params LiteLLM may forward; everything else is dropped (Claude 5
-    and GPT-5 400 on ``temperature``)."""
+    """Sampler/params LiteLLM may forward; everything else is dropped."""
     default_params: dict[str, Any]
     """Provider-required constants sent on **every** call to this model, e.g.
     ``reasoning_effort: none`` for GPT-5.6 (which otherwise 400s when function
