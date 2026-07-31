@@ -1,6 +1,6 @@
 # PandaProbe Harness arXiv preprint
 
-This directory contains the branded, two-column technical preprint for
+This directory contains the branded, single-column technical preprint for
 PandaProbe Harness. It presents the system and benchmark study for agent
 builders, researchers, and the open-source community, with practical
 integration and reproducibility material alongside the technical mechanism.
