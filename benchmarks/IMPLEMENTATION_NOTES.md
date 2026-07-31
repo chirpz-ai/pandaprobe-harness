@@ -126,19 +126,24 @@ paid live-model smokes for tau2 and Terminal-Bench.
   Reward: `Orchestrator.run()` does NOT grade (it returns `reward_info=None`) — call
   `tau2.evaluator.evaluator.evaluate_simulation(..., evaluation_type=EvaluationType.ALL)`
   separately. Use `ALL`, never `ALL_WITH_NL_ASSERTIONS` (that one calls an LLM);
-  retail's `reward_basis` is `[DB, COMMUNICATE]`, all deterministic, so grading is free
-  and doubles as the harness's gold outcome signal. `passed` = `is_successful(reward)`
-  (== 1.0 within 1e-6, not a threshold). `Orchestrator.run()` is blocking, so the
-  runner drives it in a worker thread and the agent submits its coroutines — chat,
-  harness dispatch, the per-turn barrier — back to the runner's loop.
+  all three official domains grade deterministically: airline/retail use
+  `[DB, COMMUNICATE]`, while telecom uses `[ENV_ASSERTION]` with some `[ACTION,
+  ENV_ASSERTION]` tasks. Grading is therefore free and doubles as the harness's gold
+  outcome signal. `DATASET=airline|retail|telecom` switches the task set, environment,
+  policy, tools, and evaluator as one unit. `passed` = `is_successful(reward)` (== 1.0
+  within 1e-6, not a threshold). `Orchestrator.run()` is blocking, so the runner drives
+  it in a worker thread and the agent submits its coroutines — chat, harness dispatch,
+  the per-turn barrier — back to the runner's loop.
   GATES: `uv sync --extra tau2` + `TAU2_DATA_DIR` + live creds (incl. Vertex ADC for
   the user simulator).
 
 ## Verification status (this build)
 
-- **Offline gates (2026-07-30)**: 38 PandaBench tests pass; Ruff and strict mypy are
+- **Offline gates (2026-07-30)**: 43 PandaBench tests pass; Ruff and strict mypy are
   green; both tau2 and Terminal-Bench dry-runs pass; `make smoke` passes all three
-  benchmarks × both arms. The parent project remains green at 425 passed / 8 skipped.
+  benchmarks × both arms. tau2 regression coverage loads every official task set and
+  builds the matching airline, retail, and telecom orchestrators. The parent project
+  remains green at 425 passed / 8 skipped.
 - **tau2 paid smoke** (`tau2_gpt-5.6-terra_harness_1_20260730-202115`): four real
   retail episodes completed without integration errors (2 passed, $0.2402 recorded
   agent cost). Every session has a trace series longer than one (9–30 samples), the
