@@ -190,7 +190,14 @@ def preflight() -> int:
         )
     )
     checks.append(("docker", _docker_ok(), "daemon reachable (Terminal-Bench)"))
-    for var in ("VERTEXAI_PROJECT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PANDAPROBE_API_KEY"):
+    for var in (
+        "VERTEXAI_PROJECT",
+        "OPENAI_API_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_REGION",
+        "ANTHROPIC_API_KEY",
+        "PANDAPROBE_API_KEY",
+    ):
         checks.append((var, bool(os.environ.get(var)), "set"))
 
     ping_model = os.environ.get("PANDABENCH_PING_MODEL", "gemini-3.1-flash-lite")
@@ -202,8 +209,15 @@ def preflight() -> int:
         print(f"  [{'OK ' if passed else 'XX '}] {name:28s} {detail}")
 
     # Hard requirement: pandaprobe CLI + at least one usable provider.
-    provider_vars = ("VERTEXAI_PROJECT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
-    provider_ok = any(os.environ.get(v) for v in provider_vars)
+    bedrock_ok = bool(
+        os.environ.get("AWS_BEARER_TOKEN_BEDROCK") and os.environ.get("AWS_REGION")
+    )
+    provider_ok = bool(
+        os.environ.get("VERTEXAI_PROJECT")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or bedrock_ok
+    )
     hard_ok = shutil.which("pandaprobe") is not None and provider_ok
     print("\npreflight:", "PASS" if hard_ok else "FAIL (need pandaprobe CLI + >=1 provider)")
     return 0 if hard_ok else 1
