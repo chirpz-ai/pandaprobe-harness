@@ -36,25 +36,61 @@ def test_single_backend_resolution(registry):
     assert "temperature" in m.param_allowlist
 
 
-def test_claude_defaults_to_vertex(registry):
-    m = registry.resolve("claude-sonnet-5", env={})
-    assert m.litellm_model == "vertex_ai/claude-sonnet-5"
-    assert m.provider == "vertex"
-    assert m.backend == "vertex_ai"
-    assert "temperature" not in m.param_allowlist  # Claude 5 rejects it
+@pytest.mark.parametrize(
+    ("key", "bedrock_id", "anthropic_id", "prices"),
+    [
+        (
+            "claude-opus-4-6",
+            "global.anthropic.claude-opus-4-6-v1",
+            "claude-opus-4-6",
+            {"input": 5.0, "output": 25.0},
+        ),
+        (
+            "claude-sonnet-4-6",
+            "global.anthropic.claude-sonnet-4-6",
+            "claude-sonnet-4-6",
+            {"input": 3.0, "output": 15.0},
+        ),
+        (
+            "claude-haiku-4-5",
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "claude-haiku-4-5-20251001",
+            {"input": 1.0, "output": 5.0},
+        ),
+    ],
+)
+def test_claude_models_default_to_bedrock(
+    registry,
+    key: str,
+    bedrock_id: str,
+    anthropic_id: str,
+    prices: dict[str, float],
+):
+    m = registry.resolve(key, env={})
+    assert m.litellm_model == f"bedrock/{bedrock_id}"
+    assert m.provider == "bedrock"
+    assert m.backend == "bedrock"
+    assert m.price_per_mtok == prices
+    assert "temperature" not in m.param_allowlist
+
+    fallback = registry.resolve(key, backend="anthropic", env={})
+    assert fallback.litellm_model == f"anthropic/{anthropic_id}"
+    assert fallback.provider == "anthropic"
+    assert fallback.backend == "anthropic"
+    assert fallback.price_per_mtok == prices
 
 
 def test_claude_backend_arg_overrides(registry):
     m = registry.resolve(
-        "claude-sonnet-5", backend="anthropic", env={"CLAUDE_BACKEND": "vertex_ai"}
+        "claude-sonnet-4-6", backend="anthropic", env={"CLAUDE_BACKEND": "bedrock"}
     )
-    assert m.litellm_model == "anthropic/claude-sonnet-5"
+    assert m.litellm_model == "anthropic/claude-sonnet-4-6"
     assert m.provider == "anthropic"
     assert m.backend == "anthropic"
 
 
 def test_claude_env_overrides_default(registry):
-    m = registry.resolve("claude-sonnet-5", env={"CLAUDE_BACKEND": "anthropic"})
+    m = registry.resolve("claude-sonnet-4-6", env={"CLAUDE_BACKEND": "anthropic"})
     assert m.backend == "anthropic"
 
 
@@ -70,7 +106,7 @@ def test_backend_on_single_backend_raises(registry):
 
 def test_unknown_backend_raises(registry):
     with pytest.raises(ValueError):
-        registry.resolve("claude-sonnet-5", backend="bedrock", env={})
+        registry.resolve("claude-sonnet-4-6", backend="vertex_ai", env={})
 
 
 def test_roles(registry):
@@ -81,7 +117,8 @@ def test_roles(registry):
 
 
 def test_provider_of():
-    assert provider_of("vertex_ai/claude-haiku-4-5") == "vertex"
+    assert provider_of("bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0") == "bedrock"
+    assert provider_of("anthropic/claude-sonnet-4-6") == "anthropic"
     assert provider_of("openai/gpt-5.6-terra") == "openai"
     assert provider_of("something/weird") == "something"
 
@@ -91,7 +128,7 @@ def test_provider_of():
 
 def test_param_allowlist_drops_temperature_for_claude(registry):
     client = LiteLLMClient(tracer=PandaTracer.disabled())
-    claude = registry.resolve("claude-sonnet-5", env={})
+    claude = registry.resolve("claude-sonnet-4-6", env={})
     params = client._call_params(claude, max_tokens=1000, extra={"temperature": 0.7})
     assert "temperature" not in params  # not allowlisted
     assert params["max_tokens"] == 1000
