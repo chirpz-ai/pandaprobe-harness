@@ -80,6 +80,16 @@ class SingleTaskRunner(Protocol):
 
     name: str
 
+    def configure_dataset(self, dataset: str) -> None:
+        """Select the dataset/domain used by subsequent task runs.
+
+        Most runners receive all dataset context through ``list_tasks`` and need
+        no setup. Stateful integrations such as tau2 override this hook because
+        the selected domain also determines the environment and evaluator.
+        """
+
+        return None
+
     def list_tasks(self, dataset: str) -> list[str]: ...
 
     async def run_once(
@@ -186,6 +196,7 @@ class BenchmarkRunner:
         benchmark = self._single.name
         bench_cfg = self._study.benchmark(benchmark)
         dataset = dataset_override or bench_cfg.dataset
+        self._single.configure_dataset(dataset)
         model = self._resolve_model(model_key, backend, dry_run)
         run_id = run_id or _run_id(benchmark, model.key, arm, seed)
         run_dir = self._run_root / run_id
