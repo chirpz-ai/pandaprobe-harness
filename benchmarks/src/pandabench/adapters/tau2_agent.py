@@ -164,10 +164,36 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
             ]
             if not harness_calls:
                 return _to_tau2_assistant(result)
+
+            assert self._wiring is not None
+            domain_calls = [
+                tc
+                for tc in result.tool_calls
+                if not self._wiring.is_harness_tool(tc.name)
+            ]
+
+            # Claude can issue harness and domain tools in one parallel tool-use
+            # response. Execute the harness calls for their side effects, then
+            # yield only the domain calls to tau2. Continuing the private
+            # sub-loop would send Bedrock the original mixed assistant message
+            # with results for only the harness calls, leaving the domain calls
+            # unresolved and causing ``Expected toolResult blocks``.
+            if domain_calls:
+                for tc in harness_calls:
+                    self._await(self._wiring.dispatch(tc.name, tc.arguments))
+                logger.debug(
+                    "session %s: executed %d harness call(s) from a mixed "
+                    "response and yielded %d domain call(s) to tau2",
+                    self._session_id,
+                    len(harness_calls),
+                    len(domain_calls),
+                )
+                return _to_tau2_assistant(result)
+
             # Execute harness tools in-band and let the model continue.
             substeps.append(result.assistant_message)
             for tc in harness_calls:
-                out = self._await(self._wiring.dispatch(tc.name, tc.arguments))  # type: ignore[union-attr]
+                out = self._await(self._wiring.dispatch(tc.name, tc.arguments))
                 substeps.append({"role": "tool", "tool_call_id": tc.id, "content": str(out)})
         logger.warning(
             "session %s: harness sub-step budget (%d) exhausted; yielding a "

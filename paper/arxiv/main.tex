@@ -1,8 +1,8 @@
 % PandaProbe Harness branded arXiv preprint for agent builders and the
 % open-source community.
-\documentclass[10pt,letterpaper]{article}
+\documentclass[11pt,letterpaper]{article}
 
-\usepackage[left=0.76in,right=0.76in,top=0.72in,bottom=0.72in,columnsep=0.24in]{geometry}
+\usepackage[left=1.2in,right=1.2in,top=1in,bottom=1in,headheight=17pt,headsep=14pt]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{newtxtext,newtxmath}
 \usepackage[hyphens]{url}
@@ -20,6 +20,7 @@
 \usepackage{caption}
 \usepackage{titlesec}
 \usepackage{tikz}
+\usepackage{fancyhdr}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
 \usepackage[colorlinks=true,allcolors=blue!55!black,hypertexnames=false]{hyperref}
 \hypersetup{
@@ -29,7 +30,6 @@
   pdfkeywords={LLM agents, reliability, self-healing, PandaProbe, evidence-gated validation}
 }
 
-\setlength{\columnsep}{0.24in}
 \setcounter{secnumdepth}{2}
 \setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
 \setlength{\floatsep}{7pt plus 2pt minus 2pt}
@@ -68,6 +68,36 @@
 \newcommand{\Harness}{\textsc{PandaProbe Harness}\xspace}
 \newcommand{\PandaProbe}{\textsc{PandaProbe}\xspace}
 
+% --- Branding: logo, running head, and the ruled title block --------------------
+% Logo height is a multiple of the surrounding font's cap height (queried from the
+% font metrics), so it tracks any font-size change with no per-use tuning. A factor
+% of 1.0 is exactly cap height, which reads short because the PNG carries internal
+% padding, so 1.45 sits the visible mark on the capitals beside it.
+\newcommand{\pplogo}{%
+  \raisebox{-0.16\height}{%
+    \includegraphics[height=\dimexpr1.45\fontcharht\font`P\relax]{logo/android-chrome-512x512}}%
+}
+\newcommand{\shorttitle}{PandaProbe Harness: Evidence-Gated Self-Healing}
+\newcommand{\reportkind}{Technical Report}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\small\pplogo\hspace{0.32em}\shorttitle}
+\fancyhead[R]{\small\scshape\reportkind}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.5pt}
+\renewcommand{\footrulewidth}{0pt}
+% v0.7 tiered trace trigger + trajectory gate
+\newcommand{\Mset}{\mathcal{M}}
+\newcommand{\Gate}{\mathcal{G}}
+\newcommand{\Wspace}{\mathcal{W}}
+\newcommand{\gwin}{w}
+\newcommand{\gtarget}{\theta}
+\newcommand{\ggain}{\gamma_{\mathrm{gain}}}
+\newcommand{\gdrop}{\delta_{\mathrm{drop}}}
+\newcommand{\outcome}{m_{\mathrm{out}}}
+\newcommand{\idx}{\iota}
+
 \title{PandaProbe Harness: Evidence-Gated Self-Healing for Reliable LLM Agents}
 \author{
   Sina Tayebati\\
@@ -79,32 +109,49 @@
 
 \begin{document}
 
-% A wide title over a two-column body. The abstract begins the left column.
-\twocolumn[
-\begin{@twocolumnfalse}
-\maketitle
-\end{@twocolumnfalse}
-]
+% Ruled title block: heavy rule, small-caps title with the logo, heavy rule,
+% then the report kind and the author line.
+\begin{center}
+  \rule{\textwidth}{1.1pt}\\[0.62em]
+  {\LARGE\scshape \pplogo\hspace{0.36em} PandaProbe Harness:\\[0.28em]
+   Evidence-Gated Self-Healing for Reliable LLM Agents\par}
+  \vspace{0.58em}
+  \rule{\textwidth}{1.1pt}\\[0.85em]
+  {\normalsize\scshape \reportkind\ of the PandaProbe Harness}\\[1.0em]
+  {\normalsize Sina Tayebati}\\[0.25em]
+  {\small PandaProbe Research Lab, Chirpz AI}\\[0.15em]
+  {\small\href{https://github.com/chirpz-ai/pandaprobe-harness}{github.com/chirpz-ai/pandaprobe-harness}}
+\end{center}
+\thispagestyle{plain}
+\vspace{0.6em}
 
-\section*{Abstract}
+\begin{abstract}
+\noindent
 Large language model (LLM) agents that are \emph{capable} on a task are not necessarily
 \emph{reliable} on it: the same agent, run repeatedly, frequently succeeds on some trials and
 fails on others, and quality tends to drift over long horizons. Peak-performance metrics such
 as $\passone$ hide this variance, whereas the stricter reliability metric $\passk$, the
 fraction of tasks solved on \emph{all} $k$ independent trials, exposes it. We present
 \Harness, an open-source runtime envelope developed and maintained by the PandaProbe research lab
-that wraps an
-arbitrary LLM agent loop and, with no human in the loop, (i) \emph{detects} quality
-degradations using PandaProbe session metrics, (ii) posts structured diagnostic notices to an
-inspectable workspace that the agent \emph{pulls} on its own initiative, (iii) lets the agent
-author corrective operating \emph{rules}, and (iv) admits each rule only after an empirical
-\emph{evidence gate}: replay of the captured failure or a forward trial over subsequent live
-sessions, with a regression guard for past wins. We formalize the loop as an evidence-gated
-operator on the agent's policy-inducing context and cast rule validation as paired empirical
-improvement testing with a multi-metric non-regression constraint. We evaluate PandaProbe
-Harness with an A/B protocol across AppWorld, Terminal-Bench, and $\tau^2$-bench, reporting
-$\passone$ and $\passk$ with paired significance tests. The package, examples, and benchmark
-suite are publicly available; quantitative results remain forthcoming.
+that wraps an arbitrary LLM agent loop and, with no human in the loop, (i) \emph{detects} quality
+degradations from PandaProbe's trace-level evaluation layer, (ii) posts structured diagnostic
+notices to an inspectable workspace that the agent \emph{pulls} on its own initiative, (iii) lets
+the agent author corrective operating \emph{rules} into a rule tree it owns, and (iv) admits each
+rule only after an empirical \emph{evidence gate}: replay of the captured failure or a forward
+trial over subsequent live sessions, with a regression guard for past wins. Detection is
+deliberately structured, because a gate is only as good as the signal that invokes it. \Harness
+scores every \emph{trace} of a session with cheap always-on metrics and judges the
+\emph{trajectory} they trace out, so an unfinished task is not mistaken for a failing one; it
+escalates to costly step-level diagnosis only once a \emph{trajectory gate} reports a stall or a
+regression; a per-turn barrier makes each admitted rule take effect \emph{within} the session that
+motivated it; and an optional outcome verifier lets the gate decide on ground truth rather than a
+proxy. We formalize the loop as an evidence-gated operator on the agent's policy-inducing context
+and cast rule validation as paired empirical improvement testing with a multi-metric
+non-regression constraint. We evaluate \Harness with an A/B protocol across AppWorld,
+Terminal-Bench, and $\tau^2$-bench, reporting $\passone$ and $\passk$ with paired significance
+tests. The package, examples, and benchmark suite are publicly available; quantitative results
+remain forthcoming.
+\end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
@@ -205,105 +252,241 @@ they operate on. Predicates, constants, and defaults below match the open-source
 \centering
 \caption{Notation used throughout the paper.}
 \label{tab:notation}
-\begin{tabularx}{\columnwidth}{@{}lX@{}}
+\begin{tabularx}{0.85\textwidth}{@{}lX@{}}
 \toprule
 Symbol & Meaning \\
 \midrule
 $\pi$ & fixed agent policy being wrapped \\
-$s$ & one task-trial session \\
-$\evalfn$ & PandaProbe session evaluator \\
-$\mvec(s)\in[0,1]^d$ & metric vector; here $d{=}2$ \\
-$\tau_j$ & metric threshold (default $0.5$) \\
-$\Rset$ & active $\cup$ candidate rule set \\
-$c(\Rset,q)$ & policy-inducing context \\
-$\rho$ & rule retrieval/render operator \\
+$s=(x_1,\ldots,x_T)$ & one task-trial session and its traces \\
+$x_i$ & the $i$-th trace (one agent turn) \\
+$\evalfn$ & PandaProbe trace-level evaluator \\
+$m_j(x)$ & metric $j$ on trace $x$; $\varnothing$ if pending \\
+$\Mset_\ell$ & metric set of tier $\ell\in\{0,1,2,3\}$ \\
+$\Gate$ & trajectory gate (stall / regression) \\
+$\gwin,\gtarget$ & gate window, target (default $5$, $0.5$) \\
+$\ggain,\gdrop$ & gain / drop margins ($0.02$, $0.15$) \\
+$\tau_j$ & absolute threshold, tiers $0,2$ (default $0.5$) \\
+$\outcome$ & optional outcome-verifier score (tier $0$) \\
+$\Rset$ & active $\cup$ candidate rule set, by scope \\
+$c(\Rset)$ & policy-inducing context: protocol $+$ index \\
+$\idx$ & rule-\emph{index} operator (the References) \\
 $\Heal$ & self-heal operator \\
-$\Breach_t$ & breaches observed at step $t$ \\
+$\Breach_t$ & conditions observed at turn $t$ \\
 $\dpromote,\dregress$ & margins (default $0.05$) \\
-$p_0,\hat p$ & baseline/trial breach rates \\
+$p_0,\hat p$ & baseline/trial flagged-session rates \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\begin{figure*}[t]
+\begin{figure}[t]
 \centering
 \resizebox{\textwidth}{!}{\input{figures/overview}}
-\caption{\textbf{The PandaProbe Harness self-heal loop.} After each turn or task,
-PandaProbe scores the session (\textbf{Detect}); breaches and declining trends become notices in
-the workspace (\textbf{Notice}); the agent pulls a notice, inspects traces, and writes a rule
-(\textbf{Heal}); the candidate is promoted only after replay or a forward trial and is retired if
-it regresses (\textbf{Validate}). The dashed line is the pull-model boundary: the workspace is not
-injected into the conversation.}
+\caption{\textbf{The PandaProbe Harness self-heal loop.} After each \emph{turn}, PandaProbe scores
+the turn's new traces on the always-on tier-1 metrics and the trajectory gate $\Gate$ judges the
+shape of the series; a stall or regression escalates to tier-2 step-level diagnosis on the latest
+trace (\textbf{Detect}). The finding becomes a notice in the workspace (\textbf{Notice}); the agent
+pulls it, inspects the flagged trace, reads the relevant rule file, and writes a rule into a scope
+it owns (\textbf{Heal}); the candidate is promoted only after replay or a forward trial and is
+retired if it regresses (\textbf{Validate}). A per-turn barrier closes the cycle before the next
+turn, which is also what gives $\Gate$ a series to judge. The dashed line is the pull-model
+boundary: the workspace is not injected into the conversation, and the system context carries only
+the protocol and an \emph{index} of the rule files.}
 \label{fig:overview}
-\end{figure*}
+\end{figure}
 
-\subsection{Agent, session, and evaluator}
-\label{sec:setup-formal}
+\subsection{Agent, session, and trace-level evaluation}
+\label{sec:detect}
 
-An agent is a policy $\pi$ producing actions over a session $s$. PandaProbe implements a
-session-level evaluator $\evalfn$ that maps a completed session to
+An agent is a policy $\pi$ producing actions over a session $s$. A session is not atomic: it is a
+sequence of \emph{traces} $s=(x_1,\ldots,x_T)$, one per agent turn, and \Harness builds its trigger
+on that decomposition. PandaProbe's evaluation layer implements a trace-level evaluator $\evalfn$
+that scores an individual trace on a requested metric set, returning values in $[0,1]$ with higher
+better, or \emph{pending} ($\varnothing$) when the service is transiently unavailable. The Harness
+reaches PandaProbe through a CLI/JSON seam, keeping the core dependency-free and easy to exercise
+against a stand-in. Failures degrade to pending scores and never raise into the host loop.
+
+\paragraph{Why not a single session score.}
+The natural design scores each completed session with one or two aggregate quality metrics and
+alerts below a threshold. PandaProbe exposes exactly such composites: a session risk score built by
+trajectory-risk aggregation over a session's most at-risk traces \citep{tayebati2026tracer}, and a
+session stability score built by situational uncertainty propagation \citep{zhao2024saup}. Both are
+deliberately worst-case aggregations, which is the right property for \emph{ranking} sessions post
+hoc and the wrong one for gating a live loop: on long-horizon agent tasks they concentrate near the
+bottom of their range for essentially every session, so a fixed-threshold trigger over them fires
+almost always. The deeper issue is conceptual. A low score on a partially completed task is not
+evidence of malfunction, it is the correct reading of an unfinished task, so a useful trigger has to
+distinguish \emph{not yet} from \emph{not going to be}. That distinction lives in the series, not in
+any single value.
+
+\paragraph{The metric ladder.}
+\Harness therefore partitions metrics into tiers by cost and role and spends the expensive ones only
+where a cheaper tier already found something:
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+\item $\Mset_1$ (\emph{progress}, always on): task completion and coherence, scored on
+\emph{every} new trace of every turn. Both are cheap, and coherence is embedding-based rather
+than model-judged, so the always-on rung is also the least expensive one.
+\item $\Mset_2$ (\emph{step diagnosis}): tool correctness and argument correctness, on the
+latest trace only and only once $\Mset_1$ has flagged the trajectory. This localizes a failure
+to a step.
+\item $\Mset_3$ (\emph{explanatory}, opt-in): plan adherence, plan quality, and step
+efficiency, run only to enrich a confirmed $\Mset_2$ finding, never a trigger of their own.
+\item $\Mset_0$ (\emph{outcome}): one score from an optional developer verifier
+(\S\ref{sec:verifier}).
+\end{itemize}
+
+\paragraph{The trajectory gate.}
+A tier-1 metric is judged on the \emph{shape} of its per-trace series, not its level. For metric $j$
+the gate $\Gate$ keeps a running peak $\mathrm{pk}_j$ and a counter $z_j$ of traces since the last
+real gain. A value clearing the peak by $\ggain$ is a gain: it raises the peak and resets $z_j$.
+Otherwise $z_j$ increments and two conditions are tested,
+\begin{align}
+\mathrm{stall}_j(x_i)&=\ind\!\left[z_j\ge\gwin\ \wedge\ \mathrm{pk}_j<\gtarget\right],
+  \label{eq:stall}\\
+\mathrm{regr}_j(x_i) &=\ind\!\left[m_j(x_i)<\mathrm{pk}_j-\gdrop\right].
+  \label{eq:regr}
+\end{align}
+% source: evaluation/trajectory.py TrajectoryGate._decide
+Three properties follow, and each is deliberate. A session that keeps improving \textbf{never}
+fires, however low it starts. The stall test compares the \emph{peak} against $\gtarget$ rather than
+the current value, so a session that has genuinely reached its target may plateau freely. Progress
+is measured against the peak, so oscillation around a plateau does not read as progress. The gate
+fires once and then reopens a fresh window, so one stall yields one escalation rather than one per
+subsequent trace. Defaults: $\gwin{=}5$, $\gtarget{=}0.5$, $\ggain{=}0.02$, $\gdrop{=}0.15$;
+\texttt{HARNESS\_GATE\_WINDOW} is the primary knob, since the right window depends on task horizon.
+
+\paragraph{Absolute breaches, and where they apply.}
+For metric $j$ with threshold $\tau_j$ the point breach is
 \begin{equation}
-  \mvec(s)=\bigl(m_1(s),\ldots,m_d(s)\bigr)\in[0,1]^d,
-  \label{eq:metricvec}
-\end{equation}
-with higher values better. Here $d{=}2$. The components $m_1$ and $m_2$ are
-\texttt{agent\_reliability} and \texttt{agent\_consistency}, respectively. The Harness reaches
-PandaProbe through a CLI/JSON seam, keeping the core dependency-free and easy to exercise against
-a stand-in.
-Failures degrade to pending scores and never raise into the host loop.
-
-\paragraph{Session-quality metrics.}
-Both metrics aggregate confidence, loop detection, tool correctness, and coherence signals.
-Reliability captures worst-case risk through a tail-risk aggregate over the most at-risk traces,
-following TRACER \citep{tayebati2026tracer}. Consistency captures stability by amplifying
-confidence-based uncertainty with the other signal penalties and combining trace uncertainties by
-root-mean-square, following SAUP \citep{zhao2024saup}. Reliability is sensitive to rare severe
-failures; consistency is sensitive to pervasive instability.
-
-For metric $j$, the point breach is
-\begin{equation}
-  b_j(s)=\ind\!\left[m_j(s)\ne\varnothing\ \wedge\ m_j(s)<\tau_j\right].
+  b_j(x)=\ind\!\left[m_j(x)\ne\varnothing\ \wedge\ m_j(x)<\tau_j\right],
   \label{eq:breach}
-  % source: evaluation/metrics.py MetricScore.breached; config.py
+  % source: evaluation/metrics.py MetricScore.breached
 \end{equation}
-The comparison is strict and a missing score is not a breach.
-
-\paragraph{Trend breaches.}
-PandaProbe Harness additionally detects slow drift using fast and slow exponentially weighted
-moving averages (spans $3$ and $10$):
+strict, with a missing score never a breach. This indicator is consulted only for tiers $\{0,2\}$:
 \begin{equation}
- e_t^{(\cdot)}=\alpha m_j(s_t)+(1-\alpha)e_{t-1}^{(\cdot)},
- \label{eq:ewma}
+  \mathrm{breach}_j(x)=b_j(x)\ \wedge\ \mathrm{tier}(j)\in\{0,2\}.
+  \label{eq:absbreach}
+  % source: evaluation/metrics.py ABSOLUTE_BREACH_TIERS = {0, 2}
 \end{equation}
-and flags a decline after at least four samples when
-\begin{equation}
- \mathrm{decl}_j(s_t)=\ind[n_t\ge4\ \wedge\ e_t^{\mathrm f}<e_t^{\mathrm s}-0.05].
- \label{eq:trend}
- % source: evaluation/trends.py TrendDetector.update
-\end{equation}
-Relative and percentile signals are optional and off by default. Fired conditions become
-\texttt{condition:metric} signatures used downstream.
+A tier-1 floor is deliberately \emph{not} a fault, since its verdict is
+Eqs.~\eqref{eq:stall}--\eqref{eq:regr}, and tier 3 never breaches because it runs only to explain a
+finding another tier already made.
 
-\subsection{Context composition and retrieval}
+\paragraph{Escalation and severity.}
+Tier 1 runs on every new trace; if nothing stalls or regresses the turn is clean and nothing further
+is spent. Otherwise tier 2 runs on the last trace $x_T$, and severity depends on whether it
+corroborates the trajectory finding:
+\begin{equation}
+\mathrm{sev}=
+\begin{cases}
+\texttt{breach}&\exists j\in\Mset_2\cup\Mset_0:\mathrm{breach}_j(x_T),\\
+\texttt{trend} &\text{otherwise (advisory).}
+\end{cases}
+\label{eq:sev}
+% source: hook/core.py _severity; _persist_notice captures only on "breach"
+\end{equation}
+Only a \texttt{breach}, a trajectory finding that step-level metrics confirm, is captured as a
+replayable case for the gate (\S\ref{sec:validate}); an uncorroborated wobble is still reported
+but is not treated as promotable training signal. Fired conditions become
+\emph{condition}:\emph{metric} signatures, e.g.\ a stall on task completion or a breach on tool
+correctness, used downstream for de-duplication, tagging, and case matching.
+
+\paragraph{Cost.}
+The ladder is the primary cost control, not an optimization detail. Tier 1 covers a turn's new
+traces in a \emph{single} batched PandaProbe run; tier 2 touches one trace and only after a gate
+fire; tier 3 is off by default. Because each model-judged metric reads a whole trace, cost scales
+with metrics actually run, which is what makes always-on trajectory monitoring affordable.
+
+\subsection{The per-turn barrier}
+\label{sec:barrier}
+
+Detection is worthless if the correction arrives after the task is over. \Harness therefore exposes
+a per-turn \emph{barrier}: \texttt{settle(session\_id)}, also reachable as a \texttt{settle=True}
+flag on the turn scope, which waits until the turn's evaluation has resolved, its
+report has been handled, any case captured, and any notice posted, so the \emph{next} turn observes
+the rule set and mailbox this turn produced. It runs on its own budget
+(\texttt{barrier\_timeout\_s}, default 180\,s), separate from the best-effort drain joins used
+elsewhere; on expiry the work continues detached and the turn is flagged as timed out, so a slow
+evaluator degrades \emph{latency}, never correctness.
+
+The barrier is also a precondition for the gate to function at all. Score history is keyed per
+session, so a host that synchronizes once per \emph{task} contributes one sample per series, the
+stall window of Eq.~\eqref{eq:stall} can never close, and the trajectory machinery is silently
+inert. This is an easy integration error to make and a hard one to notice, because the loop appears
+to run and simply never fires: delimit \emph{turns}, not tasks.
+
+\subsection{The outcome verifier}
+\label{sec:verifier}
+
+Every metric above is a judged proxy. When a developer already knows what success means, a golden
+dataset, a benchmark grader, a database assertion, \Harness accepts that oracle directly as a
+\texttt{verifier} argument to the factory, taking the session id and the turn's end-state:
+\begin{equation}
+  \outcome(s)\in[0,1]\cup\{\varnothing\}.
+  \label{eq:verifier}
+  % source: hook/tiers.py VerifierFn, run_verifier
+\end{equation}
+Abstention is a first-class answer: a grader that can only score a \emph{finished} task returns
+$\varnothing$ on intermediate turns. A verdict enters as a tier-0 metric, so unlike tier 1 it
+\emph{does} breach on absolute value against a strict $\tau_{\mathrm{out}}{=}0.9$. Exceptions are
+caught and the turn proceeds without an outcome score, so a faulty oracle cannot break the host
+loop. Because it depends only on the end-state it is evaluated concurrently with the ladder.
+
+The verifier matters most at the gate, where a ground-truth outcome is strictly better evidence
+than a proxy (\S\ref{sec:validate}). One caution belongs in the mechanism rather than a footnote,
+because it is the same failure mode that motivated the trajectory gate: a \emph{binary} pass/fail
+oracle on hard tasks is almost never positive, and a signal that is almost never positive
+discriminates nothing. Prefer continuous partial credit. Our own AppWorld integration is a concrete
+case: over a 40-trial measurement the benchmark's binary success flag was positive on 1 trial while
+the mean fraction of its unit tests passed was $0.70$, so the flag would have declared failure on
+$97.5\%$ of sessions where the continuous score separates near-misses from genuine breakdowns. We
+therefore wire the pass fraction, not the flag.
+% source: benchmarks/src/pandabench/runners/appworld.py outcome_for
+
+\subsection{The agent-owned rule workspace}
 \label{sec:retrieval}
 
-The agent's policy-inducing context is
+Learned rules must reach the agent somehow, and inlining them into the system prompt does not
+survive a growing corpus. Two costs grow with the rule set: tokens, and \emph{attention}. In a
+measured run of a build that inlined the whole corpus alongside a large self-diagnostic tool
+surface, the agent reoriented toward operating the Harness rather than doing the task, and most of
+the rules it authored concerned its own diagnostic protocol rather than the work. Growth in what the
+agent has learned should not become growth in what it must read every turn.
+
+\Harness therefore separates the \emph{index} of what has been learned from the \emph{content}:
 \begin{equation}
- c(\Rset,q)=c_0\oplus\rho(\Rset,q),
- \label{eq:context}
+  c(\Rset)=c_0\oplus\idx(\Rset),
+  \label{eq:context}
+  % source: hook/context.py compose_system_preamble (skill root + banner; no rule bodies)
 \end{equation}
-where $q$ combines an optional task hint with pending-notice signatures and metric names. Let
-$Q$ be its case-folded token set; let $T_r$ be rule-tag tokens and $X_r$ tokens from rule text,
-rationale, and metric. Relevance is
+where $c_0$ is a fixed root document (the standing protocol and tool table) and $\idx(\Rset)$ is a
+generated directory of the rule \emph{files} that exist with their sizes, plus a compact banner when
+notices are pending. Equation~\eqref{eq:context} contains \emph{no rule text}. Bodies enter context
+only when the agent reads them, via a read-by-scope or search call it makes on its own initiative.
+Hence $|c(\Rset)|$ grows with the number of rule \emph{files}, not rules, and the context cost of
+adaptation is bounded independently of how much has been learned.
+
+\paragraph{Scopes.}
+The rule set is partitioned by a free-form \emph{scope} that is also the file a rule lives in:
+\texttt{global} for whole-trajectory lessons that always apply, \texttt{scoped} as the step-level
+default, and any topic file the agent creates. When several step-level rules share a topic the agent
+may re-file them under a topic of its own naming and retire the originals; the new file appears in
+$\idx(\Rset)$ automatically. Each notice proposes a scope (\texttt{global} for a trajectory finding,
+\texttt{scoped} for a step-level one) as a \emph{default} the agent may override. Scope is explicit
+rather than inferred, which corrects an earlier design that derived it from whether a rule happened
+to carry retrieval tags and so silently made any rule authored outside a notice a permanent global.
+
+\paragraph{Relevance ranking.}
+Ranking moved to where the agent asks for it. With $Q$ the case-folded query token set, $T_r$ the
+rule-tag tokens and $X_r$ the tokens of rule text, rationale, and metric,
 \begin{equation}
- \mathrm{score}(r,Q)=
- \frac{2|Q\cap T_r|+|Q\cap(X_r\setminus T_r)|}{\max(1,|Q|)}.
+ \mathrm{score}(r,Q)=\frac{2|Q\cap T_r|+|Q\cap(X_r\setminus T_r)|}{\max(1,|Q|)},
  \label{eq:score}
  % source: workspace/rules.py::_relevance
 \end{equation}
-All untagged global rules are included, plus the top $k{=}8$ tagged active rules. Ties resolve by
-score, recency, then identifier. Candidates render in full so retrieval cannot starve their trial;
-omitted rules remain available through search.
+orders search results and narrows the \emph{active} rules rendered inside one scope file when a
+query is supplied ($k{=}8$, ties by score then recency then identifier). Candidates are exempt and
+always render in full, since a candidate under trial must be in force to be measurable. This score
+no longer selects what enters the prompt, because nothing does.
 
 \subsection{The self-heal operator}
 \label{sec:healop}
@@ -315,24 +498,39 @@ The loop maps the rule set to its next state:
  \label{eq:heal}
 \end{equation}
 The agent executes \emph{propose}: after pulling a notice it writes a candidate with rationale,
-target metric, and tags. Deterministic Harness code executes \emph{gate}. Live rules are
-deduplicated by normalized text and capped at 50.
+target metric, tags, and a \emph{scope} (defaulting to the one the notice proposed). Deterministic
+Harness code executes \emph{gate}. Live rules (active plus candidate) are deduplicated by normalized
+text and capped at 50, at which point an addition fails with a message telling the agent to retire
+something first, so compaction is agent-driven rather than a silent eviction. Candidates render in
+their scope file under an explicitly provisional heading: a rule must be in force to be measurable,
+but every reader can see it is unproven, and the protocol tells the agent to prefer a validated rule
+on conflict.
 
 \begin{algorithm}[t]
 \caption{PandaProbe Harness self-heal loop}
 \label{alg:heal}
 \begin{algorithmic}[1]
-\STATE compose $c(\Rset,q)$; run agent turn $\to s$
-\STATE $\mvec(s)\gets\evalfn(s)$ \hfill{\footnotesize\itshape detached}
-\STATE compute point/trend breaches $\Breach$
-\IF{$\Breach\ne\varnothing$ and not deduplicated}
-  \STATE post notice; optionally capture replay case
+\STATE compose $c(\Rset)$ \hfill{\footnotesize\itshape protocol $+$ index; no rule text}
+\STATE run one agent turn; new traces $X$
+\STATE $\Breach\gets\varnothing$
+\FORALL{$x\in X$ chronologically, $j\in\Mset_1$}
+  \STATE fold $m_j(x)$ into $\Gate$; add stall/regr verdicts to $\Breach$
+\ENDFOR
+\IF{$\Breach\ne\varnothing$}
+  \STATE add $\{\mathrm{breach}_j(x_T):j\in\Mset_2\}$ \hfill{\footnotesize\itshape last trace}
+  \STATE if confirmed and tier 3 on: score $\Mset_3$ on $x_T$
 \ENDIF
-\IF{agent pulls notice}
-  \STATE inspect traces; author candidate $r$
-  \STATE $\Rset\gets\Rset\cup\{r\}$
+\STATE $\outcome\gets$ verifier$(s)$ if wired \hfill{\footnotesize\itshape concurrent}
+\IF{$\Breach\ne\varnothing$ and not deduplicated}
+  \STATE post notice at severity Eq.~\eqref{eq:sev}
+  \STATE capture replay case iff severity is \texttt{breach}
 \ENDIF
 \STATE \textsc{ValidateCandidates}($\Rset$)
+\STATE \textbf{barrier}: wait until the above has landed
+\IF{agent pulls notice}
+  \STATE inspect flagged trace; read suggested scope; author candidate $r$
+  \STATE $\Rset\gets\Rset\cup\{r\}$
+\ENDIF
 \STATE \textbf{return} $\Rset$
 \end{algorithmic}
 \end{algorithm}
@@ -343,9 +541,34 @@ deduplicated by normalized text and capped at 50.
 Candidates are provisional but in force so their effect is measurable. Replay is tried first;
 forward trial is the fallback.
 
+\paragraph{What a replay is scored on.}
+A replayed session is re-scored on the trace metrics $\Mset_1\cup\Mset_2$ against the replay's final
+trace. Between them these cover whatever the triggering notice can have fired on: $\Mset_1$ carries
+the progress trajectory, $\Mset_2$ the step-level verdict. $\Mset_3$ is excluded because it never
+triggers a breach, so re-scoring it only adds cost. This is the point of \S\ref{sec:detect} applied
+to the gate: judging a candidate by a broad rollup that barely separates a good session from a bad
+one makes the promote/retire decision close to uninformative.
+% source: config.py replay_metrics(); validation/validator.py ReplayValidator
+
+\paragraph{Which metric decides.}
+A replay yields a delta per metric, and the verdict hangs on one. \Harness selects the most
+authoritative metric \emph{the replay actually measured}, in trust order
+\begin{equation}
+ \hat\jmath=\operatorname{first-available}\bigl(\outcome,\ \mathrm{met}(r),\
+ \mathrm{met}(\mathrm{sig}(r))\bigr),
+ \label{eq:target}
+ % source: validation/validator.py _target_for
+\end{equation}
+writing $\mathrm{met}(\cdot)$ for the metric named by a rule or signature: the verifier's outcome
+when available for this case, else the rule's declared target, else the metric of the triggering
+signature. Falling back \emph{per case} is essential, since a verifier that cannot grade a
+particular task contributes no delta and treating its absence as a failed target would veto
+promotion for every such case.
+
 \paragraph{Forward trial.}
-Let $p_0$ be the rule-family breach rate in the recent pre-rule window, with $p_0{=}1$ when the
-window is empty. After $n$ distinct sessions, the trial breach rate is $\hat p$. The package
+Let $p_0$ be the rule-family flagged-session rate in the recent pre-rule window, counting any
+stall, regression, or breach condition on the rule's metric, with $p_0{=}1$ when the window is
+empty. After $n$ distinct sessions, the trial breach rate is $\hat p$. The package
 default is $n{=}5$; the study uses $n{=}3$. Promote iff
 \begin{equation}
  \hat p=0\quad\text{or}\quad\hat p\le p_0-\dpromote,
@@ -399,13 +622,16 @@ retires. After three inconclusive replay rounds, forward evidence is used.
 \end{algorithmic}
 \end{algorithm}
 
-Absolute breaches create replay cases when capture is enabled. Softer trend, relative, and
-percentile signals post notices but do not alone create replay cases.
+A case is captured only at severity \texttt{breach} (Eq.~\eqref{eq:sev}) with capture enabled, i.e.\
+a trajectory finding that step-level metrics corroborated. An advisory \texttt{trend} notice posts
+but creates no replay case, so the corpus holds only surgically diagnosed failures, which is what
+makes the deltas of Eq.~\eqref{eq:delta} interpretable.
 
 \subsection{Regression guard against forgetting}
 \label{sec:regression}
 
-The corpus-level guard replays protected wins first and then failures under the current rule set:
+The corpus-level guard replays protected wins first and then failures under the current rule set,
+re-scoring each on $\Mset_1\cup\Mset_2$:
 \begin{equation}
 \mathrm{cls}(s_i)=
 \begin{cases}
@@ -415,25 +641,44 @@ The corpus-level guard replays protected wins first and then failures under the 
 \end{cases}
 \label{eq:regcls}
 \end{equation}
-The run is clean iff no case regresses. The guarantee is bounded by eval-set coverage; missing
-replay inputs and scores are explicitly skipped.
+The run is clean iff no case regresses. Three limits are worth stating plainly. The gate and guard
+validate \emph{task-success} metrics, so what they establish is reliability, not value alignment: a
+rule improving measured quality is admitted regardless of any property the metric set does not
+measure. The mechanism is agnostic to what those metrics are, so an independent harm or
+constraint-violation signal supplied through the verifier (\S\ref{sec:verifier}) would be carried by
+the same non-regression constraint; we note that as a property of the design rather than a result,
+since the metric set in our study contains no such dimension. Finally the guarantee is bounded by
+eval-set coverage, and by the reliability of $\evalfn$ itself; missing replay inputs and scores are
+explicitly skipped.
 
 \subsection{Pull model, action space, and workspace}
 \label{sec:actionspace}
 
 Notices, rules, replay cases, traces, state, and an append-only journal live under
 \texttt{HARNESS\_ROOT}. The standing system protocol tells the agent to pull notices and treat
-diagnostics as untrusted data. Fourteen structured tools cover mailbox list/read/ack, trace
-inspection, score history, journal access, rule add/retire/status/search/list, reflection, and
-eval-set list/attach. Every tool returns an \texttt{ok} envelope and folds errors into data.
+diagnostics as untrusted data. Because $c(\Rset)$ carries no rule bodies and eval-derived text
+reaches the agent only through explicit tool calls, the blast radius of a poisoned rule is a file the
+agent chose to read rather than every prompt.
 
-The workspace is intentionally ordinary and inspectable:
+\emph{Ten} structured tools cover mailbox list, read, and acknowledge; trace inspection; and rule
+read, list, search, add, retire, and status. Every tool returns an \texttt{ok} envelope and folds
+errors into data. Size is a design parameter, not an accident: each additional capability is a turn the agent
+might spend on harness bookkeeping instead of the task, so \Harness withholds surfaces that are
+redundant with what a notice already carries (the score trajectory, which the notice reports) or
+that invite the agent to audit its own process (a journal digest, a reflection summary). Corpus
+curation is an operator concern, reached from code rather than from the agent.
+
+The workspace is intentionally ordinary and inspectable. Note that
+\texttt{harness\_rules.md} is a \emph{skill root}, holding the protocol and the generated References
+index but no rule text; rule bodies live in the \texttt{rules/} tree the agent owns:
 \begin{lstlisting}[language={}]
 HARNESS_ROOT/
+  harness_rules.md   <- skill root (no rule text)
+  rules/             <- global.md, scoped.md, <topic>.md
   mailbox/{pending,processed}/
   traces/       evalset/
-  rules.jsonl   harness_rules.md
-  journal.jsonl state/score_history.json
+  rules.jsonl   journal.jsonl
+  state/score_history.json
 \end{lstlisting}
 
 \subsection{Hyperparameters and open-source integration}
@@ -441,16 +686,20 @@ HARNESS_ROOT/
 
 \begin{table}[t]
 \centering\small
-\caption{Package defaults; the study overrides $n$ to $3$ and enables capture.}
+\caption{Package defaults; the study overrides $n$ to $3$ and enables capture during learning.}
 \label{tab:hyper}
 \begin{tabular}{@{}lcc@{}}
 \toprule
 Knob & Meaning & Default \\
 \midrule
-$\tau_j$ & breach threshold & $0.5$ \\
-$n_{\min}$ / $\kappa$ & trend samples/margin & $4/0.05$ \\
-$\sigma_f,\sigma_s$ & EWMA spans & $3,10$ \\
-$k$ & retrieved tagged rules & $8$ \\
+$\gwin$ & gate window (traces w/o a new high) & $5$ \\
+$\gtarget$ & gate target & $0.5$ \\
+$\ggain$ / $\gdrop$ & gain / drop-from-peak margins & $0.02/0.15$ \\
+$\tau_j$ & absolute threshold, tiers $0,2$ & $0.5$ \\
+$\tau_{\mathrm{out}}$ & outcome-verifier threshold & $0.9$ \\
+-- & tier 3 enabled & off \\
+-- & barrier budget (s) & $180$ \\
+$k$ & \topk\ actives per queried scope & $8$ \\
 $n$ & forward window & $5$ \\
 $\dpromote,\dregress$ & validation margins & $0.05$ \\
 -- & live rule cap & $50$ \\
@@ -463,24 +712,32 @@ The minimal raw-loop integration is small:
 \begin{lstlisting}[language=Python]
 from pandaprobe_harness import Harness
 
-harness = Harness.create(replay=my_replay)
-prompt = harness.system_context(task_hint=task) + prompt
+harness = Harness.create(
+    replay=my_replay,      # counterfactual validation
+    verifier=my_grader,    # ground-truth outcome (optional)
+)
+# protocol + rule-file index + banner; no rule bodies
+prompt = harness.system_context() + prompt
 
-async with harness.turn(session_id):
+# settle=True awaits this turn's diagnosis, so a rule
+# learned now is in force for the next turn
+async with harness.turn(session_id, settle=True):
     result = await agent_step(prompt, harness.toolset)
 \end{lstlisting}
-Install from PyPI with \texttt{pip install} \path{pandaprobe-harness}. Factories support LangGraph,
-LangChain, DeepAgents, CrewAI, Claude Agent SDK, and OpenAI Agents. Native exporters target
-Anthropic, LangChain, and OpenAI function tools. Operator CLIs run regression
-(\texttt{pandaprobe-harness-eval}) and threshold calibration
-(\texttt{pandaprobe-harness-calibrate}); offline examples require no credentials.
+The package installs from PyPI as \texttt{pandaprobe-harness}. Factories support
+LangGraph, LangChain, DeepAgents, CrewAI, the Claude Agent SDK, and OpenAI Agents. Native
+exporters target Anthropic, LangChain, and OpenAI function tools. Operator CLIs run regression
+(\path{pandaprobe-harness-eval}) and threshold calibration
+(\path{pandaprobe-harness-calibrate}); offline examples require no credentials.
 
 \section{Experimental Setup}
 \label{sec:setup}
 
 We evaluate PandaProbe Harness with a paired A/B protocol: the same agent code, models, prompts,
 and task sets in every arm, differing only in Harness wiring. Benchmark-native pass/fail remains
-ground truth; PandaProbe metrics drive only the healing mechanism.
+ground truth; PandaProbe trace metrics drive only the healing mechanism, with identical metric sets,
+gate parameters, and thresholds across arms and seeds. Where a benchmark exposes its own grader we
+additionally wire it as the outcome verifier of \S\ref{sec:verifier}.
 
 \subsection{Benchmarks}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
@@ -496,16 +753,17 @@ and LLM user simulator in the retail domain; native $\passk$.
 \label{sec:arms}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
 \item \textbf{A, baseline}: plain agent loop, no Harness preamble or toolset.
-\item \textbf{B, PandaProbe Harness}: retrieved rules, 14 tools, per-trial evaluation, capture,
-replay, and candidate validation.
+\item \textbf{B, PandaProbe Harness}: the tiered trace trigger, trajectory gate, per-turn barrier,
+10 tools, the agent-owned rule tree, capture, replay, and candidate validation.
 \item \textbf{B$'$, no validation}: arm B with immediate activation, run where budget permits.
 \end{itemize}
 
 \subsection{Learning and frozen evaluation}
 For each benchmark--model cell, a seeded 35\% learning split lets arm B accumulate and validate
 rules; baseline runs the same split for symmetry. Both arms then run held-out frozen evaluation,
-with arm B carrying learned rules. The runner settles evaluation and drains validation between
-task-trials and at the phase boundary.
+with arm B carrying learned rules and capture off. The runner settles \emph{every turn}
+(\S\ref{sec:barrier}) and drains validation at the phase boundary, so promotion decisions are made
+during learning rather than arriving after frozen evaluation begins.
 
 \subsection{Models, trials, and estimators}
 The matrix spans frontier and smaller models from Google Gemini, OpenAI GPT, and Anthropic Claude.
@@ -533,18 +791,21 @@ arm delta.
 
 \subsection{Methodological checkpoints and overhead}
 \label{sec:checkpoints}
-Checkpoint 1 calibrates PandaProbe breaches against benchmark failures using precision, recall,
-F1, and a threshold sweep. If no threshold yields usable signal, arm B is inert and the null
-mechanism is reported. Checkpoint 2 verifies that rules were promoted before evaluation; the study
-uses $n{=}3$ so the short learning phase can resolve candidates. The Harness preamble and 14 tool
-schemas consume tokens every turn, so token, latency, and cost overhead are reported alongside
-success.
+Checkpoint 1 calibrates gate fires and tier-2 breaches against benchmark failures using precision,
+recall, F1, and a sweep over $\gtarget$ and the tier-2 thresholds. If no setting yields usable
+signal, arm B is inert and the null mechanism is reported rather than tuned away. Checkpoint 2 is
+\emph{trajectory liveness}: each session's score history must hold more than one sample per metric,
+which confirms the barrier is working and the stall window is reachable at all; a length-one series
+means the trigger could never have fired. Checkpoint 3 verifies rules were promoted before
+evaluation; the study uses $n{=}3$ so the short learning phase can resolve candidates. The Harness
+preamble and 10 tool schemas consume tokens every turn, so token, latency, and cost overhead, plus
+barrier wait, are reported alongside success.
 
 \begin{table}[t]
 \centering\small
 \caption{Study configuration; task counts are finalized by seed.}
 \label{tab:config}
-\resizebox{\columnwidth}{!}{%
+{%
 \begin{tabular}{@{}lccccc@{}}
 \toprule
 Benchmark & Split & \#learn & \#eval & $k$ & turns \\
@@ -568,8 +829,10 @@ make bench-smoke
 make appworld ARM=harness MODEL=claude-sonnet-5 K=4
 make bench-report
 \end{lstlisting}
-AppWorld is end-to-end verified against its environment server. Harbor and $\tau^2$ adapters are
-implemented against inspected APIs; their live orchestration maturity is reported in limitations.
+AppWorld is verified end to end with a live model against its environment server, exercising the
+full loop: per-turn barrier, tiered trigger, gate fires, notices, rule authoring, and the outcome
+verifier. Harbor and $\tau^2$ adapters are implemented against their real orchestration APIs; their
+end-to-end verification maturity is reported in limitations.
 
 \section{Results and Discussion}
 \label{sec:results}
@@ -584,7 +847,7 @@ predicts a larger positive $\Delta\passk$ than $\Delta\passone$. A positive $\De
 paired interval excludes zero, with a small McNemar $p$, supports a reliability gain; flat
 $\Delta\passk$ with positive $\Delta\passone$ instead suggests a capability shift.
 
-\begin{table*}[t]
+\begin{table}[t]
 \centering\small
 \caption{Headline results (placeholder). Baseline (B) vs. Harness (H); $\Delta=H-B$.
 Numbers are pending completed runs.}
@@ -603,7 +866,7 @@ $\tau^2$-bench&frontier&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
 $\tau^2$-bench&small&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 \subsection{Learning dynamics}
 Figure~\ref{fig:results} pairs learning-phase pass rate with cumulative promoted rules. An upward
@@ -612,7 +875,7 @@ rules do not generalize. A zero promotion curve identifies baseline-plus-overhea
 
 \begin{figure}[t]
 \centering
-\resizebox{\columnwidth}{!}{\input{figures/results}}
+\resizebox{0.72\textwidth}{!}{\input{figures/results}}
 \caption{\textbf{Learning dynamics (placeholder).} Harness pass rate (solid) and cumulative
 promoted rules (dashed). Curves are schematic, not measured.}
 \label{fig:results}
@@ -620,8 +883,12 @@ promoted rules (dashed). Curves are schematic, not measured.}
 
 \subsection{Harness telemetry and cost}
 \label{sec:telemetry}
-Telemetry reveals degenerate regimes: many notices with no promotions, or promotions without
-native success gains.
+Telemetry reveals degenerate regimes. A tier-2 escalation rate near $1$ means the gate fires on
+everything and the trajectory test is not selective; near $0$ with many stalls means step-level
+metrics never corroborate. The median samples per series is the direct read-out of the barrier: a
+value of $1$ would mean the trigger could not have fired regardless of rule quality. Many notices
+with no promotions indicates a gate rejecting everything; promotions without native success gains
+indicates rules that pass the gate but do not generalize.
 
 \begin{table}[t]
 \centering\small
@@ -634,17 +901,26 @@ Quantity&AppWorld&Terminal&$\tau^2$\\
 rules proposed&\TBD&\TBD&\TBD\\
 rules promoted&\TBD&\TBD&\TBD\\
 rules retired&\TBD&\TBD&\TBD\\
-notices / breach rate&\TBD&\TBD&\TBD\\
-mean rules in context&\TBD&\TBD&\TBD\\
+notices: trend / breach&\TBD&\TBD&\TBD\\
+gate fires / session&\TBD&\TBD&\TBD\\
+tier-2 escalation rate&\TBD&\TBD&\TBD\\
+samples / series (median)&\TBD&\TBD&\TBD\\
+harness tool calls / turn&\TBD&\TBD&\TBD\\
 added tokens / turn&\TBD&\TBD&\TBD\\
-latency / cost overhead&\TBD&\TBD&\TBD\\
+barrier wait / turn (s)&\TBD&\TBD&\TBD\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Ablations}
-No-validation isolates the evidence gate; no-retrieval isolates task-conditioned context;
-replay-only and forward-only isolate the validators. Each row reports delta from the full Harness.
+No-validation isolates the evidence gate. \emph{No-barrier} isolates in-session healing, and its
+prediction is sharper than the others: without it a session contributes too few samples per series
+for the stall window to close, so notices and promotions should fall toward zero and arm B should
+collapse onto baseline-plus-overhead. \emph{Inlined rules} renders the whole corpus into the prompt
+instead of the index of Eq.~\eqref{eq:context}, isolating pull-on-demand; we report the fraction of
+agent tool calls that are harness operations beside $\passk$, since that ratio is the mechanism this
+design protects. \emph{Tier-3 on} buys richer diagnoses at a cost scaling with metric count.
+Replay-only and forward-only isolate the validators. Each row reports delta from the full Harness.
 
 \begin{table}[t]
 \centering\small
@@ -656,7 +932,9 @@ Variant&$\passone$&$\passk$&$\Delta\passk$\\
 \midrule
 Full Harness&\TBD&\TBD&--\\
 No validation&\TBD&\TBD&\TBD\\
-No retrieval&\TBD&\TBD&\TBD\\
+No barrier&\TBD&\TBD&\TBD\\
+Inlined rules&\TBD&\TBD&\TBD\\
+Tier 3 enabled&\TBD&\TBD&\TBD\\
 Replay only&\TBD&\TBD&\TBD\\
 Forward trial only&\TBD&\TBD&\TBD\\
 \bottomrule
@@ -670,35 +948,58 @@ Forward trial only&\TBD&\TBD&\TBD\\
 At roughly 30--40 evaluation tasks per benchmark, paired tests detect only large effects. We
 report directional effects with confidence intervals and discordant counts.
 
-\paragraph{Dependence on the breach signal.}
-The causal chain begins with PandaProbe metrics tracking native task failure. Checkpoint 1 tests
-this directly; weak calibration makes the Harness arm inert regardless of rule quality.
+\paragraph{Dependence on the trigger signal.}
+The causal chain begins with PandaProbe trace metrics tracking native task failure, and with the
+assumption that a stalled or regressing trajectory tracks it. Checkpoint 1 tests that directly; weak
+calibration makes the Harness arm inert regardless of rule quality. The gate also has a structural
+blind spot: a session that fails \emph{without} stalling, e.g.\ one that climbs steadily then fails
+on a final irreversible action, produces no stall and no peak regression, so the trigger sees
+nothing. An outcome verifier (\S\ref{sec:verifier}) covers exactly that case, which is another
+reason to wire one where possible.
 
 \paragraph{Token-overhead confound.}
-The preamble and 14 tools consume context every turn. Any $\passk$ change must be interpreted next
-to Table~\ref{tab:telemetry}.
+The preamble and ten tool schemas consume context every turn even when no rule is read, and the
+barrier adds per-turn latency. Any $\passk$ change must be read next to
+Table~\ref{tab:telemetry}.
+
+\paragraph{Gate parameters as a design surface.}
+The trajectory gate introduces four constants ($\gwin,\gtarget,\ggain,\gdrop$) whose right values
+depend on task horizon: a window tuned for short interactive turns fires early on a long-horizon
+task and vice versa. We hold them fixed across benchmarks so the comparison is clean, which means
+none is tuned per domain and the reported effect is a lower bound with respect to gate tuning. We do
+not claim these defaults are optimal.
 
 \paragraph{Integration coverage.}
-AppWorld is verified end to end against a live environment server with scripted model behavior.
-Harbor and $\tau^2$ integrations are implemented against their real APIs but were exercised only
-through the mock pipeline at build time. Full live-model runs and both checkpoints remain pending.
+AppWorld is verified end to end with a live model against its environment server. Harbor and
+$\tau^2$ integrations are implemented against their real orchestration APIs but their end-to-end
+verification is still in progress at the time of writing. We report per-benchmark rather than pooled
+results so a difference in integration maturity cannot be mistaken for a difference in effect.
 
 \paragraph{Intrinsic variance and generality.}
 Models that reject temperature control retain unavoidable sampling variance. Results are specific
-to the tested domains, two PandaProbe metrics, and text rules; transfer to other metrics, richer
-rules, and architectures remains open.
+to the tested domains, the particular trace metrics PandaProbe exposes, and text rules; transfer to
+other metric families, richer rules, and architectures remains open.
 
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
 PandaProbe Harness closes the loop on agent reliability: it detects degradation, lets an agent
 author durable corrections, and admits each correction only after replay or live evidence, with a
-regression guard for prior wins. The implementation makes that loop practical as an inspectable,
-dependency-free envelope around existing agent code. The empirical verdict is forthcoming.
+regression guard for prior wins. Equally important is what invokes the gate. \Harness scores every
+step of a session and judges the \emph{trajectory} those scores trace out, so an unfinished task is
+not mistaken for a failing one; it spends expensive step-level diagnosis only on sessions a cheap
+always-on signal already flagged; it closes the loop inside the session through a per-turn barrier;
+and it decides on a developer's own outcome oracle in preference to a judged proxy when one is
+available. Because the policy-inducing context carries an \emph{index} of what has been learned
+rather than its contents, the cost of adaptation is decoupled from the size of what the agent has
+learned. The implementation makes that loop practical as an inspectable, dependency-free envelope
+around existing agent code. The empirical verdict is forthcoming.
 
 Future work includes structured rules with preconditions, vector-valued/Pareto validation,
 cross-agent rule sharing with provenance, causal attribution of regression, theoretical analysis
-of $\Heal$, online threshold adaptation, and human review before promotion in high-stakes settings.
+of $\Heal$, adaptive gate parameters that infer a task's horizon rather than assuming one, richer
+verifier signals including independent harm dimensions, and human review before promotion in
+high-stakes settings.
 
 \paragraph{Availability and community.}
 PandaProbe Harness is developed and maintained by the PandaProbe research lab under the MIT

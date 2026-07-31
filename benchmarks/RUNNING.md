@@ -9,7 +9,9 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 - `pandaprobe` **CLI** on PATH: `curl -fsSL https://cli.pandaprobe.com/install.sh | sh`
 - **Credentials** (put in `benchmarks/.env`; see `.env.example`):
   - Vertex AI: `gcloud auth application-default login` + `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`
-  - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (as needed)
+  - OpenAI: `OPENAI_API_KEY`
+  - Claude via Bedrock (default): `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION`
+  - Claude via Anthropic (optional fallback): `ANTHROPIC_API_KEY`
   - `PANDAPROBE_API_KEY` (required for the `harness` arm)
 - **Docker** running — Terminal-Bench only.
 
@@ -44,7 +46,8 @@ make report       # regenerate results/summary/
 ## 3. Run a benchmark
 
 Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
-`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `claude-sonnet-5`, `claude-haiku-4-5`.
+`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `claude-opus-4-6`,
+`claude-sonnet-4-6`, `claude-haiku-4-5`.
 
 **Knobs:**
 
@@ -58,7 +61,7 @@ Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
 | `DATASET`  | override the configured task universe (for example, Terminal-Bench's 10-task sample) | benchmark config                                  |
 | `LIMIT`    | max **tasks per phase**; **omit to run the whole split**                             | unset (all)                                       |
 | `MAXTURNS` | per-task **agent-turn cap** (how long the agent works on one task)                   | `study.yaml` `max_turns` (100 for all benchmarks) |
-| `BACKEND`  | **Claude only**: `vertex_ai` or `anthropic`                                          | model's `default_backend`                         |
+| `BACKEND`  | **Claude only**: `bedrock` or `anthropic`                                            | `bedrock`                                         |
 
 
 - Omitting `DATASET` selects that benchmark's single configured default from
@@ -72,8 +75,18 @@ the equivalent `--limit 5`.
 - For a paired A/B comparison, keep `MODEL`, `DATASET`, `SEED`, `K`, `LIMIT`, and
 `MAXTURNS` identical; change only `ARM`.
 - **OpenAI / Gemini route automatically** by their `models.yaml` prefix
-(`openai/…` → OpenAI API via `OPENAI_API_KEY`; `vertex_ai/…` → Vertex). Only set
-`BACKEND` for Claude — passing it to an OpenAI/Gemini model errors.
+(`openai/…` → OpenAI API via `OPENAI_API_KEY`; `vertex_ai/…` → Vertex). Claude
+defaults to Bedrock; use `BACKEND=anthropic` only when intentionally falling back
+to the direct Anthropic API. Passing `BACKEND` to an OpenAI/Gemini model errors.
+- Bedrock's short-term API key is region-bound and expires after at most 12 hours.
+Generate it for the same region as `AWS_REGION`, and refresh it before long runs.
+- Bedrock routes Claude through AWS's `global.*` system inference profiles. The
+catalog's underlying `anthropic.*` foundation-model IDs identify the model but
+reject on-demand invocation; the profile IDs are the callable on-demand targets.
+- Verify Bedrock specifically before spending on a benchmark:
+  `PANDABENCH_PING_MODEL=claude-sonnet-4-6 uv run pandabench-run --preflight`.
+- The third configured model is Claude **Haiku 4.5**, not 4.6; both its official
+Anthropic ID and the supplied Bedrock catalog ID identify it as 4.5.
 
 The examples below are paired medium-pilot runs: 5 learning + 5 evaluation tasks,
 once per arm.
@@ -203,7 +216,7 @@ commands (edit the lists to your models/seeds/benchmarks):
 
 ```bash
 for bench in appworld terminal tau2; do
-  for model in claude-sonnet-5 gpt-5.6-terra gemini-3.1-pro; do
+  for model in claude-sonnet-4-6 gpt-5.6-terra gemini-3.1-pro; do
     for seed in 1 2 3; do
       for arm in baseline harness; do
         make $bench ARM=$arm MODEL=$model SEED=$seed K=4
@@ -226,4 +239,3 @@ so a long study can be interrupted and continued. Budget deliberately: this is
 no API calls) to validate wiring.
 - **Everything is a plain CLI command** — the Makefile is sugar over
 `uv run pandabench-run …` / `pandabench-report` / `pandabench-calibrate`.
-

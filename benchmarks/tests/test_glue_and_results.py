@@ -35,10 +35,10 @@ def test_sanitize_component():
 
 def test_session_id_stable_and_recomputable():
     kw = dict(benchmark="appworld", task_id="82e2fac_1", arm="harness",
-              model_key="claude-sonnet-5", seed=1, trial=0)
+              model_key="claude-sonnet-4-6", seed=1, trial=0)
     a = make_session_id(**kw)
     b = make_session_id(**kw)
-    assert a == b == "appworld-82e2fac_1-harness-claude-sonnet-5-1-t0"
+    assert a == b == "appworld-82e2fac_1-harness-claude-sonnet-4-6-1-t0"
 
 
 # -- record schema ------------------------------------------------------------

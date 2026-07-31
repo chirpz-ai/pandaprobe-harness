@@ -14,7 +14,7 @@ if not os.environ.get("TAU2_DATA_DIR"):
 
 pytest.importorskip("tau2")
 
-from tau2.data_model.message import UserMessage
+from tau2.data_model.message import MultiToolMessage, ToolMessage, UserMessage
 from tau2.registry import registry
 
 from pandabench.adapters.tau2_agent import (
@@ -50,6 +50,28 @@ def _result(*, content: str | None = None, tool_name: str | None = None) -> Chat
         tool_calls=calls,
         usage=Usage(10, 5, 0.0),
         finish_reason="tool_calls" if calls else "stop",
+        resolved_model="mock/mock",
+    )
+
+
+def _tool_result(*calls: tuple[str, str]) -> ChatResult:
+    tool_calls = [ToolCall(id=call_id, name=name, arguments={}) for call_id, name in calls]
+    return ChatResult(
+        assistant_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": "{}"},
+                }
+                for call in tool_calls
+            ],
+        },
+        tool_calls=tool_calls,
+        usage=Usage(10, 5, 0.0),
+        finish_reason="tool_calls",
         resolved_model="mock/mock",
     )
 
@@ -194,6 +216,61 @@ def test_harness_substeps_follow_the_conversation(retail, mock_model):
     roles = [message["role"] for message in second_call]
     assert roles[-3:] == ["user", "assistant", "tool"]
     assert second_call[-1]["tool_call_id"] == "call_h"
+
+
+def test_mixed_harness_and_domain_calls_keep_bedrock_transcript_valid(
+    retail, mock_model
+):
+    client = RecordingMockClient(
+        scripted=[
+            _tool_result(
+                ("call_h", "harness_observe"),
+                ("call_d1", "domain_lookup_one"),
+                ("call_d2", "domain_lookup_two"),
+            ),
+            _result(content="done"),
+        ]
+    )
+    wiring = StubWiring()
+    agent = _agent(retail, mock_model, client, wiring)
+    state = agent.get_init_state()
+
+    assistant, state = agent.generate_next_message(
+        UserMessage(role="user", content="help with my flight"), state
+    )
+
+    assert wiring.dispatched == ["harness_observe"]
+    assert len(client.calls) == 1
+    assert [call.id for call in assistant.tool_calls or []] == ["call_d1", "call_d2"]
+
+    agent.generate_next_message(
+        MultiToolMessage(
+            role="tool",
+            tool_messages=[
+                ToolMessage(role="tool", id="call_d1", content="first result"),
+                ToolMessage(role="tool", id="call_d2", content="second result"),
+            ],
+        ),
+        state,
+    )
+
+    second_call = client.message_batches[1]
+    assert [message["role"] for message in second_call[-4:]] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+    ]
+    assistant_message = second_call[-3]
+    assert [call["id"] for call in assistant_message["tool_calls"]] == [
+        "call_d1",
+        "call_d2",
+    ]
+    assert [message["tool_call_id"] for message in second_call[-2:]] == [
+        "call_d1",
+        "call_d2",
+    ]
+    assert "call_h" not in repr(second_call)
 
 
 def test_all_harness_turn_survives_tau2_validation(retail, mock_model):
