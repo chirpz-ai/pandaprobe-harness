@@ -31,7 +31,7 @@ export APPWORLD_ROOT=$HOME/.pandabench/appworld
 ## 2. Smoke test (pipeline check, no external harnesses)
 
 ```bash
-make smoke        # 2 tasks x 1 trial x both arms, all benchmarks, dry-run (mock model)
+make smoke        # 2 tasks/phase x 1 trial x both arms, all benchmarks, dry-run (mock model)
 make report       # regenerate results/summary/
 ```
 
@@ -48,25 +48,35 @@ Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
 | `MODEL` | a model key from the list above | `gemini-3.1-flash-lite` |
 | `SEED` | shuffles task order; run several (1, 2, 3) as replicates for statistics | `1` |
 | `K` | trials per task — `pass@1` = first trial passed, `pass^k` = all K passed | `4` |
+| `DATASET` | override the configured task universe (for example, Terminal-Bench's 10-task sample) | benchmark config |
 | `LIMIT` | max **tasks per phase**; **omit to run the whole split** | unset (all) |
 | `MAXTURNS` | per-task **agent-turn cap** (how long the agent works on one task) | `study.yaml` `max_turns` (100 for all benchmarks) |
 | `BACKEND` | **Claude only**: `vertex_ai` or `anthropic` | model's `default_backend` |
 
-- **`LIMIT` ≠ task length.** Unset `LIMIT` runs every task in the split (e.g. AppWorld
-  `dev` ≈ 20 learning / 37 eval). To make each task run *longer* (what makes the harness
-  matter), raise `MAXTURNS`, e.g. `MAXTURNS=60`, or bump `max_turns` in
-  `configs/study.yaml` for that benchmark.
+- **`LIMIT` controls the number of tasks.** It is applied independently after the
+  seeded learning/eval split: `LIMIT=5` with both phases runs up to 5 learning + 5 eval
+  tasks (10 total), and `K=4` makes that up to 40 trials per arm. On the raw CLI, use
+  the equivalent `--limit 5`.
+- **`LIMIT` ≠ task length.** To make each task run longer, raise `MAXTURNS`, e.g.
+  `MAXTURNS=60`, or bump `max_turns` in `configs/study.yaml` for that benchmark.
+- For a paired A/B comparison, keep `MODEL`, `DATASET`, `SEED`, `K`, `LIMIT`, and
+  `MAXTURNS` identical; change only `ARM`.
 - **OpenAI / Gemini route automatically** by their `models.yaml` prefix
   (`openai/…` → OpenAI API via `OPENAI_API_KEY`; `vertex_ai/…` → Vertex). Only set
   `BACKEND` for Claude — passing it to an OpenAI/Gemini model errors.
+
+The examples below are paired medium-pilot runs: 5 learning + 5 evaluation tasks,
+once per arm.
 
 ### AppWorld
 
 Needs the isolated env from `make setup` (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`).
 
 ```bash
-make appworld ARM=baseline MODEL=gemini-3.1-flash-lite SEED=1 K=4 LIMIT=5
-make appworld ARM=harness  MODEL=claude-sonnet-5 SEED=1 BACKEND=vertex_ai K=4 LIMIT=5
+make appworld ARM=baseline MODEL=gpt-5.6-terra DATASET=dev \
+  SEED=1 K=1 LIMIT=5
+make appworld ARM=harness MODEL=gpt-5.6-terra DATASET=dev \
+  SEED=1 K=1 LIMIT=5
 ```
 
 ### Terminal-Bench (Harbor)
@@ -75,12 +85,15 @@ Needs **Docker running**. Harbor is installed into this project so its CLI can i
 the custom `pandabench` agent. Real runs are driven by the Terminal-Bench runner.
 
 ```bash
-make terminal ARM=baseline MODEL=gemini-3.1-pro SEED=1 K=4
-
-# Override the configured dataset for a small live smoke:
-uv run pandabench-run --benchmark terminal_bench -d terminal-bench-sample@2.0 \
-  --arm harness --model gpt-5.6-terra --seed 1 -k 1 --limit 2
+make terminal ARM=baseline MODEL=gpt-5.6-terra \
+  DATASET=terminal-bench-sample@2.0 SEED=1 K=1 LIMIT=5
+make terminal ARM=harness MODEL=gpt-5.6-terra \
+  DATASET=terminal-bench-sample@2.0 SEED=1 K=1 LIMIT=5
 ```
+
+The sample dataset has 10 tasks. With its 50/50 split, `LIMIT=5` runs all 5 learning
+and all 5 evaluation tasks. Omit `DATASET` to use the configured 89-task
+`terminal-bench@2.0` dataset.
 
 ### τ²-bench (retail)
 
@@ -88,7 +101,10 @@ Install the optional dependency with `uv sync --extra tau2` and set `TAU2_DATA_D
 (the data is not shipped). tau2 runs in the same Python 3.13 environment as PandaBench.
 
 ```bash
-make tau2 ARM=harness MODEL=gpt-5.6-terra SEED=1 K=4
+make tau2 ARM=baseline MODEL=gpt-5.6-terra DATASET=retail \
+  SEED=1 K=1 LIMIT=5
+make tau2 ARM=harness MODEL=gpt-5.6-terra DATASET=retail \
+  SEED=1 K=1 LIMIT=5
 ```
 
 ## 4. Report — aggregate results into paper-ready tables
