@@ -10,3 +10,8 @@
 *.fdb_latexmk
 *.toc
 main.pdf
+
+# The AAAI submission draft is kept out of the repo entirely: it is an
+# anonymized double-blind submission, and its build artifacts and PDFs are
+# regenerated locally. Everything under aaai/ stays local.
+aaai/
