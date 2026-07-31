@@ -28,6 +28,7 @@ from pandabench.providers.litellm_client import (
     Usage,
 )
 from pandabench.providers.models import ResolvedModel, load_registry
+from pandabench.runners.tau2 import Tau2Runner
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -136,6 +137,38 @@ def _agent(
         session_id="tau2-test",
         wiring=wiring,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.parametrize(
+    ("domain", "task_count"),
+    [("airline", 50), ("retail", 114), ("telecom", 114)],
+)
+async def test_runner_selects_tasks_and_environment_for_every_domain(
+    domain: str,
+    task_count: int,
+    mock_model: ResolvedModel,
+):
+    runner = Tau2Runner()
+    task_ids = runner.list_tasks(domain)
+
+    orchestrator, task = runner._build(
+        task_id=task_ids[0],
+        session_id=f"tau2-{domain}-test",
+        model=mock_model,
+        client=MockClient(),
+        max_turns=10,
+        wiring=None,
+        preamble=None,
+    )
+
+    assert len(task_ids) == task_count
+    assert orchestrator.domain == domain
+    assert str(task.id) == task_ids[0]
+
+
+def test_runner_rejects_non_benchmark_tau2_domain():
+    with pytest.raises(ValueError, match="unsupported tau2 domain"):
+        Tau2Runner(domain="telecom-workflow")
 
 
 def test_set_seed_does_not_require_tau2_llm(retail, mock_model):
