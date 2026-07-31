@@ -2,7 +2,7 @@
 # Model registry — the single place the study's provider-routing constraints
 # live. Keys are study model identifiers; values resolve to LiteLLM strings.
 #
-# ROUTING CONSTRAINTS (see docs/benchmark-study-brief.md §7):
+# ROUTING CONSTRAINTS (see IMPLEMENTATION_NOTES.md):
 #   * Vertex AI is primary (Gemini + Claude partner models) — ADC auth.
 #   * OpenAI models go through OpenAI's own API (Vertex does not serve them).
 #   * Claude models support BOTH backends, switchable per run via `--backend`,

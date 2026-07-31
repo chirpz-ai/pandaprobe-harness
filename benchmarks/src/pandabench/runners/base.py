@@ -4,9 +4,10 @@ A :class:`BenchmarkRunner` drives one ``(benchmark x model x arm x seed)`` run:
 the learning phase (arm B captures + validates rules; arm A runs the same split
 for symmetry) then the frozen eval phase, ``k`` trials each, with resumability
 and the arm-B ``refresh`` + ``drain_validation`` pacing baked in. Benchmark-
-specific work is confined to a :class:`SingleTaskRunner` (``run_once``); the
-harness session lifecycle lives here so it is identical across benchmarks and so
-``run_once`` can be reused verbatim by the ReplayFn (with ``wiring=None``).
+specific work is confined to a :class:`SingleTaskRunner` (``run_once`` or the
+optional bulk ``run_phase`` hook); the harness session lifecycle lives here so it
+is identical across benchmarks and so ``run_once`` can be reused verbatim by the
+ReplayFn (with ``wiring=None``).
 """
 
 from __future__ import annotations
@@ -79,6 +80,16 @@ class SingleTaskRunner(Protocol):
 
     name: str
 
+    def configure_dataset(self, dataset: str) -> None:
+        """Select the dataset/domain used by subsequent task runs.
+
+        Most runners receive all dataset context through ``list_tasks`` and need
+        no setup. Stateful integrations such as tau2 override this hook because
+        the selected domain also determines the environment and evaluator.
+        """
+
+        return None
+
     def list_tasks(self, dataset: str) -> list[str]: ...
 
     async def run_once(
@@ -103,6 +114,33 @@ class SingleTaskRunner(Protocol):
         """
 
         return None
+
+    async def run_phase(
+        self,
+        *,
+        tasks: Sequence[str],
+        k: int,
+        arm: str,
+        model: ResolvedModel,
+        phase: str,
+        dataset: str,
+        harness_root: Path,
+        writer: RecordWriter,
+        run_id: str,
+        seed: int,
+        backend: str | None,
+        max_turns: int,
+        benchmark: str,
+        noval: bool,
+    ) -> bool:
+        """Drive a whole phase when the benchmark owns task/attempt iteration.
+
+        Structural implementations need not define this method. The orchestrator
+        treats an absent hook exactly like this default ``False`` result and falls
+        through to the normal per-task loop.
+        """
+
+        return False
 
     async def aclose(self) -> None: ...
 
@@ -153,9 +191,12 @@ class BenchmarkRunner:
         run_id: str | None = None,
         noval: bool = False,
         max_turns_override: int | None = None,
+        dataset_override: str | None = None,
     ) -> Path:
         benchmark = self._single.name
         bench_cfg = self._study.benchmark(benchmark)
+        dataset = dataset_override or bench_cfg.dataset
+        self._single.configure_dataset(dataset)
         model = self._resolve_model(model_key, backend, dry_run)
         run_id = run_id or _run_id(benchmark, model.key, arm, seed)
         run_dir = self._run_root / run_id
@@ -164,7 +205,7 @@ class BenchmarkRunner:
         max_turns = max_turns_override or bench_cfg.max_turns
 
         client = self._make_client(arm, dry_run)
-        splits = self._splits(bench_cfg.dataset, seed, limit, benchmark)
+        splits = self._splits(dataset, seed, limit, benchmark)
         harness_root = harness_root_for(run_dir)
         use_harness = arm == "harness" and not dry_run
         learning_outcome: str | None = None
@@ -176,14 +217,12 @@ class BenchmarkRunner:
         )
 
         if "learning" in phases:
-            harness = (
-                self._build_harness(harness_root, "learning", benchmark, noval, model, seed)
-                if use_harness else None
-            )
-            await self._run_phase(
+            harness = await self._run_phase(
                 phase="learning", tasks=splits.learning, k=k, arm=arm, model=model,
-                client=client, harness=harness, writer=writer, run_id=run_id,
+                client=client, writer=writer, run_id=run_id,
                 seed=seed, backend=backend, max_turns=max_turns, benchmark=benchmark,
+                dataset=dataset, harness_root=harness_root, use_harness=use_harness,
+                noval=noval,
             )
             if harness is not None:
                 # Barrier: drain learning-phase evals + validate candidate rules so
@@ -193,14 +232,15 @@ class BenchmarkRunner:
 
         if "eval" in phases:
             # Rebuild against the SAME root with capture off; learned rules persist.
-            harness = (
-                self._build_harness(harness_root, "eval", benchmark, noval, model, seed)
-                if use_harness else None
-            )
-            await self._run_phase(
+            # Drop the learning-phase object before a bulk runner starts Harbor,
+            # which constructs its own Harness instances against this root.
+            harness = None
+            harness = await self._run_phase(
                 phase="eval", tasks=splits.eval, k=k, arm=arm, model=model,
-                client=client, harness=harness, writer=writer, run_id=run_id,
+                client=client, writer=writer, run_id=run_id,
                 seed=seed, backend=backend, max_turns=max_turns, benchmark=benchmark,
+                dataset=dataset, harness_root=harness_root, use_harness=use_harness,
+                noval=noval,
             )
 
         if use_harness and harness is not None:
@@ -212,7 +252,7 @@ class BenchmarkRunner:
         self._write_manifest(
             run_dir=run_dir, run_id=run_id, benchmark=benchmark, model=model,
             arm=arm, seed=seed, backend=backend, learning_outcome=learning_outcome,
-            phases=phases, k=k, dry_run=dry_run,
+            phases=phases, k=k, dry_run=dry_run, dataset=dataset,
         )
         await self._single.aclose()
         logger.info("run %s complete: %d records", run_id, writer.count)
@@ -222,9 +262,34 @@ class BenchmarkRunner:
 
     async def _run_phase(
         self, *, phase: str, tasks: Sequence[str], k: int, arm: str, model: ResolvedModel,
-        client: ChatClient, harness: Any, writer: RecordWriter, run_id: str,
-        seed: int, backend: str | None, max_turns: int, benchmark: str,
-    ) -> None:
+        client: ChatClient, writer: RecordWriter, run_id: str, seed: int,
+        backend: str | None, max_turns: int, benchmark: str, dataset: str,
+        harness_root: Path, use_harness: bool, noval: bool,
+    ) -> Any:
+        bulk_hook = getattr(self._single, "run_phase", None)
+        if bulk_hook is not None:
+            handled = await bulk_hook(
+                tasks=tasks, k=k, arm=arm, model=model, phase=phase, dataset=dataset,
+                harness_root=harness_root, writer=writer, run_id=run_id, seed=seed,
+                backend=backend, max_turns=max_turns, benchmark=benchmark, noval=noval,
+            )
+            if handled:
+                # Harbor's custom agent owns the live per-turn Harness. Construct
+                # this process's phase-level view only after Harbor exits, with no
+                # replay or verifier: Terminal-Bench supports neither capability.
+                return (
+                    self._build_harness(
+                        harness_root, phase, benchmark, noval, model, seed, bulk=True
+                    )
+                    if use_harness
+                    else None
+                )
+
+        harness = (
+            self._build_harness(harness_root, phase, benchmark, noval, model, seed)
+            if use_harness
+            else None
+        )
         for task_id in tasks:
             for trial in range(k):
                 key = resume_key(benchmark, task_id, arm, model.key, backend, seed, trial, phase)
@@ -243,6 +308,7 @@ class BenchmarkRunner:
                     benchmark, task_id, trial, phase, status,
                     record.wall_time_s, record.usage.get("cost_usd", 0.0),
                 )
+        return harness
 
     async def _run_trial(
         self, *, phase: str, task_id: str, trial: int, arm: str, model: ResolvedModel,
@@ -311,16 +377,20 @@ class BenchmarkRunner:
 
     def _build_harness(
         self, harness_root: Path, phase: str, benchmark: str, noval: bool,
-        model: ResolvedModel, seed: int,
+        model: ResolvedModel, seed: int, *, bulk: bool = False,
     ) -> Any:
         cfg = build_harness_config(
             harness_root=harness_root, phase=phase, study=self._study,
-            benchmark=benchmark, noval=noval,
+            benchmark=benchmark, noval=noval, health_check=not bulk,
         )
         return build_harness(
             cfg=cfg,
-            replay=self._make_replay(benchmark, model, seed),
-            verifier=make_verifier_fn(outcome_for=self._single.outcome_for),
+            replay=None if bulk else self._make_replay(benchmark, model, seed),
+            verifier=(
+                None
+                if bulk
+                else make_verifier_fn(outcome_for=self._single.outcome_for)
+            ),
         )
 
     def _make_replay(self, benchmark: str, model: ResolvedModel, seed: int) -> Any:
@@ -398,6 +468,7 @@ class BenchmarkRunner:
         self, *, run_dir: Path, run_id: str, benchmark: str, model: ResolvedModel,
         arm: str, seed: int, backend: str | None, learning_outcome: str | None,
         phases: Sequence[str], k: int, dry_run: bool,
+        dataset: str,
     ) -> None:
         manifest = RunManifest(
             run_id=run_id, benchmark=benchmark, model=model.key, arm=arm, seed=seed,
@@ -407,7 +478,7 @@ class BenchmarkRunner:
             litellm_version=package_version("litellm"),
             resolved_config={
                 "resolved_model": model.litellm_model, "provider": model.provider,
-                "k": k, "phases": list(phases), "dry_run": dry_run,
+                "dataset": dataset, "k": k, "phases": list(phases), "dry_run": dry_run,
                 "breach_threshold": self._study.breach_threshold(benchmark),
                 "rule_trial_min_sessions": self._study.harness.rule_trial_min_sessions,
             },
