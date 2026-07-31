@@ -92,6 +92,7 @@ def run_main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     parser = argparse.ArgumentParser(prog="pandabench-run", description="Run a benchmark arm.")
     parser.add_argument("--benchmark", choices=_BENCHMARKS)
+    parser.add_argument("-d", "--dataset", default=None, help="override configured dataset")
     parser.add_argument("--arm", default="baseline")
     parser.add_argument("--model", default="gemini-3.1-flash-lite")
     parser.add_argument("--backend", default=None)
@@ -125,6 +126,7 @@ def run_main(argv: list[str] | None = None) -> int:
             arm=args.arm, model_key=args.model, backend=args.backend, seed=args.seed,
             k=args.k or study.k, limit=args.limit, dry_run=args.dry_run, phases=phases,
             run_id=args.run_id, noval=args.noval, max_turns_override=args.max_turns,
+            dataset_override=args.dataset,
         )
     )
     return 0
@@ -179,7 +181,14 @@ def preflight() -> int:
     checks: list[tuple[str, bool, str]] = []
 
     checks.append(("pandaprobe CLI", shutil.which("pandaprobe") is not None, "on PATH"))
-    checks.append(("harbor tool", shutil.which("harbor") is not None, "on PATH (Terminal-Bench)"))
+    harbor_cli = Path(sys.executable).with_name("harbor")
+    checks.append(
+        (
+            "Harbor CLI",
+            harbor_cli.is_file(),
+            "installed beside the active interpreter (Terminal-Bench)",
+        )
+    )
     checks.append(("docker", _docker_ok(), "daemon reachable (Terminal-Bench)"))
     for var in ("VERTEXAI_PROJECT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PANDAPROBE_API_KEY"):
         checks.append((var, bool(os.environ.get(var)), "set"))

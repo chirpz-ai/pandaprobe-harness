@@ -18,7 +18,7 @@ from ..agents.loop import run_agent_loop
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
 from .appworld_env import AppWorldEnv, AppWorldServer, make_env
-from .base import TaskOutcome
+from .base import SingleTaskRunner, TaskOutcome
 
 logger = logging.getLogger("pandabench.appworld")
 
@@ -64,7 +64,7 @@ _EXECUTE_TOOL: dict[str, Any] = {
 }
 
 
-class AppWorldRunner:
+class AppWorldRunner(SingleTaskRunner):
     """Drives AppWorld tasks through the shared agent loop."""
 
     name = "appworld"

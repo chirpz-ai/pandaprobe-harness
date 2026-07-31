@@ -2,19 +2,9 @@
 # PandaBench — the benchmark A/B study suite for the PandaProbe Harness.
 #
 # This is a SELF-CONTAINED uv project, deliberately NOT a workspace member of
-# the parent `pandaprobe-harness` repo. It normally depends on the RELEASED
-# harness package from PyPI so the study measures the shipped artifact.
-# See ../docs/benchmark-study-brief.md.
-#
-# >>> PRE-RELEASE OVERRIDE (temporary) <<<
-# The harness v2 trigger (trace tiers + trajectory gate + per-turn barrier) is
-# not on PyPI yet, and this project's source now uses its API (`Harness.settle`,
-# `verifier=`). The `[tool.uv.sources]` block below therefore points at ../ as an
-# editable dependency so the study can be exercised before the release.
-#   REMOVE that block and pin `pandaprobe-harness==0.7.0` once v0.7.0 ships.
-# Until then the study is measuring the WORKING TREE, not a shipped artifact, so
-# any numbers produced now must be re-run against the released package before
-# they are reported.
+# the parent `pandaprobe-harness` repo. It depends on the RELEASED harness
+# package from PyPI — never a path/editable dependency on ../src — so the study
+# measures the shipped artifact.
 # =============================================================================
 [project]
 name = "pandabench"
@@ -24,9 +14,8 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
-    # The harness. Normally exact-pinned to a released version; currently
-    # satisfied by the pre-release path source below (see the header note).
-    "pandaprobe-harness>=0.6.3",
+    # The harness, exact-pinned so the study measures one fixed artifact.
+    "pandaprobe-harness==0.7.0",
     # The PandaProbe SDK: session binding + the native LiteLLM wrapper (>=0.5)
     # that auto-traces every litellm call so sessions are scoreable.
     "pandaprobe>=0.5",
@@ -35,6 +24,9 @@ dependencies = [
     "litellm[google]>=1.55",
     # HTTP client for driving the isolated AppWorld environment server.
     "httpx>=0.27",
+    # Terminal-Bench's stable orchestration surface. This must live in the same
+    # environment as pandabench so Harbor can import our custom agent.
+    "harbor==0.18.0",
     # Analysis + reporting.
     "pandas>=2.2",
     "numpy>=2.0",
@@ -46,16 +38,23 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
-# NOTE — benchmark harnesses are NOT in-process dependencies:
-#   * AppWorld pins pydantic<2, which is irreconcilable with modern LiteLLM
-#     (pydantic>=2.10). AppWorld therefore runs as an ISOLATED service in its
-#     own venv (see scripts/appworld_env, installed by `make setup`), and
-#     pandabench drives it over its HTTP API — pandabench never imports it.
-#   * tau2-bench is not published under a verified PyPI name; it is installed
-#     into its own env in the tau2 phase.
-#   * harbor is a standalone uv *tool* (`uv tool install harbor`), not a lib.
-# This keeps the pandabench core (LiteLLM + harness, pydantic v2) conflict-free.
-# See IMPLEMENTATION_NOTES.md.
+[project.optional-dependencies]
+# tau2-bench is not on PyPI under a verified name, so it is pinned to a tag.
+# It coexists with the core deps (its only constraint is litellm>=1.65.0, no
+# upper bound), so unlike AppWorld it lives in THIS venv:
+#   uv sync --extra tau2
+# Its data tree is not packaged — clone the repo and point TAU2_DATA_DIR at
+# <clone>/data, which tau2 reads at import time. See IMPLEMENTATION_NOTES.md.
+tau2 = ["tau2 @ git+https://github.com/sierra-research/tau2-bench.git@v0.2.0"]
+
+# NOTE — AppWorld is the one harness that is NOT an in-process dependency:
+# it pins pydantic<2, which is irreconcilable with modern LiteLLM
+# (pydantic>=2.10). It therefore runs as an ISOLATED service in its own venv
+# (see scripts/appworld_env, installed by `make setup`) and pandabench drives it
+# over its HTTP API — pandabench never imports it. harbor and tau2 are ordinary
+# dependencies of this project: harbor because its CLI must run from an
+# interpreter that can import `pandabench.adapters.harbor_agent`, tau2 via the
+# extra above. See IMPLEMENTATION_NOTES.md.
 
 [dependency-groups]
 dev = [
@@ -79,12 +78,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pandabench"]
 
-# >>> PRE-RELEASE OVERRIDE — DELETE THIS BLOCK WHEN v0.7.0 IS ON PyPI <<<
-# Resolves the harness from the working tree so the v2 API is available before
-# release. While this exists the study measures the working tree, not a shipped
-# artifact — see the header note.
-[tool.uv.sources]
-pandaprobe-harness = { path = "..", editable = true }
+# The `tau2` extra is a git reference (tau2 is not on PyPI under a verified name).
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # -- Tooling: independent of the parent repo's config -------------------------
 [tool.ruff]

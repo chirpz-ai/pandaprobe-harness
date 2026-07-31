@@ -8,11 +8,11 @@ prompts, and task sets — the only difference is harness wiring:
 | Arm | Description |
 |---|---|
 | `baseline` | Plain tool-calling loop; no harness. |
-| `harness` | Full self-heal loop: preamble injection, 14-tool self-diagnosis, per-trial `on_turn_end`/`refresh`/`drain_validation`, eval-case capture + rule validation. |
+| `harness` | Full self-heal loop: preamble injection, self-diagnosis tools, per-turn settle barrier, eval-case capture, and supported rule validation. |
 
 Self-contained uv project that installs the **released** harness from PyPI (never
-`../src`). See `../docs/benchmark-study-brief.md` for the full study design and
-`IMPLEMENTATION_NOTES.md` for engineering decisions + verification status.
+`../src`). See `RUNNING.md` for the study workflow and `IMPLEMENTATION_NOTES.md`
+for engineering decisions, benchmark deviations, and verification status.
 
 ## Prerequisites
 
@@ -21,14 +21,14 @@ Self-contained uv project that installs the **released** harness from PyPI (neve
 - LLM credentials for the providers you use (see `.env.example`): Vertex AI ADC
   (`gcloud auth application-default login` + `VERTEXAI_PROJECT`), `OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`; plus `PANDAPROBE_API_KEY` for the harness arm.
-- Docker running (Terminal-Bench only) and `harbor` (`uv tool install harbor`).
+- Docker running (Terminal-Bench only). Harbor is installed with this project.
 - AppWorld isolated env (`make setup` provisions it; ~183 MB data).
 
 ## Setup
 
 ```bash
 cp .env.example .env      # fill in credentials
-make setup                # uv sync, harbor tool, isolated AppWorld env, preflight
+make setup                # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
 ```
 
