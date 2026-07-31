@@ -57,11 +57,11 @@ benchmarks:
     learning_split: []        # explicit ids override the seeded partition
     eval_split: []
   terminal_bench:
-    dataset: terminal-bench@2.0
+    dataset: terminal-bench-sample@2.0  # smaller default; use terminal-bench@2.0 for full
     max_turns: 100            # Terminal-Bench has no native turn cap (timeout-driven);
     learning_fraction: 0.35   #   100 is our in-process agent budget
   tau2:
-    dataset: retail
+    dataset: airline             # default; valid domains: airline, retail, telecom
     max_turns: 100            # matches tau2's native default (run_tasks max_steps=100)
     learning_fraction: 0.35
 
