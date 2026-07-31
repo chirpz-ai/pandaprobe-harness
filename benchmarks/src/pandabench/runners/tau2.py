@@ -39,6 +39,8 @@ logger = logging.getLogger("pandabench.tau2")
 
 __all__ = ["Tau2Runner", "build_tau2_runner"]
 
+_SUPPORTED_DOMAINS = ("airline", "retail", "telecom")
+
 _CONFIGS_HINT = (
     "tau2's data tree is not shipped. Clone it and export TAU2_DATA_DIR:\n"
     "  git clone --branch v0.2.0 https://github.com/sierra-research/tau2-bench.git\n"
@@ -64,12 +66,13 @@ class Tau2Runner(SingleTaskRunner):
     name = "tau2"
 
     def __init__(self, *, domain: str = "retail") -> None:
-        self._domain = domain
         # task id -> tau2's own reward, so the harness gets a gold outcome signal.
-        # Free to keep: retail's reward_basis is [DB, COMMUNICATE], whose
-        # evaluators are all deterministic (no LLM call).
+        # The three benchmark domains use DB/communicate, env-assertion, and/or
+        # action criteria, all handled deterministically by EvaluationType.ALL.
         self._outcomes: dict[str, float] = {}
         self._models: ModelRegistry | None = None
+        self._domain = "retail"
+        self.configure_dataset(domain)
 
     def _registry(self) -> ModelRegistry:
         """The model registry, loaded once (the user-simulator role lives here)."""
@@ -82,11 +85,23 @@ class Tau2Runner(SingleTaskRunner):
 
     # -- SingleTaskRunner -----------------------------------------------------
 
+    def configure_dataset(self, dataset: str) -> None:
+        domain = dataset.strip() or self._domain
+        if domain not in _SUPPORTED_DOMAINS:
+            choices = ", ".join(_SUPPORTED_DOMAINS)
+            raise ValueError(f"unsupported tau2 domain {domain!r}; choose one of: {choices}")
+        if domain != self._domain:
+            # Task ids overlap across domains, so cached verifier outcomes cannot
+            # survive a domain switch on a reused runner instance.
+            self._outcomes.clear()
+        self._domain = domain
+
     def list_tasks(self, dataset: str) -> list[str]:
+        self.configure_dataset(dataset)
         _require_tau2()
         from tau2.run import load_tasks
 
-        return [str(task.id) for task in load_tasks(dataset or self._domain)]
+        return [str(task.id) for task in load_tasks(self._domain)]
 
     def outcome_for(self, task_id: str) -> float | None:
         """tau2's own reward for ``task_id``, if this process has graded it.
@@ -227,6 +242,7 @@ class Tau2Runner(SingleTaskRunner):
         from tau2.evaluator.evaluator import EvaluationType, evaluate_simulation
 
         native: dict[str, Any] = {
+            "domain": self._domain,
             "termination_reason": str(getattr(simulation, "termination_reason", "")),
             "step_count": len(getattr(simulation, "messages", []) or []),
             "user_cost": getattr(simulation, "user_cost", None),
