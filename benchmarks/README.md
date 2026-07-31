@@ -20,7 +20,9 @@ for engineering decisions, benchmark deviations, and verification status.
 - The `pandaprobe` CLI on PATH (`curl -fsSL https://cli.pandaprobe.com/install.sh | sh`).
 - LLM credentials for the providers you use (see `.env.example`): Vertex AI ADC
   (`gcloud auth application-default login` + `VERTEXAI_PROJECT`), `OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`; plus `PANDAPROBE_API_KEY` for the harness arm.
+  or `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` for the default Claude backend.
+  `ANTHROPIC_API_KEY` enables the optional Claude fallback; the harness arm also
+  needs `PANDAPROBE_API_KEY`.
 - Docker running (Terminal-Bench only). Harbor is installed with this project.
 - AppWorld isolated env (`make setup` provisions it; ~183 MB data).
 
@@ -44,7 +46,7 @@ make smoke                # dry-run pipeline gate: both arms x tiny task set, al
 make report               # regenerate results/summary/ from results/runs/
 
 # One real arm of one benchmark (needs that harness provisioned + creds):
-make appworld ARM=harness  MODEL=claude-sonnet-5 SEED=1 BACKEND=vertex_ai K=4 LIMIT=5
+make appworld ARM=harness  MODEL=claude-sonnet-4-6 SEED=1 BACKEND=bedrock K=4 LIMIT=5
 make terminal ARM=baseline MODEL=gemini-3.1-pro  SEED=1
 make tau2     ARM=harness   MODEL=gpt-5.6-terra    SEED=1
 
