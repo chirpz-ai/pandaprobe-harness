@@ -6,8 +6,8 @@ purely through ``environment.exec``. That lets us reuse the shared pandabench
 loop + harness verbatim — the bash tool is just ``environment.exec``.
 
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
-  --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-5 \
-  --ak backend=vertex_ai --ak capture=true --ak harness_root=/abs/path --ak noval=false
+  --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-4-6 \
+  --ak backend=bedrock --ak capture=true --ak harness_root=/abs/path --ak noval=false
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
 the arm-B learning pass to keep workspace writes serial.
