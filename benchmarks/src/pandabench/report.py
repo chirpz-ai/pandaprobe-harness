@@ -2,7 +2,7 @@
 
 ``make report`` -> ``summary/{all_records.csv, headline.csv,
 harness_telemetry.csv, report.md}`` plus an optional learning-curve plot. The
-headline table is a benchmark x model x arm view of pass@1 / pass^k with the
+headline table is a benchmark x dataset x model x arm view of pass@1 / pass^k with the
 harness-vs-baseline delta, bootstrap CIs, and McNemar p; the report prose states
 the power caveat, the temperature/nondeterminism note, and the preamble+toolset
 token-overhead confound (see ``IMPLEMENTATION_NOTES.md``).
@@ -30,15 +30,29 @@ def load_records(runs_dir: Path) -> pd.DataFrame:
 
     rows: list[dict[str, Any]] = []
     for records_file in sorted(runs_dir.glob("*/records.jsonl")):
+        dataset = _manifest_dataset(records_file.parent / "manifest.json")
         for line in records_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                rows.append(_flatten(json.loads(line)))
+                row = _flatten(json.loads(line))
+                row["dataset"] = str(row.get("dataset") or dataset)
+                rows.append(row)
             except json.JSONDecodeError:
                 logger.warning("bad record line in %s", records_file)
     return pd.DataFrame(rows)
+
+
+def _manifest_dataset(path: Path) -> str:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "unknown"
+    resolved = manifest.get("resolved_config") or {}
+    if not isinstance(resolved, dict):
+        return "unknown"
+    return str(resolved.get("dataset") or "unknown")
 
 
 def _flatten(rec: dict[str, Any]) -> dict[str, Any]:
@@ -106,10 +120,11 @@ def _headline(eval_df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     if eval_df.empty:
         return pd.DataFrame(rows)
-    for (benchmark, model, arm), group in eval_df.groupby(["benchmark", "model", "arm"]):
+    keys = ["benchmark", "dataset", "model", "arm"]
+    for (benchmark, dataset, model, arm), group in eval_df.groupby(keys):
         rows.append(
             {
-                "benchmark": benchmark, "model": model, "arm": arm,
+                "benchmark": benchmark, "dataset": dataset, "model": model, "arm": arm,
                 "n_tasks": group[["seed", "task_id"]].drop_duplicates().shape[0],
                 "pass_at_1": round(pass_at_1(_first_trial_passes(group)), 4),
                 "pass_hat_k": round(pass_hat_k(_all_trial_passes(group)), 4),
@@ -118,16 +133,18 @@ def _headline(eval_df: pd.DataFrame) -> pd.DataFrame:
                 "n_error": int((group["error"].notna() & (group["error"] != "")).sum()),
             }
         )
-    return pd.DataFrame(rows).sort_values(["benchmark", "model", "arm"]).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(keys).reset_index(drop=True)
 
 
 def _paired(eval_df: pd.DataFrame) -> list[dict[str, Any]]:
-    """Harness-vs-baseline paired pass@1 comparison per (benchmark, model)."""
+    """Harness-vs-baseline comparison per (benchmark, dataset, model)."""
 
     results: list[dict[str, Any]] = []
     if eval_df.empty:
         return results
-    for (benchmark, model), group in eval_df.groupby(["benchmark", "model"]):
+    for (benchmark, dataset, model), group in eval_df.groupby(
+        ["benchmark", "dataset", "model"]
+    ):
         first = group[group["trial"] == 0]
         by_arm: dict[str, dict[tuple[Any, Any], bool]] = defaultdict(dict)
         for _, row in first.iterrows():
@@ -138,7 +155,9 @@ def _paired(eval_df: pd.DataFrame) -> list[dict[str, Any]]:
             continue
         pairs = [(base[k], harn[k]) for k in keys]
         delta = paired_delta(pairs)
-        results.append({"benchmark": benchmark, "model": model, **delta.to_dict()})
+        results.append(
+            {"benchmark": benchmark, "dataset": dataset, "model": model, **delta.to_dict()}
+        )
     return results
 
 
@@ -147,10 +166,11 @@ def _telemetry(df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     if harn.empty:
         return pd.DataFrame(rows)
-    for (benchmark, model, phase), group in harn.groupby(["benchmark", "model", "phase"]):
+    keys = ["benchmark", "dataset", "model", "phase"]
+    for (benchmark, dataset, model, phase), group in harn.groupby(keys):
         rows.append(
             {
-                "benchmark": benchmark, "model": model, "phase": phase,
+                "benchmark": benchmark, "dataset": dataset, "model": model, "phase": phase,
                 "trials": len(group),
                 "rules_active_max": _safe_max(group["h_rules_active"]),
                 "rules_candidate_max": _safe_max(group["h_rules_candidate"]),
@@ -187,10 +207,13 @@ def _plot_learning_curve(df: pd.DataFrame, out_dir: Path) -> None:
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(7, 4))
-        for benchmark, group in learn.groupby("benchmark"):
+        for (benchmark, dataset), group in learn.groupby(["benchmark", "dataset"]):
             ordered = group.sort_values(["seed", "task_id", "trial"]).reset_index(drop=True)
             cumulative = ordered["passed"].astype(float).expanding().mean()
-            ax.plot(range(len(cumulative)), cumulative, marker="o", label=str(benchmark))
+            ax.plot(
+                range(len(cumulative)), cumulative, marker="o",
+                label=f"{benchmark}/{dataset}",
+            )
         ax.set_xlabel("learning task-trial index")
         ax.set_ylabel("cumulative pass rate (arm B)")
         ax.set_title("Learning-phase pass rate (harness arm)")
@@ -212,7 +235,7 @@ def _write_report_md(
     lines += ["## Harness vs baseline (paired pass@1)", ""]
     if deltas:
         dframe = pd.DataFrame(deltas)[
-            ["benchmark", "model", "n_pairs", "rate_a", "rate_b", "delta",
+            ["benchmark", "dataset", "model", "n_pairs", "rate_a", "rate_b", "delta",
              "ci_low", "ci_high", "p_value", "underpowered"]
         ]
         lines += [_md_table(dframe), ""]
@@ -247,13 +270,15 @@ def _overhead(df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     if eval_df.empty:
         return pd.DataFrame(rows)
-    for (benchmark, model), group in eval_df.groupby(["benchmark", "model"]):
+    for (benchmark, dataset, model), group in eval_df.groupby(
+        ["benchmark", "dataset", "model"]
+    ):
         by_arm = group.groupby("arm")["input_tokens"].mean()
         base = float(by_arm.get("baseline", float("nan")))
         harn = float(by_arm.get("harness", float("nan")))
         rows.append(
             {
-                "benchmark": benchmark, "model": model,
+                "benchmark": benchmark, "dataset": dataset, "model": model,
                 "baseline_input_tokens": round(base, 1) if base == base else None,
                 "harness_input_tokens": round(harn, 1) if harn == harn else None,
                 "overhead_tokens": round(harn - base, 1) if harn == harn and base == base else None,
