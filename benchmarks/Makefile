@@ -9,6 +9,7 @@
 #   SEED     shuffles task order; use several (1 2 3) for replicates
 #   K        trials per task (pass@1 = first trial; pass^k = all K)
 #   LIMIT    max tasks per phase (unset = the whole split)
+#   DATASET  dataset override (unset = the benchmark's configured dataset)
 #   MAXTURNS per-task agent-turn cap (unset = study.yaml max_turns, 100 for all benchmarks)
 #   BACKEND  Claude only: vertex_ai | anthropic (omit for OpenAI/Gemini)
 ARM      ?= baseline
@@ -17,10 +18,12 @@ SEED     ?= 1
 BACKEND  ?=
 K        ?= 4
 LIMIT    ?=
+DATASET  ?=
 MAXTURNS ?=
 BENCH    ?= appworld
 BENCHMARK ?= $(BENCH)
 LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
+DATASET_FLAG := $(if $(DATASET),--dataset $(DATASET),)
 MAXTURNS_FLAG := $(if $(MAXTURNS),--max-turns $(MAXTURNS),)
 BACKEND_FLAG := $(if $(BACKEND),--backend $(BACKEND),)
 
@@ -40,18 +43,18 @@ setup: sync ## Full setup: deps (including harbor), isolated AppWorld env, prefl
 preflight: ## Validate Docker, CLIs, credentials, and a 1-token ping per provider
 	uv run pandabench-run --preflight
 
-smoke: ## 2 tasks x 1 trial x both arms x cheap model, all benchmarks (< ~10 min)
+smoke: ## 2 tasks/phase x 1 trial x both arms x cheap model, all benchmarks (< ~10 min)
 	uv run pandabench-run --smoke
 
-run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=] [MAXTURNS=])
+run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=] [DATASET=] [MAXTURNS=])
 	uv run pandabench-run --benchmark $(BENCHMARK) --arm $(ARM) --model $(MODEL) \
-		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(MAXTURNS_FLAG)
+		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(DATASET_FLAG) $(MAXTURNS_FLAG)
 
 # The `terminal` target keeps its short name but must pass the CLI's actual
 # choice, `terminal_bench` — `--benchmark terminal` is rejected.
-appworld terminal_bench tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/MAXTURNS
+appworld terminal_bench tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/DATASET/MAXTURNS
 	uv run pandabench-run --benchmark $@ --arm $(ARM) --model $(MODEL) \
-		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(MAXTURNS_FLAG)
+		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(DATASET_FLAG) $(MAXTURNS_FLAG)
 
 terminal: terminal_bench ## Alias for terminal_bench
 
