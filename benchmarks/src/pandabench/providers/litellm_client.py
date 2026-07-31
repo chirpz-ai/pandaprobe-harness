@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 # Sampler params we may set; each is forwarded only if the model's allowlist
-# permits it (Claude 5 / GPT-5 400 on temperature/top_p/top_k).
+# permits it (the study fixes Claude to max_tokens only; GPT-5 also omits them).
 _SAMPLER_PARAMS = ("temperature", "top_p", "top_k")
 
 

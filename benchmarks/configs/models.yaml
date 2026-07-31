@@ -3,16 +3,21 @@
 # live. Keys are study model identifiers; values resolve to LiteLLM strings.
 #
 # ROUTING CONSTRAINTS (see IMPLEMENTATION_NOTES.md):
-#   * Vertex AI is primary (Gemini + Claude partner models) — ADC auth.
+#   * Vertex AI serves Gemini — ADC auth.
 #   * OpenAI models go through OpenAI's own API (Vertex does not serve them).
-#   * Claude models support BOTH backends, switchable per run via `--backend`,
+#   * Claude models default to AWS Bedrock, with Anthropic API as a fallback.
+#     They are switchable per run via `--backend`,
 #     `CLAUDE_BACKEND`, or the per-model `default_backend` below.
 #
-# `param_allowlist` gates which sampler params LiteLLM may forward: Claude 5 and
-# GPT-5.x reject temperature/top_p/top_k (400), so those keys omit them; Gemini
-# accepts them. `price_per_mtok` is a FALLBACK only, used when
-# litellm.completion_cost has no price for a model. Verify current model IDs and
-# the Vertex partner-model form for Claude against the installed LiteLLM at run time.
+# `param_allowlist` gates which sampler params LiteLLM may forward. The study
+# intentionally fixes Claude to max_tokens only; GPT-5.x also omits unsupported
+# sampler params, while Gemini accepts them. `price_per_mtok` is a fallback used
+# when litellm.completion_cost has no price for a model. Claude calls use Bedrock
+# global inference profiles: the underlying foundation-model IDs reject
+# on-demand invocation, while global profiles support it without the 10%
+# regional-routing premium. Verify model availability and pricing at run time.
+# Claude rates are from:
+# https://platform.claude.com/docs/en/about-claude/pricing
 # =============================================================================
 models:
 
@@ -55,21 +60,30 @@ models:
     default_params: {reasoning_effort: none}
     price_per_mtok: {input: 5.00, output: 30.00}
 
-  claude-sonnet-5:
+  claude-opus-4-6:
     provider_family: claude
     backends:
-      anthropic: "anthropic/claude-sonnet-5"
-      vertex_ai: "vertex_ai/claude-sonnet-5"
-    default_backend: vertex_ai
+      bedrock: "bedrock/global.anthropic.claude-opus-4-6-v1"
+      anthropic: "anthropic/claude-opus-4-6"
+    default_backend: bedrock
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 5.0, output: 25.0}
+
+  claude-sonnet-4-6:
+    provider_family: claude
+    backends:
+      bedrock: "bedrock/global.anthropic.claude-sonnet-4-6"
+      anthropic: "anthropic/claude-sonnet-4-6"
+    default_backend: bedrock
     param_allowlist: [max_tokens]
     price_per_mtok: {input: 3.0, output: 15.0}
 
   claude-haiku-4-5:
     provider_family: claude
     backends:
-      anthropic: "anthropic/claude-haiku-4-5"
-      vertex_ai: "vertex_ai/claude-haiku-4-5"
-    default_backend: vertex_ai
+      bedrock: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+      anthropic: "anthropic/claude-haiku-4-5-20251001"
+    default_backend: bedrock
     param_allowlist: [max_tokens]
     price_per_mtok: {input: 1.0, output: 5.0}
 
