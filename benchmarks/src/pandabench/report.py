@@ -251,7 +251,7 @@ def _write_report_md(
         "- **Power caveat.** At ~30-40 eval tasks, McNemar detects only large "
         "deltas (~10+ points); small effects are underpowered even pooling seeds. "
         "Results are directional — read the bootstrap CIs, not just point deltas.",
-        "- **Nondeterminism.** Current Claude models reject `temperature`, so "
+        "- **Nondeterminism.** The study does not send `temperature` to Claude, so "
         "trial-to-trial variance comes from natural model nondeterminism; no "
         "sampler seed is forced.",
         "- **Preamble confound.** The arm-B harness preamble + 14 tools cost "
