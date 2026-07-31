@@ -5,6 +5,7 @@ Uses the generic MockTaskRunner (no network, no external harness), which is what
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 from pandabench.config import load_study
@@ -59,3 +60,20 @@ async def test_both_arms_dry_run_pipeline(tmp_path):
             k=1, limit=1, dry_run=True, phases=("learning", "eval"),
         )
         assert (run_dir / "records.jsonl").exists()
+
+
+async def test_report_keeps_datasets_as_separate_benchmark_cells(tmp_path):
+    for dataset in ("airline", "retail"):
+        await _runner(tmp_path).run(
+            arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
+            k=1, limit=1, dry_run=True, phases=("eval",),
+            dataset_override=dataset, run_id=f"appworld-{dataset}",
+        )
+
+    summary = tmp_path / "summary"
+    aggregate(tmp_path / "runs", summary)
+    with (summary / "headline.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert {row["dataset"] for row in rows} == {"airline", "retail"}
+    assert len(rows) == 2
