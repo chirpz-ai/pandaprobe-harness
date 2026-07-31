@@ -75,8 +75,9 @@ building. Read alongside `RUNNING.md`.
   always pass `--port` explicitly.
 - **AppWorld holds one active world per server** — tasks run serially per server;
   concurrency would need multiple ports.
-- **Claude 5 / GPT-5 reject `temperature`/`top_p`/`top_k`** — `models.yaml` per-model
-  `param_allowlist` drops them; we filter explicitly (not via `litellm.drop_params`).
+- **Claude is fixed to `max_tokens` only; GPT-5 rejects several sampler params** —
+  `models.yaml` per-model `param_allowlist` drops them; we filter explicitly
+  (not via `litellm.drop_params`).
 - **`tau2` PyPI name is ambiguous** — install the Sierra benchmark from the pinned
   Git tag through PandaBench's `tau2` extra, never by an unqualified PyPI name.
 
@@ -87,9 +88,17 @@ building. Read alongside `RUNNING.md`.
   (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`). ~183 MB data download.
 - **Terminal-Bench**: needs Docker running; `uv sync` installs Harbor into this project.
 - **tau2**: run `uv sync --extra tau2` and set `TAU2_DATA_DIR=<clone>/data`.
-- **Providers**: export `VERTEXAI_PROJECT`/ADC, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-  and `PANDAPROBE_API_KEY` (+ `PANDAPROBE_PROJECT_NAME`) — or put them in
+- **Providers**: export `VERTEXAI_PROJECT`/ADC and/or `OPENAI_API_KEY`. Claude
+  defaults to AWS Bedrock: set a short-term `AWS_BEARER_TOKEN_BEDROCK` plus the
+  matching `AWS_REGION`; set `ANTHROPIC_API_KEY` only for the optional
+  `BACKEND=anthropic` fallback. Also set `PANDAPROBE_API_KEY` (+
+  `PANDAPROBE_PROJECT_NAME`) for harness runs — or put everything in
   `benchmarks/.env`. `uv run pandabench-run --preflight` validates them.
+- **Bedrock on-demand Claude calls require inference profiles.** The catalog's
+  base `anthropic.*` IDs reject on-demand throughput for these models, so the
+  registry calls AWS's corresponding `global.anthropic.*` system inference
+  profiles. They retain the exact underlying model versions and use global/base
+  pricing; use geography-specific profiles only if data residency is required.
 
 ## Benchmark integration recipes
 
