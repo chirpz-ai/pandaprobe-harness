@@ -4,7 +4,7 @@ Requires the ``crewai`` extra and real credentials (an authenticated
 ``pandaprobe`` CLI plus your model provider's API key):
 
     pip install 'pandaprobe-harness[crewai]'
-    python examples/crewai_agent.py
+    python examples/misc/crewai_agent.py
 
 The wiring, in order:
 
@@ -21,7 +21,7 @@ The wiring, in order:
    protocol + mailbox banner), rebuilt each turn so new notices surface.
 
 For the fully offline, credential-free version of this loop, see
-``examples/offline_self_heal.py``.
+``examples/misc/offline_self_heal.py``.
 """
 
 from __future__ import annotations
