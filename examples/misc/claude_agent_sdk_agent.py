@@ -4,7 +4,7 @@ Requires the ``claude-agent-sdk`` extra and real credentials (an authenticated
 ``pandaprobe`` CLI plus ``ANTHROPIC_API_KEY``):
 
     pip install 'pandaprobe-harness[claude-agent-sdk]'
-    python examples/claude_agent_sdk_agent.py
+    python examples/misc/claude_agent_sdk_agent.py
 
 The wiring, in order:
 
@@ -19,7 +19,7 @@ The wiring, in order:
    prepended to the system prompt and re-read each turn.
 
 For the fully offline, credential-free version of this loop, see
-``examples/offline_self_heal.py``.
+``examples/misc/offline_self_heal.py``.
 """
 
 from __future__ import annotations

@@ -83,8 +83,8 @@ The `examples/` directory ships fully-offline, credential-free demos:
 
 ```bash
 make example                                        # the pull loop, end to end
-uv run python examples/closed_loop_self_heal.py     # candidate → validate → promote → regression
-uv run python examples/calibration_demo.py          # threshold calibration
+uv run python examples/misc/closed_loop_self_heal.py  # candidate → validate → promote → regression
+uv run python examples/misc/calibration_demo.py       # threshold calibration
 ```
 
 ## Operator CLIs

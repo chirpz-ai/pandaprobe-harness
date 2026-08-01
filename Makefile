@@ -53,7 +53,7 @@ test-contract: ## Run the live contract tests (needs pandaprobe CLI + creds)
 	PANDAPROBE_LIVE=1 uv run pytest tests/contract -v
 
 example: ## Run the offline self-heal example (fake CLI, no network)
-	uv run python examples/offline_self_heal.py
+	uv run python examples/misc/offline_self_heal.py
 
 bench-setup: ## Set up the benchmarks/ sub-project (uv sync, harbor, appworld data)
 	$(MAKE_BENCH) setup

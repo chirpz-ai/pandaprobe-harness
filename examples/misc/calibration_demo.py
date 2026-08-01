@@ -1,6 +1,6 @@
 """Metric-calibration demo — is a `breach` a real failure? Is 0.5 sane?
 
-    python examples/calibration_demo.py
+    python examples/misc/calibration_demo.py
 
 Everything the harness does — notices, candidate validation, regression
 classification — keys off "score below threshold". This offline demo shows
