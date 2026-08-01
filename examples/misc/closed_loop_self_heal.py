@@ -1,6 +1,6 @@
 """Closed-loop self-healing demo — evidence before trust, no network, no extras.
 
-    python examples/closed_loop_self_heal.py
+    python examples/misc/closed_loop_self_heal.py
 
 Extends the offline pull-loop demo with the v0.6 closed loop. A toy
 ``ReplayFn`` stands in for "re-run my agent on a captured scenario":

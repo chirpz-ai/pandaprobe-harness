@@ -4,7 +4,7 @@ Requires the ``langgraph`` extra and real credentials (an authenticated
 ``pandaprobe`` CLI plus your model provider's API key):
 
     pip install 'pandaprobe-harness[langgraph]'
-    python examples/langgraph_agent.py
+    python examples/misc/langgraph_agent.py
 
 The wiring, in order:
 
@@ -19,7 +19,7 @@ The wiring, in order:
    self-diagnostic tools (mailbox, trace inspection, rules, journal).
 
 For the fully offline, credential-free version of this loop, see
-``examples/offline_self_heal.py``.
+``examples/misc/offline_self_heal.py``.
 """
 
 from __future__ import annotations

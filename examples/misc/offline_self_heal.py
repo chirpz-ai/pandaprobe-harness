@@ -1,6 +1,6 @@
 """Offline self-healing demo — the complete pull loop, no network, no extras.
 
-    python examples/offline_self_heal.py
+    python examples/misc/offline_self_heal.py
 
 A scripted CLI stand-in serves per-trace evaluation scores, and a scripted agent
 follows the standing pull protocol. Three turns show the full acceptance flow:

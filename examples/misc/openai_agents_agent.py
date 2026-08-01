@@ -4,7 +4,7 @@ Requires the ``openai-agents`` extra and real credentials (an authenticated
 ``pandaprobe`` CLI plus ``OPENAI_API_KEY``):
 
     pip install 'pandaprobe-harness[openai-agents]'
-    python examples/openai_agents_agent.py
+    python examples/misc/openai_agents_agent.py
 
 The wiring, in order:
 
@@ -18,7 +18,7 @@ The wiring, in order:
    native ``FunctionTool``s.
 
 For the fully offline, credential-free version of this loop, see
-``examples/offline_self_heal.py``.
+``examples/misc/offline_self_heal.py``.
 """
 
 from __future__ import annotations
