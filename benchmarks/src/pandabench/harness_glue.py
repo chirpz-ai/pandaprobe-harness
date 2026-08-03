@@ -1,18 +1,21 @@
 """Harness construction, session-id plumbing, and per-benchmark replay wiring.
 
 Isolates every point where pandabench touches the harness package so the
-runners stay benchmark-focused. The session id is the linchpin: the *same*
-sanitized id is used for the SDK trace context, ``on_turn_end``, ``refresh``,
-the record row, and the calibrate label join — one function mints it everywhere
-so ids never drift (a drift would silently break resume + label joins).
+runners stay benchmark-focused. A fresh namespace is minted for every runner
+invocation, then the *same* namespaced session id is used for the SDK trace
+context, ``on_turn_end``, ``refresh``, and the record row. This keeps separate
+benchmark invocations from ever sharing a remote PandaProbe session, including
+when an interrupted ``--run-id`` is resumed.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pandaprobe_harness import Harness, HarnessConfig
 
@@ -30,6 +33,7 @@ __all__ = [
     "make_replay_fn",
     "make_session_id",
     "make_verifier_fn",
+    "new_session_namespace",
     "sanitize_component",
 ]
 
@@ -43,6 +47,7 @@ ReplayRunner = Callable[[str, str], Awaitable[str]]
 OutcomeGrader = Callable[[str], "float | None"]
 
 _UNSAFE = re.compile(r"[^a-z0-9._-]+")
+_SESSION_ID_MAX_LENGTH = 255
 
 
 def sanitize_component(value: str) -> str:
@@ -53,13 +58,54 @@ def sanitize_component(value: str) -> str:
     return cleaned or "x"
 
 
-def make_session_id(
-    *, benchmark: str, task_id: str, arm: str, model_key: str, seed: int, trial: int
-) -> str:
-    """The one session-id format used everywhere (loop, records, labels, replay)."""
+def new_session_namespace() -> str:
+    """Return a globally unique namespace for one runner invocation.
 
-    parts = [benchmark, task_id, arm, model_key, str(seed), f"t{trial}"]
-    return "-".join(sanitize_component(p) for p in parts)
+    This is deliberately not derived from ``run_id``. Resuming an interrupted
+    run must not append a retried task's traces to the partial remote session
+    left by the previous process.
+    """
+
+    return uuid4().hex
+
+
+def make_session_id(
+    *,
+    session_namespace: str,
+    benchmark: str,
+    task_id: str,
+    arm: str,
+    model_key: str,
+    seed: int,
+    trial: int,
+    phase: str,
+) -> str:
+    """Mint a unique, readable PandaProbe session id (maximum 255 characters).
+
+    Calls with the same namespace and semantic identity are stable, while a new
+    runner invocation changes the namespace. ``phase`` prevents a task from
+    sharing a session if a custom split ever places it in both phases.
+    """
+
+    parts = [
+        benchmark,
+        task_id,
+        arm,
+        model_key,
+        f"s{seed}",
+        phase,
+        f"t{trial}",
+        f"r{session_namespace}",
+    ]
+    session_id = "-".join(sanitize_component(p) for p in parts)
+    if len(session_id) <= _SESSION_ID_MAX_LENGTH:
+        return session_id
+
+    namespace_component = sanitize_component(f"r{session_namespace}")
+    digest = sha256(session_id.encode()).hexdigest()
+    suffix = f"-h{digest}-{namespace_component}"
+    prefix = session_id[: _SESSION_ID_MAX_LENGTH - len(suffix)].rstrip("-")
+    return f"{prefix}{suffix}"
 
 
 def harness_root_for(run_dir: Path) -> Path:
