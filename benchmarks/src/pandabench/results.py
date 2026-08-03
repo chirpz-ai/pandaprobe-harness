@@ -32,7 +32,7 @@ __all__ = [
     "resume_key",
 ]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # The tuple identifying a task-trial for resumability + label joins. Must be
 # stable across process restarts.
