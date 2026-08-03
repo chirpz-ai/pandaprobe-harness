@@ -17,8 +17,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .harness_glue import make_session_id
-
 logger = logging.getLogger("pandabench.checkpoints")
 
 __all__ = ["records_to_labels", "run_calibration"]
@@ -30,8 +28,7 @@ def records_to_labels(
 ) -> int:
     """Write a calibrate label file from records: ``failed = not passed``.
 
-    Session ids are recomputed with the SAME ``make_session_id`` used at trace
-    time, so the labels join to the platform's session scores.
+    Labels use the exact remote session id recorded in harness telemetry.
     """
 
     labels: list[dict[str, Any]] = []
@@ -42,10 +39,14 @@ def records_to_labels(
         rec = json.loads(line)
         if rec.get("benchmark") != benchmark or rec.get("phase") != phase or rec.get("arm") != arm:
             continue
-        session_id = make_session_id(
-            benchmark=rec["benchmark"], task_id=rec["task_id"], arm=rec["arm"],
-            model_key=rec["model"], seed=rec["seed"], trial=rec["trial"],
-        )
+        harness = rec.get("harness")
+        session_id = harness.get("session_id") if isinstance(harness, dict) else None
+        if not session_id:
+            logger.warning(
+                "skipping calibration label without a recorded session id: %s/%s t%s",
+                rec.get("benchmark"), rec.get("task_id"), rec.get("trial"),
+            )
+            continue
         labels.append({"session_id": session_id, "failed": not bool(rec["passed"])})
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(labels, indent=2), encoding="utf-8")
