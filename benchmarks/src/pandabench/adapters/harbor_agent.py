@@ -7,7 +7,8 @@ loop + harness verbatim — the bash tool is just ``environment.exec``.
 
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
   --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-4-6 \
-  --ak backend=bedrock --ak capture=true --ak harness_root=/abs/path --ak noval=false
+  --ak backend=bedrock --ak capture=true --ak harness_root=/abs/path --ak noval=false \
+  --ak session_namespace=<runner-uuid>
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
 the arm-B learning pass to keep workspace writes serial.
@@ -33,6 +34,7 @@ from ..harness_glue import (
     build_harness,
     build_harness_config,
     make_session_id,
+    new_session_namespace,
 )
 from ..providers.litellm_client import LiteLLMClient
 from ..providers.models import load_registry
@@ -82,6 +84,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         harness_root: str | None = None,
         max_turns: int = 100,
         noval: bool = False,
+        session_namespace: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir, *args, model_name=model_name, logger=logger, **kwargs)
@@ -89,9 +92,12 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._seed = seed
         self._capture = capture
         self._max_turns = max_turns
+        self._phase = "learning" if capture else "eval"
+        self._session_namespace = session_namespace or new_session_namespace()
         # Harbor trial directories are <task[:32]>__<shortuuid>. Its BaseAgent
         # receives <trial>/agent as logs_dir, so the parent carries the task key.
-        self._task_id = Path(logs_dir).parent.name.rsplit("__", 1)[0]
+        self._trial_key = Path(logs_dir).parent.name
+        self._task_id = self._trial_key.rsplit("__", 1)[0]
         registry = load_registry(_CONFIGS / "models.yaml")
         self._model = registry.resolve(
             model_key or model_name or "gemini-3.1-flash-lite", backend=backend
@@ -102,9 +108,8 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         if arm == "harness" and harness_root:
             # Traces + eval runs both use the ambient PANDAPROBE_PROJECT_NAME
             # (from .env / --agent-env) — we never override it.
-            phase = "learning" if capture else "eval"
             cfg = build_harness_config(
-                harness_root=Path(harness_root), phase=phase, study=_load_study(),
+                harness_root=Path(harness_root), phase=self._phase, study=_load_study(),
                 benchmark="terminal_bench", noval=noval,
             )
             self._harness = build_harness(cfg=cfg)
@@ -120,9 +125,10 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         return None
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
-        session_id = self.session_id or make_session_id(
-            benchmark="terminal_bench", task_id=self._task_id, arm=self._arm,
-            model_key=self._model.key, seed=self._seed, trial=0,
+        session_id = make_session_id(
+            session_namespace=self._session_namespace, benchmark="terminal_bench",
+            task_id=self._trial_key, arm=self._arm, model_key=self._model.key,
+            seed=self._seed, trial=0, phase=self._phase,
         )
 
         async def executor(name: str, args: dict[str, Any]) -> Any:
