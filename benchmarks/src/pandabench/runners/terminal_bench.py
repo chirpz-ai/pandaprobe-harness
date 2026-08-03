@@ -102,6 +102,7 @@ class TerminalBenchRunner(SingleTaskRunner):
         harness_root: Path,
         writer: RecordWriter,
         run_id: str,
+        session_namespace: str,
         seed: int,
         backend: str | None,
         max_turns: int,
@@ -144,6 +145,7 @@ class TerminalBenchRunner(SingleTaskRunner):
             harness_root=harness_root,
             max_turns=max_turns,
             noval=noval,
+            session_namespace=session_namespace,
         )
 
         logger.info("starting Harbor %s phase for %d task(s)", phase, len(pending_tasks))
@@ -259,6 +261,7 @@ def _harbor_argv(
     harness_root: Path,
     max_turns: int,
     noval: bool,
+    session_namespace: str,
 ) -> list[str]:
     argv = [
         _harbor_executable(), "run",
@@ -277,6 +280,7 @@ def _harbor_argv(
         "--ak", f"harness_root={harness_root.resolve()}",
         "--ak", f"max_turns={max_turns}",
         "--ak", f"noval={str(noval).lower()}",
+        "--ak", f"session_namespace={session_namespace}",
     ]
     resolved_backend = backend or model.backend
     if resolved_backend is not None:
