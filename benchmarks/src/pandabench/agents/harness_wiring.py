@@ -100,6 +100,30 @@ class HarnessWiring:
     def harness_tools(self) -> list[dict[str, Any]]:
         return self._tools
 
+    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]:
+        """Return pending notice ids, preferring the caller's current session.
+
+        Framework adapters normally let the model discover notices through
+        ``harness_mailbox_list``.  tau2 additionally needs a host-side readiness
+        check because its synchronous agent API separates workspace maintenance
+        from the domain action that is returned to the orchestrator.  This method
+        exposes identifiers only; the model must still read and resolve each
+        notice through the normal harness tools.
+        """
+
+        pending = self.harness.mailbox.pending()
+        if session_id is None:
+            return tuple(notice.id for notice in pending)
+        current = [notice.id for notice in pending if notice.session_id == session_id]
+        other = [notice.id for notice in pending if notice.session_id != session_id]
+        return tuple((*current, *other))
+
+    def live_rule_scopes(self) -> tuple[str, ...]:
+        """Scopes containing active or provisional rules, in stable order."""
+
+        rules = (*self.harness.rules.active(), *self.harness.rules.candidates())
+        return tuple(sorted({rule.scope for rule in rules}))
+
     def is_harness_tool(self, name: str) -> bool:
         return name.startswith("harness_")
 
