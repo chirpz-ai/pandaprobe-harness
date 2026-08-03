@@ -142,17 +142,29 @@ paid live-model smokes for tau2 and Terminal-Bench.
   policy, tools, and evaluator as one unit. `passed` = `is_successful(reward)` (== 1.0
   within 1e-6, not a threshold). `Orchestrator.run()` is blocking, so the runner drives
   it in a worker thread and the agent submits its coroutines — chat, harness dispatch,
-  the per-turn barrier — back to the runner's loop.
+  the per-turn barrier — back to the runner's loop. tau2's workspace maintenance is a
+  distinct harness-only repair phase: its calls are traced under `<task-session>-repair`
+  and are therefore auditable without entering the task trajectory. The adapter stages
+  each notice through read → trace inspection → rule/ack, automatically links a newly
+  created rule to its source notice when the model omits the separate ack, and explicitly
+  reads live rule scopes into the next stateless tau2 domain call. The returned tau2
+  assistant usage includes these private repair calls. The domain call exposes only the
+  benchmark tools, so evaluators cannot mistake `harness_rule_add` for an airline,
+  retail, or telecom action.
   GATES: `uv sync --extra tau2` + `TAU2_DATA_DIR` + live creds (incl. Vertex ADC for
   the user simulator).
 
 ## Verification status (this build)
 
-- **Offline gates (2026-07-30)**: 43 PandaBench tests pass; Ruff and strict mypy are
+- **Offline gates (2026-08-03)**: 46 PandaBench tests pass; Ruff and strict mypy are
   green; both tau2 and Terminal-Bench dry-runs pass; `make smoke` passes all three
   benchmarks × both arms. tau2 regression coverage loads every official task set and
-  builds the matching airline, retail, and telecom orchestrators. The parent project
-  remains green at 425 passed / 8 skipped.
+  builds the matching airline, retail, and telecom orchestrators. It also verifies the
+  isolated repair session, staged notice resolution, final-turn repair, rule-context
+  retrieval, usage attribution, domain-only tool surface, and Bedrock-safe transcript.
+  The parent project remains green at 425 passed / 8 skipped. The paid tau2 smoke below
+  predates the isolated repair phase; repeat it before treating that behavior as live-
+  verified.
 - **tau2 paid smoke** (`tau2_gpt-5.6-terra_harness_1_20260730-202115`): four real
   retail episodes completed without integration errors (2 passed, $0.2402 recorded
   agent cost). Every session has a trace series longer than one (9–30 samples), the
