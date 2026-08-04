@@ -221,7 +221,7 @@ class Tau2Runner(SingleTaskRunner):
             tools=user_tools,
             instructions=str(task.user_scenario),
             llm=simulator_model.litellm_model,
-            llm_args={"temperature": 0.0},
+            llm_args={"temperature": 1.0},
         )
 
         orchestrator = Orchestrator(
