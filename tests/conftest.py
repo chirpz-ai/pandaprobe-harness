@@ -27,21 +27,13 @@ FAKE_BIN = Path(__file__).parent / "bin" / "fake_pandaprobe"
 
 @pytest.fixture
 def config(tmp_path: Path) -> HarnessConfig:
-    """A HarnessConfig rooted at a temp dir with fast polling for tests.
-
-    Pinned to ``trigger_mode="session"``: the tests built on this fixture predate
-    the v2 trace trigger and assert the session-composite behaviour the harness
-    still supports behind that flag (and which the ablation arm uses). The v2
-    default path has its own fixture, ``trace_config`` — keeping the two apart
-    means neither has to be read through the other's assumptions.
-    """
+    """A trace-trigger HarnessConfig rooted at a temp dir with fast polling."""
 
     return HarnessConfig(
         harness_root=tmp_path / "harness",
         poll_interval_s=0.0,
         poll_max_attempts=5,
         drain_timeout_s=5.0,
-        trigger_mode="session",
     )
 
 
