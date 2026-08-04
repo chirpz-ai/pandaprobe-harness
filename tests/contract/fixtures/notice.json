@@ -6,32 +6,36 @@
   "severity": "breach",
   "metrics": [
     {
-      "name": "agent_reliability",
+      "name": "task_completion",
       "value": 0.42,
-      "threshold": 0.7,
-      "reason": "low tool correctness on trace tr-1",
-      "conditions": ["breach"]
+      "threshold": 0.5,
+      "reason": "task progress stalled",
+      "conditions": ["stall"],
+      "trace_id": "tr-1",
+      "tier": 1
     },
     {
-      "name": "agent_consistency",
-      "value": 0.55,
-      "threshold": 0.6,
-      "reason": null,
-      "conditions": ["relative"]
+      "name": "tool_correctness",
+      "value": 0.30,
+      "threshold": 0.5,
+      "reason": "tool call was not appropriate",
+      "conditions": ["breach"],
+      "trace_id": "tr-1",
+      "tier": 2
     }
   ],
   "flagged_traces": ["tr-1"],
   "signal_breakdown": {
     "tr-1": {
-      "confidence": 0.5,
-      "coherence": 0.6,
-      "loop_detection": 0.2,
-      "tool_correctness": 0.4
+      "task_completion": 0.42,
+      "coherence": 0.55,
+      "tool_correctness": 0.30,
+      "argument_correctness": 0.40
     }
   },
   "dump_path": "harness/traces/n-20260630T121500123456-9f3a1c2b.json",
-  "summary": "agent_reliability breached threshold 0.70 (score 0.42) on session sess-42 turn 3",
-  "signatures": ["agent_reliability:breach", "agent_consistency:relative"],
+  "summary": "task_completion stalled and tool_correctness breached on trace tr-1",
+  "signatures": ["stall:task_completion", "breach:tool_correctness"],
   "status": "acknowledged",
   "resolution": {
     "acked_at": "2026-06-30T12:20:00+00:00",
