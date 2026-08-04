@@ -45,21 +45,21 @@ def test_recent_on_missing_journal_is_empty(journal: Journal) -> None:
 
 
 def test_notices_for_matches_on_notice_metric_names(journal: Journal) -> None:
-    journal.record({"type": "notice", "n": 1, "metrics": [{"name": "agent_reliability"}]})
-    journal.record({"type": "notice", "n": 2, "metrics": [{"name": "agent_consistency"}]})
+    journal.record({"type": "notice", "n": 1, "metrics": [{"name": "task_completion"}]})
+    journal.record({"type": "notice", "n": 2, "metrics": [{"name": "coherence"}]})
     # Non-notice events never match, even with a matching metric.
-    journal.record({"type": "rule_add", "n": 3, "metrics": [{"name": "agent_reliability"}]})
+    journal.record({"type": "rule_add", "n": 3, "metrics": [{"name": "task_completion"}]})
     # Notice events without metrics are skipped.
     journal.record({"type": "notice", "n": 4})
     journal.record(
         {
             "type": "notice",
             "n": 5,
-            "metrics": [{"name": "agent_consistency"}, {"name": "agent_reliability"}],
+            "metrics": [{"name": "coherence"}, {"name": "task_completion"}],
         }
     )
 
-    matches = journal.notices_for("agent_reliability")
+    matches = journal.notices_for("task_completion")
     assert [e["n"] for e in matches] == [1, 5]
     assert journal.notices_for("no_such_metric") == []
 
