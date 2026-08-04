@@ -25,11 +25,13 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 import httpx
 
 logger = logging.getLogger("pandabench.appworld")
+
+_MAX_ERROR_BODY_CHARS = 4096
 
 __all__ = [
     "AppWorldEnv",
@@ -73,8 +75,17 @@ class AppWorldEnv(Protocol):
 class HttpAppWorldEnv:
     """Drives the AppWorld environment server over HTTP (no appworld import)."""
 
-    def __init__(self, base_url: str, *, appworld_root: Path, timeout: float = 180.0) -> None:
-        self._client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        appworld_root: Path,
+        timeout: float = 180.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._client = httpx.Client(
+            base_url=base_url.rstrip("/"), timeout=timeout, transport=transport
+        )
         self._root = appworld_root
         self._api_docs_cache: str | None = None
 
@@ -145,7 +156,17 @@ class HttpAppWorldEnv:
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         resp = self._client.post(path, json=body)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError:
+            response_body = resp.text[:_MAX_ERROR_BODY_CHARS]
+            logger.error(
+                "appworld HTTP failure endpoint=%s status=%d response=%r",
+                path,
+                resp.status_code,
+                response_body,
+            )
+            raise
         payload = resp.json()
         # The server wraps returns as {"output": ...}.
         return payload.get("output", payload) if isinstance(payload, dict) else payload
@@ -209,21 +230,34 @@ class AppWorldServer:
     downloaded. Configure via env:
       * ``PANDABENCH_APPWORLD_URL``    — use an already-running server (skip launch)
       * ``PANDABENCH_APPWORLD_PYTHON`` — path to the isolated venv's python/appworld
+      * ``PANDABENCH_APPWORLD_LOG``    — append-only combined server output log
       * ``APPWORLD_ROOT``              — isolated data root (holds data/datasets/*.txt)
     """
 
     def __init__(self) -> None:
-        self.url = os.environ.get("PANDABENCH_APPWORLD_URL")
+        self._external_url = os.environ.get("PANDABENCH_APPWORLD_URL")
+        self.url = self._external_url
         root_env = os.environ.get("APPWORLD_ROOT")
         self.root = Path(root_env) if root_env else None
         self._python = os.environ.get("PANDABENCH_APPWORLD_PYTHON")
         self._proc: subprocess.Popen[bytes] | None = None
         self._port = int(os.environ.get("PANDABENCH_APPWORLD_PORT", "9000"))
+        configured_log = os.environ.get("PANDABENCH_APPWORLD_LOG")
+        self.log_path = (
+            Path(configured_log)
+            if configured_log
+            else (self.root / "logs" / "pandabench-appworld-server.log" if self.root else None)
+        )
+        self._log_handle: BinaryIO | None = None
+
+    @property
+    def owns_process(self) -> bool:
+        return self._external_url is None
 
     def start(self) -> str:
-        if self.url:
-            logger.info("using existing AppWorld server at %s", self.url)
-            return self.url
+        if self._external_url:
+            logger.info("using existing AppWorld server at %s", self._external_url)
+            return self._external_url
         if not self._python or not self.root:
             raise RuntimeError(
                 "AppWorld server not configured: set PANDABENCH_APPWORLD_URL, or both "
@@ -232,17 +266,42 @@ class AppWorldServer:
             )
         appworld_bin = str(Path(self._python).with_name("appworld"))
         env = {**os.environ, "APPWORLD_ROOT": str(self.root)}
-        logger.info("launching AppWorld server on port %d (root=%s)", self._port, self.root)
+        assert self.log_path is not None
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_handle = self.log_path.open("ab")
+        logger.info(
+            "launching AppWorld server on port %d (root=%s, log=%s)",
+            self._port,
+            self.root,
+            self.log_path,
+        )
         # `--root` is required: the CLI's default ('.') otherwise overrides
         # $APPWORLD_ROOT, so the server can't find ./data.
-        self._proc = subprocess.Popen(
-            [appworld_bin, "serve", "environment", "--port", str(self._port),
-             "--root", str(self.root), "--no-show-usage"],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        self.url = f"http://127.0.0.1:{self._port}"
-        self._await_health()
+        try:
+            self._proc = subprocess.Popen(
+                [appworld_bin, "serve", "environment", "--port", str(self._port),
+                 "--root", str(self.root), "--no-show-usage"],
+                env=env, stdout=self._log_handle, stderr=subprocess.STDOUT,
+            )
+            self.url = f"http://127.0.0.1:{self._port}"
+            self._await_health()
+        except Exception:
+            self.stop()
+            raise
+        assert self.url is not None
         return self.url
+
+    def restart(self) -> str:
+        if not self.owns_process:
+            assert self._external_url is not None
+            logger.warning(
+                "AppWorld returned HTTP 5xx, but %s is externally managed; "
+                "restart it before the next trial",
+                self._external_url,
+            )
+            return self._external_url
+        self.stop()
+        return self.start()
 
     def _await_health(self, attempts: int = 60) -> None:
         assert self.url is not None
@@ -256,13 +315,21 @@ class AppWorldServer:
         raise RuntimeError(f"AppWorld server did not become healthy at {self.url}")
 
     def stop(self) -> None:
-        if self._proc is not None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-            self._proc = None
+        try:
+            if self._proc is not None:
+                self._proc.terminate()
+                try:
+                    self._proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+                    self._proc.wait(timeout=10)
+                self._proc = None
+        finally:
+            if self._log_handle is not None:
+                self._log_handle.close()
+                self._log_handle = None
+            if self.owns_process:
+                self.url = None
 
 
 def make_env(*, dry_run: bool) -> tuple[AppWorldEnv, AppWorldServer | None, Path]:
