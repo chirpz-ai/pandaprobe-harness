@@ -46,8 +46,8 @@ make report       # regenerate results/summary/
 ## 3. Run a benchmark
 
 Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
-`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `claude-opus-4-6`,
-`claude-sonnet-4-6`, `claude-haiku-4-5`.
+`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `claude-opus-5`,
+`claude-sonnet-5`, `claude-haiku-4-5`.
 
 **Knobs:**
 
@@ -84,7 +84,7 @@ Generate it for the same region as `AWS_REGION`, and refresh it before long runs
 catalog's underlying `anthropic.*` foundation-model IDs identify the model but
 reject on-demand invocation; the profile IDs are the callable on-demand targets.
 - Verify Bedrock specifically before spending on a benchmark:
-  `PANDABENCH_PING_MODEL=claude-sonnet-4-6 uv run pandabench-run --preflight`.
+  `PANDABENCH_PING_MODEL=claude-sonnet-5 uv run pandabench-run --preflight`.
 - The third configured model is Claude **Haiku 4.5**, not 4.6; both its official
 Anthropic ID and the supplied Bedrock catalog ID identify it as 4.5.
 
@@ -216,7 +216,7 @@ commands (edit the lists to your models/seeds/benchmarks):
 
 ```bash
 for bench in appworld terminal tau2; do
-  for model in claude-sonnet-4-6 gpt-5.6-terra gemini-3.1-pro; do
+  for model in claude-sonnet-5 gpt-5.6-terra gemini-3.1-pro; do
     for seed in 1 2 3; do
       for arm in baseline harness; do
         make $bench ARM=$arm MODEL=$model SEED=$seed K=4
