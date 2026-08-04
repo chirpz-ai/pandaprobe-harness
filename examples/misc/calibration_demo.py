@@ -14,7 +14,7 @@ how the operator checks that trigger against ground truth:
      agreement — enough to pick a threshold sanely without labels.
 
 In production the same analysis runs as `pandaprobe-harness-calibrate`
-(scores come from the platform CLI / local history / the eval-set; labels
+(scores come from local trace history / the eval-set; labels
 from a JSON/CSV file or `--from-evalset` proxy labels). Here the scores are
 inline so the demo is fully self-contained.
 """
@@ -23,21 +23,21 @@ from __future__ import annotations
 
 from pandaprobe_harness import HarnessConfig, calibrate
 
-# Twelve sessions: reliability separates failures (~0.2-0.45) from healthy
+# Twelve sessions: task completion separates failures (~0.2-0.45) from healthy
 # ones (~0.55-0.9) imperfectly — like real data.
 SCORES: dict[str, dict[str, float]] = {
-    "s-01": {"agent_reliability": 0.20, "agent_consistency": 0.35},
-    "s-02": {"agent_reliability": 0.30, "agent_consistency": 0.45},
-    "s-03": {"agent_reliability": 0.35, "agent_consistency": 0.30},
-    "s-04": {"agent_reliability": 0.45, "agent_consistency": 0.60},  # missed at 0.4
-    "s-05": {"agent_reliability": 0.55, "agent_consistency": 0.50},  # noisy healthy
-    "s-06": {"agent_reliability": 0.60, "agent_consistency": 0.70},
-    "s-07": {"agent_reliability": 0.65, "agent_consistency": 0.75},
-    "s-08": {"agent_reliability": 0.70, "agent_consistency": 0.65},
-    "s-09": {"agent_reliability": 0.75, "agent_consistency": 0.80},
-    "s-10": {"agent_reliability": 0.80, "agent_consistency": 0.85},
-    "s-11": {"agent_reliability": 0.85, "agent_consistency": 0.90},
-    "s-12": {"agent_reliability": 0.90, "agent_consistency": 0.95},
+    "s-01": {"task_completion": 0.20, "coherence": 0.35},
+    "s-02": {"task_completion": 0.30, "coherence": 0.45},
+    "s-03": {"task_completion": 0.35, "coherence": 0.30},
+    "s-04": {"task_completion": 0.45, "coherence": 0.60},  # missed at 0.4
+    "s-05": {"task_completion": 0.55, "coherence": 0.50},  # noisy healthy
+    "s-06": {"task_completion": 0.60, "coherence": 0.70},
+    "s-07": {"task_completion": 0.65, "coherence": 0.75},
+    "s-08": {"task_completion": 0.70, "coherence": 0.65},
+    "s-09": {"task_completion": 0.75, "coherence": 0.80},
+    "s-10": {"task_completion": 0.80, "coherence": 0.85},
+    "s-11": {"task_completion": 0.85, "coherence": 0.90},
+    "s-12": {"task_completion": 0.90, "coherence": 0.95},
 }
 
 # Ground truth: which sessions actually failed (operator-labeled).
@@ -62,10 +62,10 @@ def main() -> None:
     unlabeled = calibrate(SCORES, config=config)
     print(unlabeled.render_text())
 
-    reliability = next(m for m in labeled.metrics if m.metric == "agent_reliability")
+    reliability = next(m for m in labeled.metrics if m.metric == "task_completion")
     assert reliability.labeled is not None
     print(
-        f"\nrecommendation: agent_reliability threshold {reliability.threshold:.2f} -> "
+        f"\nrecommendation: task_completion threshold {reliability.threshold:.2f} -> "
         f"F1 {reliability.labeled.f1:.2f}; best F1 {reliability.labeled.best_f1:.2f} "
         f"at {reliability.labeled.best_f1_threshold:.2f}"
     )
