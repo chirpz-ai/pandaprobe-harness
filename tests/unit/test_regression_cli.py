@@ -41,8 +41,8 @@ def _seed_case(tmp_path: Path, *, replayable: bool) -> str:
     evalset = EvalSet(config)
     case = evalset.capture(
         session_id="s-1",
-        signature=("breach:agent_reliability",),
-        baseline_scores={"agent_reliability": 0.3},
+        signature=("stall:task_completion",),
+        baseline_scores={"task_completion": 0.3},
         replay_input={"task": "charge"} if replayable else None,
     )
     assert case is not None
