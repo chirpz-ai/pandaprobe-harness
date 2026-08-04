@@ -33,12 +33,11 @@ from .cli.client import CliClient, CliResult
 from .cli.subprocess_client import SubprocessCliClient
 from .config import HarnessConfig
 from .evaluation.evaluator import MetricEvaluator
-from .evaluation.history import EwmaState, GateState, ScoreHistoryStore
+from .evaluation.history import GateState, ScoreHistoryStore
 from .evaluation.history_source import HistorySource
 from .evaluation.metrics import EvalReport, Metric, MetricScore
 from .evaluation.traces import TraceLocator, TraceRef
 from .evaluation.trajectory import GateVerdict, TrajectoryGate
-from .evaluation.trends import TrendDetector, TrendVerdict
 from .filesystem.layout import HarnessFilesystem
 from .harness import Harness
 from .hook.context import compose_system_preamble
@@ -85,7 +84,6 @@ __all__ = [
     "EvalCase",
     "EvalReport",
     "EvalSet",
-    "EwmaState",
     "ForwardTrialValidator",
     "FrameworkAdapter",
     "GateState",
@@ -129,8 +127,6 @@ __all__ = [
     "TraceLocator",
     "TraceRef",
     "TrajectoryGate",
-    "TrendDetector",
-    "TrendVerdict",
     "TrialState",
     "TurnContext",
     "VerifierFn",

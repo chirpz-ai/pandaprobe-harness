@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,10 +75,13 @@ class TraceLocator:
     async def new_traces(self, session_id: str) -> list[TraceRef]:
         """Completed traces for ``session_id`` not yet returned, oldest-first."""
 
-        listed = await self._list(session_id)
         seen = self._seen.setdefault(session_id, {})
         if len(self._seen) > _MAX_TRACKED_SESSIONS:
             self._evict_oldest_session()
+        listed = await self._list(
+            session_id,
+            ready=lambda refs: any(ref.trace_id not in seen for ref in refs),
+        )
 
         # `listed` arrives newest-first; reverse to fold gate state in the order
         # the traces actually happened.
@@ -93,7 +96,7 @@ class TraceLocator:
     async def last_trace(self, session_id: str) -> TraceRef | None:
         """The most recently started completed trace of ``session_id``."""
 
-        listed = await self._list(session_id, limit=1)
+        listed = await self._list(session_id, limit=1, ready=bool)
         return listed[0] if listed else None
 
     def forget(self, session_id: str) -> None:
@@ -103,8 +106,14 @@ class TraceLocator:
 
     # -- CLI ------------------------------------------------------------------
 
-    async def _list(self, session_id: str, *, limit: int | None = None) -> list[TraceRef]:
-        """``traces list`` for one session, newest-first. Never raises."""
+    async def _list(
+        self,
+        session_id: str,
+        *,
+        limit: int | None = None,
+        ready: Callable[[list[TraceRef]], bool],
+    ) -> list[TraceRef]:
+        """List newest-first until the caller's trace-readiness condition holds."""
 
         effective = limit if limit is not None else max(1, self._config.trace_list_limit)
         args = [
@@ -116,11 +125,6 @@ class TraceLocator:
             "--limit", str(effective),
         ]
         attempts = max(1, self._config.eval_retry_attempts)
-        # Only a session we have never seen a trace for can be suffering ingestion
-        # lag. Once one has landed, an empty listing is the truth — retrying it
-        # would sleep out the backoff budget on every healthy turn that simply has
-        # nothing new to score.
-        cold = not self._seen.get(session_id)
         for attempt in range(attempts):
             try:
                 result = await self._cli.run(*args)
@@ -139,7 +143,7 @@ class TraceLocator:
                 )
                 if ref is not None
             ]
-            if not refs and cold and attempt + 1 < attempts:
+            if not ready(refs) and attempt + 1 < attempts:
                 await self._backoff(attempt)
                 continue
             return refs
@@ -154,5 +158,4 @@ class TraceLocator:
         except StopIteration:  # pragma: no cover - guarded by the caller
             return
         self._seen.pop(oldest, None)
-
 

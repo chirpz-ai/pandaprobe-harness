@@ -9,13 +9,13 @@ from pandaprobe_harness import Harness, HarnessConfig
 from tests.fakes.fake_cli_client import FakeCliClient
 
 
-def _failing_cli() -> FakeCliClient:
-    return FakeCliClient(
-        metric_values={"agent_reliability": 0.30, "agent_consistency": 0.40},
-        metric_metadata={
-            "agent_reliability": {"flagged_traces": ["trace-1"]},
-        },
+def _failing_cli(session_id: str = "s-1") -> FakeCliClient:
+    cli = FakeCliClient(
+        metric_values={"tool_correctness": 0.30, "argument_correctness": 0.40},
+        metric_metadata={"task_completion": {"flagged_traces": ["trace-1"]}},
     )
+    cli.script_trajectory(session_id, "task_completion", [0.30, 0.30])
+    return cli
 
 
 def _config(tmp_path: Path, **overrides: object) -> HarnessConfig:
@@ -25,7 +25,7 @@ def _config(tmp_path: Path, **overrides: object) -> HarnessConfig:
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
         drain_timeout_s=5.0,
-        trigger_mode="session",
+        gate_window=1,
         **overrides,  # type: ignore[arg-type]
     )
 
@@ -42,8 +42,9 @@ async def test_breach_captures_replayable_eval_case(tmp_path: Path) -> None:
     (case,) = harness.evalset.cases()
     assert case.kind == "failure"
     assert case.session_id == "s-1"
-    assert "breach:agent_reliability" in case.signature
-    assert case.baseline_scores["agent_reliability"] == 0.3
+    assert "stall:task_completion" in case.signature
+    assert "breach:tool_correctness" in case.signature
+    assert case.baseline_scores["task_completion"] == 0.3
     assert case.replay_input == {"task": "charge the payment"}
     assert case.replayable
 
@@ -119,7 +120,7 @@ async def test_candidate_rule_promoted_automatically_from_live_turns(
     harness = Harness.create(cfg, cli=FakeCliClient())
     added = await harness.toolset.call(
         "harness_rule_add",
-        {"rule": "check before retrying", "rationale": "x", "metric": "agent_reliability"},
+        {"rule": "check before retrying", "rationale": "x", "metric": "task_completion"},
     )
     assert added["rule"]["status"] == "candidate"
 
@@ -132,10 +133,8 @@ async def test_candidate_rule_promoted_automatically_from_live_turns(
     assert rule.id == added["rule"]["id"]
 
 
-async def test_advisory_trend_notice_captures_no_eval_case(tmp_path: Path) -> None:
-    """Trend-severity notices are advisory — their baseline scores can sit
-    ABOVE the threshold, so treating them as failure cases would pollute the
-    eval-set and its proxy labels."""
+async def test_tier1_only_notice_captures_no_eval_case(tmp_path: Path) -> None:
+    """A Tier-1-only trajectory fire is advisory and must not become a failure case."""
 
     cfg = HarnessConfig(
         harness_root=tmp_path / "harness",
@@ -144,21 +143,16 @@ async def test_advisory_trend_notice_captures_no_eval_case(tmp_path: Path) -> No
         eval_retry_backoff_s=0.0,
         drain_timeout_s=5.0,
         capture_eval_cases=True,
-        eval_consistency=False,  # isolate one declining metric
-        trend_min_samples=4,
-        trend_margin_cross=0.05,
-        trigger_mode="session",
+        gate_window=2,
     )
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.80})
+    cli = FakeCliClient()
+    cli.script_trajectory("s-tier1", "task_completion", [0.80, 0.70, 0.60])
     harness = Harness.create(cfg, cli=cli)
 
-    session = "s-trend"
-    for idx, score in enumerate((0.80, 0.74, 0.68, 0.62, 0.58, 0.55)):
-        cli.set_scores(agent_reliability=score)
-        harness.on_turn_end(
-            {"session_id": session, "turn_index": idx, "end_state": {"task": "x"}}
-        )
-        await harness.refresh(session)
+    harness.on_turn_end(
+        {"session_id": "s-tier1", "turn_index": 1, "end_state": {"task": "x"}}
+    )
+    await harness.refresh("s-tier1")
 
     (notice,) = harness.mailbox.pending()
     assert notice.severity == "trend"  # above threshold the whole way down

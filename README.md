@@ -17,10 +17,10 @@ own operating rules. Fully automatic, no human in the healing loop.
 
 ## How it works
 
-1. **Evaluate** — after each turn, the harness scores the session on the
-   PandaProbe platform (`agent_reliability`, `agent_consistency`) in a
-   detached task that never blocks your agent.
-2. **Notice** — breaches and declining trends post a structured *diagnostic
+1. **Evaluate** — after each turn, the harness scores newly completed traces
+   through a three-tier ladder and watches their task trajectory for stalls or
+   regressions.
+2. **Notice** — trajectory failures and step-level breaches post a structured *diagnostic
    notice* to a workspace mailbox. Nothing is ever injected into the agent's
    conversation.
 3. **Heal** — guided by a standing protocol in its system prompt, the agent

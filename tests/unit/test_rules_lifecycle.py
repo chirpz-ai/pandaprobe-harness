@@ -98,9 +98,9 @@ def test_add_captures_baseline_from_journal(
     validating_rules: RulesStore, validating_journal: Journal
 ) -> None:
     for session, signatures in (
-        ("s-1", ["breach:agent_reliability"]),
-        ("s-2", ["trend:agent_consistency"]),
-        ("s-3", ["relative:agent_reliability"]),
+        ("s-1", ["stall:task_completion"]),
+        ("s-2", ["stall:coherence"]),
+        ("s-3", ["regression:task_completion"]),
     ):
         validating_journal.record(
             {"type": "notice", "session_id": session, "signatures": signatures}
@@ -109,11 +109,11 @@ def test_add_captures_baseline_from_journal(
     # not currently breaching this metric family).
     validating_journal.record({"type": "recovery", "session_id": "s-4"})
 
-    rule = validating_rules.add("verify before retry", "x", metric="agent_reliability")
+    rule = validating_rules.add("verify before retry", "x", metric="task_completion")
     trial = rule.trial
     assert trial is not None
     assert trial.baseline_sessions == 4
-    # s-1 (breach) and s-3 (relative) are in agent_reliability's family;
+    # s-1 (stall) and s-3 (regression) are in task_completion's family;
     # s-2 is another metric, s-4 only recovered.
     assert trial.baseline_breached_sessions == 2
     assert trial.baseline_window == 4
@@ -122,7 +122,7 @@ def test_add_captures_baseline_from_journal(
 
 
 def test_baseline_rate_defaults_to_one_with_no_history(validating_rules: RulesStore) -> None:
-    rule = validating_rules.add("verify before retry", "x", metric="agent_reliability")
+    rule = validating_rules.add("verify before retry", "x", metric="task_completion")
     assert rule.trial is not None
     assert rule.trial.baseline_sessions == 0
     assert rule.trial.baseline_rate == 1.0
@@ -152,9 +152,9 @@ def test_add_cleans_explicit_tags(validating_rules: RulesStore) -> None:
     rule = validating_rules.add(
         "tag me",
         "x",
-        tags=["  Breach:Agent_Reliability ", "breach:agent_reliability", "", "x" * 100],
+        tags=["  Stall:Task_Completion ", "stall:task_completion", "", "x" * 100],
     )
-    assert rule.tags[0] == "breach:agent_reliability"
+    assert rule.tags[0] == "stall:task_completion"
     assert len(rule.tags) == 2  # dedup + empty dropped
     assert len(rule.tags[1]) == 48  # length-capped
 
@@ -165,9 +165,9 @@ def test_add_cleans_explicit_tags(validating_rules: RulesStore) -> None:
 def test_promote_moves_candidate_to_active_and_journals(
     validating_rules: RulesStore, validating_journal: Journal
 ) -> None:
-    rule = validating_rules.add("verify before retry", "x", metric="agent_reliability")
+    rule = validating_rules.add("verify before retry", "x", metric="task_completion")
     promoted = validating_rules.promote(
-        rule.id, reason="replay improved agent_reliability by 0.62", validator="replay"
+        rule.id, reason="replay improved task_completion by 0.62", validator="replay"
     )
     assert promoted.status == "active"
     assert [r.id for r in validating_rules.active()] == [rule.id]
@@ -304,18 +304,18 @@ def test_derive_notice_tags_collects_signatures_metrics_signals() -> None:
         turn_index=3,
         severity="breach",
         metrics=(
-            NoticeMetric(name="agent_reliability", value=0.3, threshold=0.5),
-            NoticeMetric(name="agent_consistency", value=0.4, threshold=0.5),
+            NoticeMetric(name="task_completion", value=0.3, threshold=0.5),
+            NoticeMetric(name="coherence", value=0.4, threshold=0.5),
         ),
         signal_breakdown={
             "trace-1": {"loop_detection": 0.1, "tool_correctness": 0.2},
         },
-        signatures=("breach:agent_reliability", "breach:agent_consistency"),
+        signatures=("stall:task_completion", "stall:coherence"),
     )
 
     tags = derive_notice_tags(notice)
-    assert "breach:agent_reliability" in tags
-    assert "agent_consistency" in tags
+    assert "stall:task_completion" in tags
+    assert "coherence" in tags
     assert "loop_detection" in tags
     assert "tool_correctness" in tags
     assert "breach" in tags
@@ -329,7 +329,7 @@ def test_rule_json_round_trip_with_lifecycle_fields() -> None:
         rule="text",
         rationale="why",
         status="candidate",
-        tags=("breach:agent_reliability",),
+        tags=("stall:task_completion",),
         trial=TrialState(baseline_sessions=4, baseline_breached_sessions=3),
     )
     parsed = Rule.from_json(rule.to_json())

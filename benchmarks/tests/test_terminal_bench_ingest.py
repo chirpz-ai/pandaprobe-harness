@@ -46,8 +46,6 @@ def _payload(
                 "stopped_reason": "final",
                 "harness": {
                     "session_id": f"session-{trial_name}",
-                    "reliability": None,
-                    "consistency": None,
                     "breached": True,
                     "rules_active": 1,
                     "rules_candidate": 0,
@@ -199,6 +197,7 @@ def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
         harness_root=tmp_path / "harness_root",
         max_turns=50,
         noval=True,
+        session_namespace="test-namespace",
     )
 
     assert Path(argv[0]).name == "harbor"
@@ -208,6 +207,7 @@ def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
     assert "-y" in argv
     assert "noval=true" in argv
     assert "capture=true" in argv
+    assert "session_namespace=test-namespace" in argv
     assert [argv[index + 1] for index, value in enumerate(argv) if value == "-i"] == [
         "task-a",
         "task-b",

@@ -14,9 +14,9 @@ target precision. Without labels it reports the score distribution, a
 histogram, the breach count at every candidate threshold, and inter-metric
 agreement — enough to pick a threshold sanely.
 
-Scores come from three sources, merged with precedence CLI > local history >
-eval-set baselines; every source degrades gracefully. All statistics are
-stdlib (``statistics`` + hand-rolled counts) — zero dependencies.
+Scores come from local trajectory history and eval-set baselines, with history
+taking precedence; each source degrades gracefully. All statistics are stdlib
+(``statistics`` + hand-rolled counts) — zero dependencies.
 
 ``main`` is the ``pandaprobe-harness-calibrate`` operator CLI over the
 env-configured workspace (``HARNESS_*``).
@@ -36,8 +36,6 @@ from pathlib import Path
 from statistics import mean, median, stdev
 from typing import Any
 
-from .cli.client import CliClient
-from .cli.errors import CliError
 from .config import HarnessConfig
 from .evaluation.history import ScoreHistoryStore
 from .workspace._io import load_json
@@ -404,26 +402,16 @@ def calibrate(
     )
 
 
-# -- score collection (three degradable sources) --------------------------------------
-
-
-def _parse_backend_items(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, dict):
-        raw = payload.get("items") or payload.get("scores") or []
-        return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    return []
+# -- score collection (two degradable local sources) ---------------------------------
 
 
 async def collect_scores(
-    cli: CliClient,
     config: HarnessConfig,
     *,
     history: ScoreHistoryStore | None = None,
     evalset: EvalSet | None = None,
 ) -> tuple[dict[str, dict[str, float]], tuple[str, ...]]:
-    """Gather ``session -> {metric: value}`` from CLI > history > eval-set.
+    """Gather ``session -> {metric: value}`` from history > eval-set.
 
     Later (higher-precedence) sources overwrite earlier ones; each source
     degrades independently and the returned tuple names the ones that
@@ -464,26 +452,6 @@ async def collect_scores(
                 contributed = True
         if contributed:
             sources.append("history")
-
-    try:
-        result = await cli.run("evals", "scores", "list", "--target", "session")
-        items = _parse_backend_items(result.json())
-    except CliError:
-        logger.debug("backend score collection degraded", exc_info=True)
-        items = []
-    contributed = False
-    for item in items:
-        item_session = item.get("session_id") or item.get("session")
-        item_metric = item.get("name") or item.get("metric")
-        try:
-            numeric = float(item.get("value"))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            continue
-        if item_session and item_metric:
-            merged.setdefault(str(item_session), {})[str(item_metric)] = numeric
-            contributed = True
-    if contributed:
-        sources.append("cli")
 
     return merged, tuple(sources)
 
@@ -538,8 +506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         description=(
             "Offline calibration of the breach thresholds: precision/recall/F1 "
             "and a threshold sweep with labels; score distribution and sweep "
-            "without. Reads scores from the platform CLI, the local history "
-            "store, and the eval-set."
+            "without. Reads scores from the local history store and eval-set."
         ),
     )
     parser.add_argument(
@@ -556,14 +523,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         config = HarnessConfig.from_env()
-        # Imported here to keep module import light for the pure-stats API.
-        from .cli.subprocess_client import SubprocessCliClient
-
-        cli = SubprocessCliClient(config.cli_binary, default_timeout=config.cli_timeout_s)
         history = ScoreHistoryStore(config)
         evalset = EvalSet(config)
         scores, sources = asyncio.run(
-            collect_scores(cli, config, history=history, evalset=evalset)
+            collect_scores(config, history=history, evalset=evalset)
         )
         if not scores:
             print(
@@ -571,8 +534,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     {
                         "ok": False,
                         "error": (
-                            "no session scores found in any source (platform CLI, "
-                            f"{config.history_file}, {config.evalset_dir}) — run some "
+                            "no trace scores found in any source "
+                            f"({config.history_file}, {config.evalset_dir}) — run some "
                             "evaluated sessions or enable capture_eval_cases first"
                         ),
                     }

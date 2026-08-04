@@ -79,7 +79,7 @@ class RuleValidator(Protocol):
 def _report_matches(rule: Rule, signatures: set[str]) -> bool:
     """Does a report's signature set hit the rule's metric family?
 
-    Signatures look like ``breach:agent_reliability``; with no metric on the
+    Signatures look like ``breach:tool_correctness``; with no metric on the
     rule, any alerting signature counts against the trial.
     """
 
@@ -94,9 +94,10 @@ def _target_signatures(rule: Rule) -> tuple[str, ...]:
 
     signatures = [tag for tag in rule.tags if ":" in tag]
     if rule.metric:
-        breach = f"breach:{rule.metric}"
-        if breach not in signatures:
-            signatures.append(breach)
+        for condition in ("breach", "stall", "regression"):
+            signature = f"{condition}:{rule.metric}"
+            if signature not in signatures:
+                signatures.append(signature)
     return tuple(signatures)
 
 

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING:** the session-composite trigger and its ablation configuration.
+  The trace-level three-tier trigger is now the only evaluation path. Version
+  0.7.0 is the last release that can run `trigger_mode="session"`.
+- **BREAKING:** public exports `TrendDetector`, `TrendVerdict`, `SIGNAL_NAMES`,
+  and `EwmaState`; `Metric.RELIABILITY` and `Metric.CONSISTENCY`; and
+  `MetricEvaluator.evaluate_turn()`.
+- **BREAKING:** `HarnessConfig` fields `trigger_mode`, `session_metrics`,
+  `signal_weights`, `reliability_threshold`, `consistency_threshold`,
+  `eval_reliability`, `eval_consistency`, `enable_trend`, `ewma_fast_span`,
+  `ewma_slow_span`, `trend_margin_cross`, `trend_min_samples`,
+  `adaptive_threshold`, `adaptive_margin_drop`, `percentile_window`,
+  `percentile_floor`, and `hydrate_history_from_backend`.
+- **BREAKING:** environment variables `HARNESS_TRIGGER_MODE`,
+  `HARNESS_ENABLE_TREND`, `HARNESS_ADAPTIVE_THRESHOLD`,
+  `HARNESS_RELIABILITY_THRESHOLD`, `HARNESS_EWMA_FAST_SPAN`,
+  `HARNESS_ADAPTIVE_MARGIN_DROP`, `HARNESS_CONSISTENCY_THRESHOLD`,
+  `HARNESS_EWMA_SLOW_SPAN`, `HARNESS_PERCENTILE_WINDOW`,
+  `HARNESS_EVAL_RELIABILITY`, `HARNESS_TREND_MARGIN_CROSS`,
+  `HARNESS_PERCENTILE_FLOOR`, `HARNESS_EVAL_CONSISTENCY`,
+  `HARNESS_TREND_MIN_SAMPLES`, and
+  `HARNESS_HYDRATE_HISTORY_FROM_BACKEND`. These were already no-ops under the
+  default trace trigger in 0.7.0.
+
+### Changed
+
+- Score history now persists only trace series and trajectory-gate state.
+  Existing 0.7 workspaces that contain EWMA state remain readable; obsolete
+  state is discarded on the next write.
+- Legacy notices persisted with `severity: "relative"` load as advisory
+  `trend` notices rather than silently escalating to `breach`.
+- Offline calibration reads trace metrics from local history and eval-set
+  baselines. The platform list source was removed because trace score records
+  expose a `trace_id`, not the `session_id` required to join session labels.
+- `HistorySource` remains the extension point for shared trajectory stores and
+  now exposes the gate's atomic `record_gated()` operation.
+
+## [0.7.0] - 2026-07-30
+
 The "signal that discriminates" release. v0.6 closed the loop but drove it with
 the wrong measurement, and a measured AppWorld run regressed. Three findings:
 the session composites (`agent_reliability` / `agent_consistency`) are worst-case

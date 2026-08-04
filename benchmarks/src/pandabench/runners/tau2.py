@@ -66,7 +66,7 @@ class Tau2Runner(SingleTaskRunner):
     name = "tau2"
 
     def __init__(self, *, domain: str = "retail") -> None:
-        # task id -> tau2's own reward, so the harness gets a gold outcome signal.
+        # session id -> tau2's own reward, so repeated tasks remain isolated.
         # The three benchmark domains use DB/communicate, env-assertion, and/or
         # action criteria, all handled deterministically by EvaluationType.ALL.
         self._outcomes: dict[str, float] = {}
@@ -103,14 +103,15 @@ class Tau2Runner(SingleTaskRunner):
 
         return [str(task.id) for task in load_tasks(self._domain)]
 
-    def outcome_for(self, task_id: str) -> float | None:
-        """tau2's own reward for ``task_id``, if this process has graded it.
+    def outcome_for(self, task_id: str, session_id: str) -> float | None:
+        """tau2's own reward for ``session_id``, if this process has graded it.
 
         Unlike a judged proxy this is ground truth, so when present it is what
         decides rule promotion.
         """
 
-        return self._outcomes.get(task_id)
+        del task_id
+        return self._outcomes.get(session_id)
 
     async def run_once(
         self,
@@ -145,7 +146,7 @@ class Tau2Runner(SingleTaskRunner):
 
         reward, native = await self._grade(simulation, task)
         if reward is not None:
-            self._outcomes[task_id] = reward
+            self._outcomes[session_id] = reward
 
         from tau2.metrics.agent_metrics import is_successful
 
