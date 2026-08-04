@@ -13,9 +13,7 @@ from pandaprobe_harness import (
     PandaHarnessHook,
     RawLoopAdapter,
 )
-from pandaprobe_harness.evaluation.metrics import EvalReport
 from pandaprobe_harness.evaluation.traces import TraceLocator
-from pandaprobe_harness.hook.turn import TurnContext
 from pandaprobe_harness.workspace.evalset import EvalCase
 from tests.fakes.fake_cli_client import FakeCliClient
 
@@ -26,14 +24,14 @@ class _BlockingEvaluator:
     def __init__(self) -> None:
         self.event = asyncio.Event()
         self.calls = 0
-        # The hook shares its evaluator's locator so one seen-set governs both
-        # paths; these tests only drive the session path, so a bare one suffices.
+        # The hook shares its evaluator's locator so one seen-set governs both.
         self.locator = TraceLocator(FakeCliClient(), HarnessConfig())
 
-    async def evaluate_turn(self, ctx: TurnContext) -> EvalReport:
+    async def evaluate_traces(self, *args: object, **kwargs: object) -> list[object]:
+        del args, kwargs
         self.calls += 1
         await self.event.wait()
-        return EvalReport.from_scores(ctx.session_id, ctx.turn_index, [])
+        return []
 
 
 def _cfg(tmp_path: Path, **kw: object) -> HarnessConfig:
@@ -77,7 +75,7 @@ async def test_settle_uses_the_barrier_budget_not_the_drain_budget(
     evaluator = _BlockingEvaluator()
     # A drain budget too short to ever cover the eval, and a barrier budget
     # that comfortably does.
-    cfg = _cfg(tmp_path, drain_timeout_s=0.01, barrier_timeout_s=5.0, trigger_mode="session")
+    cfg = _cfg(tmp_path, drain_timeout_s=0.01, barrier_timeout_s=5.0)
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(
@@ -103,7 +101,7 @@ async def test_settle_reports_a_timeout_and_leaves_the_work_running(
     tmp_path: Path,
 ) -> None:
     evaluator = _BlockingEvaluator()
-    cfg = _cfg(tmp_path, barrier_timeout_s=0.01, trigger_mode="session")
+    cfg = _cfg(tmp_path, barrier_timeout_s=0.01)
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(
@@ -176,7 +174,7 @@ async def test_settle_with_nothing_in_flight_is_a_no_op(tmp_path: Path) -> None:
 
 async def test_explicit_timeout_overrides_the_configured_budget(tmp_path: Path) -> None:
     evaluator = _BlockingEvaluator()
-    cfg = _cfg(tmp_path, barrier_timeout_s=30.0, trigger_mode="session")
+    cfg = _cfg(tmp_path, barrier_timeout_s=30.0)
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(
