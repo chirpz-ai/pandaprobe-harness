@@ -464,7 +464,7 @@ class BenchmarkRunner:
             pending = harness.hook.pending_sessions
             if not pending:
                 break
-            logger.info("settle(%s): %d session eval(s) still pending...", label, len(pending))
+            logger.info("settle(%s): %d turn eval(s) still pending...", label, len(pending))
             await asyncio.sleep(self._study.harness.settle_poll_s)
         try:
             await harness.drain_validation()
