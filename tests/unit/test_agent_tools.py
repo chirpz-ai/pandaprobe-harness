@@ -32,7 +32,7 @@ def _post_notice(
     dump = {
         "session_id": session_id,
         "turn_index": 1,
-        "scores": [{"name": "agent_reliability", "value": 0.2, "status": "SUCCESS"}],
+        "scores": [{"name": "task_completion", "value": 0.2, "status": "SUCCESS"}],
     }
     fs.write_trace_dump(notice_id, dump)
     notice = DiagnosticNotice.from_json(
@@ -44,7 +44,7 @@ def _post_notice(
             "severity": "breach",
             "metrics": [
                 {
-                    "name": "agent_reliability",
+                    "name": "task_completion",
                     "value": 0.2,
                     "threshold": 0.5,
                     "reason": "score below threshold",
@@ -52,8 +52,8 @@ def _post_notice(
                 }
             ],
             "flagged_traces": ["t-1"],
-            "summary": "agent_reliability breached its threshold",
-            "signatures": ["breach:agent_reliability"],
+            "summary": "task_completion breached its threshold",
+            "signatures": ["stall:task_completion"],
             "dump_path": str(config.traces_dir / f"{notice_id}.json"),
         }
     )
@@ -80,7 +80,7 @@ async def test_mailbox_list_reports_status_and_pending_summaries(
             "id": notice.id,
             "severity": "breach",
             "session_id": "s-1",
-            "metrics": ["agent_reliability"],
+            "metrics": ["task_completion"],
             "summary": notice.summary,
         }
     ]
@@ -95,7 +95,7 @@ async def test_mailbox_read_returns_full_notice_and_dump(
 
     assert result["ok"] is True
     assert result["notice"] == notice.to_json()
-    assert result["notice"]["metrics"][0]["name"] == "agent_reliability"
+    assert result["notice"]["metrics"][0]["name"] == "task_completion"
     assert result["dump"] == dump
 
 
@@ -235,7 +235,7 @@ async def test_rule_add_records_provenance(toolset: HarnessToolset) -> None:
             "rule": "Always validate tool arguments before calling.",
             "rationale": "Repeated reliability breaches from malformed calls.",
             "notice_id": "n-1",
-            "metric": "agent_reliability",
+            "metric": "task_completion",
         },
     )
 
@@ -245,7 +245,7 @@ async def test_rule_add_records_provenance(toolset: HarnessToolset) -> None:
     assert rule["rule"] == "Always validate tool arguments before calling."
     assert rule["rationale"] == "Repeated reliability breaches from malformed calls."
     assert rule["source_notice_id"] == "n-1"
-    assert rule["metric"] == "agent_reliability"
+    assert rule["metric"] == "task_completion"
     # Rules start as unproven candidates now (rule_validation default).
     assert rule["status"] == "candidate"
     assert rule["trial"] is not None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,7 +15,7 @@ if not os.environ.get("TAU2_DATA_DIR"):
 
 pytest.importorskip("tau2")
 
-from tau2.data_model.message import MultiToolMessage, ToolMessage, UserMessage
+from tau2.data_model.message import UserMessage
 from tau2.registry import registry
 
 from pandabench.adapters.tau2_agent import (
@@ -33,16 +34,23 @@ from pandabench.runners.tau2 import Tau2Runner
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
 
-def _result(*, content: str | None = None, tool_name: str | None = None) -> ChatResult:
+def _result(
+    *,
+    content: str | None = None,
+    tool_name: str | None = None,
+    tool_args: dict[str, Any] | None = None,
+    call_id: str = "call_h",
+) -> ChatResult:
     calls: list[ToolCall] = []
     message: dict[str, Any] = {"role": "assistant", "content": content}
     if tool_name is not None:
-        calls = [ToolCall(id="call_h", name=tool_name, arguments={})]
+        arguments = tool_args or {}
+        calls = [ToolCall(id=call_id, name=tool_name, arguments=arguments)]
         message["tool_calls"] = [
             {
-                "id": "call_h",
+                "id": call_id,
                 "type": "function",
-                "function": {"name": tool_name, "arguments": "{}"},
+                "function": {"name": tool_name, "arguments": json.dumps(arguments)},
             }
         ]
     return ChatResult(
@@ -54,32 +62,12 @@ def _result(*, content: str | None = None, tool_name: str | None = None) -> Chat
     )
 
 
-def _tool_result(*calls: tuple[str, str]) -> ChatResult:
-    tool_calls = [ToolCall(id=call_id, name=name, arguments={}) for call_id, name in calls]
-    return ChatResult(
-        assistant_message={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": "{}"},
-                }
-                for call in tool_calls
-            ],
-        },
-        tool_calls=tool_calls,
-        usage=Usage(10, 5, 0.0),
-        finish_reason="tool_calls",
-        resolved_model="mock/mock",
-    )
-
-
 class RecordingMockClient(MockClient):
     def __init__(self, *, scripted: list[ChatResult]) -> None:
         super().__init__(scripted=scripted)
         self.message_batches: list[list[dict[str, Any]]] = []
+        self.tool_batches: list[list[str]] = []
+        self.flushes = 0
 
     async def chat(
         self,
@@ -92,6 +80,12 @@ class RecordingMockClient(MockClient):
         extra_params: dict[str, Any] | None = None,
     ) -> ChatResult:
         self.message_batches.append([dict(message) for message in messages])
+        self.tool_batches.append(
+            [
+                str((schema.get("function") or {}).get("name", ""))
+                for schema in tools or []
+            ]
+        )
         return await super().chat(
             model=model,
             messages=messages,
@@ -101,36 +95,99 @@ class RecordingMockClient(MockClient):
             extra_params=extra_params,
         )
 
+    def flush(self) -> None:
+        self.flushes += 1
+        super().flush()
+
 
 class StubWiring:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        pending: list[str] | None = None,
+        notice_after_settle: str | None = None,
+        live_scopes: tuple[str, ...] = (),
+    ) -> None:
         self.settled: list[int] = []
         self.dispatched: list[str] = []
+        self.pending = list(pending or [])
+        self.notice_after_settle = notice_after_settle
+        self.live_scopes = live_scopes
 
     def system_preamble(self) -> str:
         return "harness preamble"
 
     def harness_tools(self) -> list[dict[str, Any]]:
+        names = [
+            "harness_mailbox_list",
+            "harness_mailbox_read",
+            "harness_mailbox_ack",
+            "harness_trace_inspect",
+            "harness_rules_list",
+            "harness_rules_read",
+            "harness_rules_search",
+            "harness_rule_add",
+            "harness_rule_retire",
+        ]
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "harness_observe",
-                    "description": "Observe the harness state.",
+                    "name": name,
+                    "description": f"Test tool {name}.",
                     "parameters": {"type": "object", "properties": {}},
                 },
             }
+            for name in names
         ]
 
     def is_harness_tool(self, name: str) -> bool:
         return name.startswith("harness_")
 
-    async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, bool]:
+    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]:
+        return tuple(self.pending)
+
+    def live_rule_scopes(self) -> tuple[str, ...]:
+        return self.live_scopes
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         self.dispatched.append(name)
+        if name == "harness_mailbox_read":
+            notice_id = str(args["notice_id"])
+            return {
+                "ok": True,
+                "notice": {"id": notice_id, "flagged_traces": ["trace_bad"]},
+            }
+        if name == "harness_trace_inspect":
+            return {"ok": True, "trace_id": args.get("trace_id")}
+        if name == "harness_rule_add":
+            return {
+                "ok": True,
+                "rule": {
+                    "id": "rule_1",
+                    "scope": "global",
+                    "source_notice_id": args.get("notice_id"),
+                    "rule": args.get("rule", "check the evidence first"),
+                },
+            }
+        if name == "harness_mailbox_ack":
+            notice_id = str(args["notice_id"])
+            if notice_id in self.pending:
+                self.pending.remove(notice_id)
+            return {"ok": True}
+        if name == "harness_rules_read":
+            return {
+                "ok": True,
+                "scope": args.get("scope", "global"),
+                "content": "# Rules — global\n\n- Check the evidence first.",
+            }
         return {"ok": True}
 
     async def settle_turn(self, turn_index: int) -> None:
         self.settled.append(turn_index)
+        if self.notice_after_settle is not None:
+            self.pending.append(self.notice_after_settle)
+            self.notice_after_settle = None
 
 
 @pytest.fixture(scope="module")
@@ -199,11 +256,32 @@ def test_set_seed_does_not_require_tau2_llm(retail, mock_model):
     assert agent._seed == 7
 
 
-def test_harness_substeps_follow_the_conversation(retail, mock_model):
+def test_repair_phase_is_isolated_and_acknowledges_rule_notice(retail, mock_model):
     client = RecordingMockClient(
-        scripted=[_result(tool_name="harness_observe"), _result(content="done")]
+        scripted=[
+            _result(
+                tool_name="harness_mailbox_read",
+                tool_args={"notice_id": "notice_1"},
+                call_id="call_read",
+            ),
+            _result(
+                tool_name="harness_trace_inspect",
+                tool_args={"trace_id": "trace_bad"},
+                call_id="call_trace",
+            ),
+            _result(
+                tool_name="harness_rule_add",
+                tool_args={
+                    "rule": "Check the evidence first.",
+                    "rationale": "The trace showed an unsupported action.",
+                    "notice_id": "notice_1",
+                },
+                call_id="call_rule",
+            ),
+            _result(content="done"),
+        ]
     )
-    wiring = StubWiring()
+    wiring = StubWiring(pending=["notice_1"], live_scopes=("global",))
     agent = _agent(retail, mock_model, client, wiring)
 
     assistant, _ = agent.generate_next_message(
@@ -211,70 +289,87 @@ def test_harness_substeps_follow_the_conversation(retail, mock_model):
     )
 
     assert assistant.content == "done"
-    assert wiring.dispatched == ["harness_observe"]
-    second_call = client.message_batches[1]
-    roles = [message["role"] for message in second_call]
-    assert roles[-3:] == ["user", "assistant", "tool"]
-    assert second_call[-1]["tool_call_id"] == "call_h"
+    assert wiring.pending == []
+    assert wiring.dispatched == [
+        "harness_mailbox_read",
+        "harness_trace_inspect",
+        "harness_rule_add",
+        "harness_mailbox_ack",
+        "harness_rules_read",
+        "harness_rules_read",
+    ]
+    assert [call["session_id"] for call in client.calls] == [
+        "tau2-test-repair",
+        "tau2-test-repair",
+        "tau2-test-repair",
+        "tau2-test",
+    ]
+    assert set(client.tool_batches[0]) == {
+        "harness_mailbox_list",
+        "harness_mailbox_read",
+    }
+    assert "harness_trace_inspect" in client.tool_batches[1]
+    assert "harness_rule_add" not in client.tool_batches[1]
+    assert "harness_rule_add" in client.tool_batches[2]
+    assert all(not name.startswith("harness_") for name in client.tool_batches[3])
+    assert "Check the evidence first" in client.message_batches[3][0]["content"]
+    assert assistant.usage == {"prompt_tokens": 40, "completion_tokens": 20}
+    assert client.flushes == 1
 
 
-def test_mixed_harness_and_domain_calls_keep_bedrock_transcript_valid(
-    retail, mock_model
-):
+def test_notice_from_final_turn_is_repaired_before_returning(retail, mock_model):
     client = RecordingMockClient(
         scripted=[
-            _tool_result(
-                ("call_h", "harness_observe"),
-                ("call_d1", "domain_lookup_one"),
-                ("call_d2", "domain_lookup_two"),
+            _result(tool_name="get_user_details", call_id="call_domain"),
+            _result(
+                tool_name="harness_mailbox_read",
+                tool_args={"notice_id": "notice_final"},
+                call_id="call_read",
             ),
-            _result(content="done"),
+            _result(
+                tool_name="harness_trace_inspect",
+                tool_args={"trace_id": "trace_bad"},
+                call_id="call_trace",
+            ),
+            _result(
+                tool_name="harness_mailbox_ack",
+                tool_args={
+                    "notice_id": "notice_final",
+                    "note": "No safe general rule from this isolated failure.",
+                },
+                call_id="call_ack",
+            ),
         ]
     )
-    wiring = StubWiring()
+    wiring = StubWiring(notice_after_settle="notice_final")
     agent = _agent(retail, mock_model, client, wiring)
-    state = agent.get_init_state()
 
-    assistant, state = agent.generate_next_message(
-        UserMessage(role="user", content="help with my flight"), state
+    assistant, _ = agent.generate_next_message(
+        UserMessage(role="user", content="help with my flight"), agent.get_init_state()
     )
 
-    assert wiring.dispatched == ["harness_observe"]
-    assert len(client.calls) == 1
-    assert [call.id for call in assistant.tool_calls or []] == ["call_d1", "call_d2"]
-
-    agent.generate_next_message(
-        MultiToolMessage(
-            role="tool",
-            tool_messages=[
-                ToolMessage(role="tool", id="call_d1", content="first result"),
-                ToolMessage(role="tool", id="call_d2", content="second result"),
-            ],
-        ),
-        state,
-    )
-
-    second_call = client.message_batches[1]
-    assert [message["role"] for message in second_call[-4:]] == [
-        "user",
-        "assistant",
-        "tool",
-        "tool",
+    assert [call.id for call in assistant.tool_calls or []] == ["call_domain"]
+    assert wiring.pending == []
+    assert wiring.dispatched == [
+        "harness_mailbox_read",
+        "harness_trace_inspect",
+        "harness_mailbox_ack",
     ]
-    assistant_message = second_call[-3]
-    assert [call["id"] for call in assistant_message["tool_calls"]] == [
-        "call_d1",
-        "call_d2",
+    assert [call["session_id"] for call in client.calls] == [
+        "tau2-test",
+        "tau2-test-repair",
+        "tau2-test-repair",
+        "tau2-test-repair",
     ]
-    assert [message["tool_call_id"] for message in second_call[-2:]] == [
-        "call_d1",
-        "call_d2",
-    ]
-    assert "call_h" not in repr(second_call)
+    assert "get_user_details" not in repr(client.message_batches[1:])
+    assert assistant.usage == {"prompt_tokens": 40, "completion_tokens": 20}
+    assert client.flushes == 1
 
 
-def test_all_harness_turn_survives_tau2_validation(retail, mock_model):
-    client = RecordingMockClient(scripted=[_result(tool_name="harness_observe")])
+def test_unexpected_harness_call_in_domain_phase_survives_tau2_validation(
+    retail, mock_model
+):
+    client = RecordingMockClient(scripted=[_result(tool_name="harness_mailbox_list")])
     agent = _agent(retail, mock_model, client, StubWiring())
 
     assistant, _ = agent.generate_next_message(
@@ -283,7 +378,8 @@ def test_all_harness_turn_survives_tau2_validation(retail, mock_model):
 
     assistant.validate()
     assert assistant.content == _EMPTY_TURN_CONTENT
-    assert len(client.calls) == 6
+    assert len(client.calls) == 1
+    assert all(not name.startswith("harness_") for name in client.tool_batches[0])
 
 
 def test_settle_once_per_completed_turn_with_increasing_indices(retail, mock_model):

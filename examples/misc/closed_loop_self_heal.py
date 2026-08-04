@@ -39,18 +39,21 @@ MITIGATION_RULE = (
 
 
 class ScriptedCliClient:
-    """In-process ``pandaprobe`` stand-in with *per-session* scores.
-
-    The live session starts failing; the replayed session (running with the
-    candidate rule in force) scores healthy — that difference is the
-    counterfactual evidence the validator needs.
-    """
+    """In-process trace evaluator with session-isolated trajectories."""
 
     def __init__(self) -> None:
-        self.session_scores: dict[str, tuple[float, float]] = {}
-        self.default_scores = (0.30, 0.40)
-        self._run_sessions: dict[str, str] = {}
+        self.healthy_sessions = {REPLAY_SESSION}
         self._runs = 0
+        self._runs_by_id: dict[str, tuple[list[str], list[str]]] = {}
+        self._traces: dict[str, list[str]] = {}
+        self._trace_sessions: dict[str, str] = {}
+
+    def emit_traces(self, session_id: str, count: int) -> None:
+        traces = self._traces.setdefault(session_id, [])
+        for _ in range(count):
+            trace_id = f"{session_id}-trace-{len(traces) + 1}"
+            traces.append(trace_id)
+            self._trace_sessions[trace_id] = session_id
 
     async def run(self, *args: str, timeout: float | None = None) -> CliResult:
         payload = self._dispatch(args)
@@ -58,19 +61,35 @@ class ScriptedCliClient:
 
     def _dispatch(self, args: tuple[str, ...]) -> Any:
         if args[:1] == ("version",):
-            return {"version": "v0.6.0-demo"}
+            return {"version": "v0.7.0-demo"}
         if args[:2] == ("auth", "status"):
             return {"authenticated": True}
+        if args[:2] == ("traces", "list"):
+            session_id = _flag(args, "--session-id") or ""
+            traces = self._traces.get(session_id, [])
+            return {
+                "items": [
+                    {
+                        "trace_id": trace_id,
+                        "status": "COMPLETED",
+                        "started_at": f"2026-01-01T00:00:{index:02d}+00:00",
+                    }
+                    for index, trace_id in reversed(list(enumerate(traces)))
+                ]
+            }
         if args[:3] == ("evals", "runs", "batch"):
             self._runs += 1
             run_id = f"run-{self._runs}"
-            session = args[args.index("--session-ids") + 1]
-            self._run_sessions[run_id] = session
+            self._runs_by_id[run_id] = (
+                [t for t in (_flag(args, "--trace-ids") or "").split(",") if t],
+                [m for m in (_flag(args, "--metrics") or "").split(",") if m],
+            )
             return {"id": run_id, "status": "PENDING"}
         if args[:3] == ("evals", "runs", "scores"):
-            return self._session_scores(self._run_sessions.get(args[3], ""))
+            trace_ids, metrics = self._runs_by_id.get(args[3], ([], []))
+            return [self._score(metric, trace_id) for trace_id in trace_ids for metric in metrics]
         if args[:3] == ("evals", "scores", "get"):
-            return {"id": args[3], "scores": [{"name": "loop_detection", "value": "0.1"}]}
+            return {"id": args[3], "scores": [self._score("tool_correctness", args[3])]}
         if args[:2] == ("traces", "spans"):
             spans = [{"kind": "TOOL", "name": "charge_payment", "input": {"amount": 42}}] * 2
             return {"trace_id": args[2], "spans": spans}
@@ -78,22 +97,39 @@ class ScriptedCliClient:
             return {"trace_id": args[2], "status": "OK", "span_count": 2}
         return {}
 
-    def _session_scores(self, session: str) -> list[dict[str, Any]]:
-        reliability, consistency = self.session_scores.get(session, self.default_scores)
-        failing = reliability < 0.5
-        metadata: dict[str, Any] = {}
-        if failing:
-            metadata = {
-                "flagged_traces": ["trace-1"],
-                "per_trace_signals": {"trace-1": {"loop_detection": 0.1}},
+    def _score(self, metric: str, trace_id: str) -> dict[str, Any]:
+        session_id = self._trace_sessions.get(trace_id, "")
+        healthy = session_id in self.healthy_sessions
+        values = (
+            {
+                "task_completion": 0.92,
+                "coherence": 0.88,
+                "tool_correctness": 0.92,
+                "argument_correctness": 0.88,
             }
-        return [
-            {"name": "agent_reliability", "value": str(reliability), "status": "SUCCESS",
-             "reason": "identical repeated tool call" if failing else "ok",
-             "metadata": metadata},
-            {"name": "agent_consistency", "value": str(consistency), "status": "SUCCESS",
-             "reason": "inconsistent session" if failing else "ok", "metadata": {}},
-        ]
+            if healthy
+            else {
+                "task_completion": 0.30,
+                "coherence": 0.40,
+                "tool_correctness": 0.20,
+                "argument_correctness": 0.20,
+            }
+        )
+        return {
+            "name": metric,
+            "trace_id": trace_id,
+            "value": str(values.get(metric, 0.9)),
+            "status": "SUCCESS",
+            "reason": "ok" if healthy else "identical repeated tool call",
+            "metadata": {"threshold": 0.5},
+        }
+
+
+def _flag(args: tuple[str, ...], name: str) -> str | None:
+    for index, token in enumerate(args):
+        if token == name and index + 1 < len(args):
+            return args[index + 1]
+    return None
 
 
 async def replay(case: EvalCase, context: str) -> str:
@@ -154,7 +190,7 @@ class PullAgent:
         )
         self.healed = True
         # The fix is live for the agent's own session from here on.
-        self._client.session_scores[SESSION] = (0.92, 0.88)
+        self._client.healthy_sessions.add(SESSION)
 
 
 async def main() -> None:
@@ -165,10 +201,11 @@ async def main() -> None:
         poll_max_attempts=3,
         eval_retry_backoff_s=0.0,
         capture_eval_cases=True,  # breaches become replayable eval cases
+        gate_window=1,
     )
     client = ScriptedCliClient()
     # The replayed session will score healthy: the rule demonstrably helps.
-    client.session_scores[REPLAY_SESSION] = (0.92, 0.88)
+    client.emit_traces(REPLAY_SESSION, 1)
     harness = Harness.create(cfg, cli=client, replay=replay)
     agent = PullAgent(harness, client)
     print(f"workspace: {root}")
@@ -176,6 +213,7 @@ async def main() -> None:
     # --- Turn 1: failure -> notice + captured eval case ---------------------
     print("\n[turn 1] the seeded failure:")
     action = await agent.take_turn()
+    client.emit_traces(SESSION, 2)
     harness.on_turn_end({"session_id": SESSION, "turn_index": 1, "end_state": {"action": action}})
     await harness.refresh(SESSION)
     await harness.drain_validation()
@@ -186,6 +224,7 @@ async def main() -> None:
     # --- Turn 2: candidate rule -> automatic replay validation -> promotion --
     print("\n[turn 2] the agent heals itself; the harness validates the rule:")
     action = await agent.take_turn()
+    client.emit_traces(SESSION, 1)
     harness.on_turn_end({"session_id": SESSION, "turn_index": 2, "end_state": {"action": action}})
     await harness.refresh(SESSION)
     await harness.drain_validation()  # join the validation round
@@ -199,9 +238,12 @@ async def main() -> None:
     print(f"[turn 2] promoted by {promote['validator']}: {promote['reason']}")
 
     context = harness.system_context()
-    assert "payment tool twice" in context
-    assert "### Provisional rules" not in context  # no provisional section left
-    print("[turn 2] the validated rule re-enters the system context (no longer provisional)")
+    scope = str(agent.rule.get("scope", "scoped"))
+    assert f"rules/{scope}.md" in context
+    fetched = await harness.toolset.call("harness_rules_read", {"scope": scope})
+    assert "payment tool twice" in fetched["content"]
+    assert "### Provisional rules" not in fetched["content"]
+    print("[turn 2] the validated rule is referenced and no longer provisional")
 
     # --- Regression guard: protect a win, confirm the fix -------------------
     print("\n[regression] protecting a win and replaying the eval-set:")
@@ -209,7 +251,7 @@ async def main() -> None:
         session_id=SESSION,
         kind="win",
         signature=("healthy",),
-        baseline_scores={"agent_reliability": 0.92, "agent_consistency": 0.88},
+        baseline_scores={"task_completion": 0.92, "coherence": 0.88},
         replay_input={"action": "verified_payment_then_charge"},
     )
     report = await harness.run_regression()

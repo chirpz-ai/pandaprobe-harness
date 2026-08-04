@@ -1,24 +1,24 @@
 """In-process fake implementing the ``CliClient`` Protocol.
 
 Primary mock seam for the fast test suite — no subprocess, no network. Models
-both evaluation surfaces of the real CLI:
+the trace-evaluation surface the harness uses:
 
-* ``evals runs batch --target <trace|session> <--trace-ids|--session-ids> <ids>
+* ``evals runs batch --target trace --trace-ids <ids>
   --metrics <m1,m2>`` hands out a ``run_id`` and remembers the metric set, the
-  target and the ids for that run;
-* ``evals runs scores <run_id> --target <trace|session>`` returns
+  trace ids for that run;
+* ``evals runs scores <run_id> --target trace`` returns
   score-shaped dicts (value as a *string*, status ``SUCCESS``, and ``trace_id``
-  on the trace target — matching the real payload), with optional
+  matching the real payload), with optional
   ``running_polls`` PENDING rounds to exercise the poll loop;
 * ``traces list --session-id <id>`` models trace ingestion: a session not
   scripted in ``session_traces`` **grows by one trace per listing**, because in
   reality one turn end emits one trace and is followed by one listing;
-* scores can be flipped between turns (``metric_values``), per session
-  (``session_metric_values``) or per trace (``trace_metric_values`` — the way to
-  script a trajectory for the gate: climbing, stalled or regressing);
+* scores can be flipped between turns (``metric_values``) or per trace
+  (``trace_metric_values`` — the way to script a trajectory for the gate:
+  climbing, stalled or regressing);
 * ``error_on_prefix`` raises typed ``CliError``s to exercise degrade paths;
-* ``evals scores list`` / ``evals scores get`` / ``traces get`` are stubbed for
-  history cold-start, agent diagnosis, and dump enrichment.
+* ``evals scores get`` / ``traces get`` are stubbed for agent diagnosis and dump
+  enrichment.
 """
 
 from __future__ import annotations
@@ -33,10 +33,7 @@ from pandaprobe_harness.cli.client import CliResult
 from pandaprobe_harness.cli.errors import CliAuthError, CliError, CliGeneralError
 
 _DEFAULT_SCORES: dict[str, float] = {
-    # Session composites (the v1 trigger).
-    "agent_reliability": 0.9,
-    "agent_consistency": 0.9,
-    # Trace metrics (the v2 tiers). Healthy by default so a test opts *into*
+    # Trace metrics. Healthy by default so a test opts *into*
     # failure rather than out of it.
     "task_completion": 0.9,
     "coherence": 0.9,
@@ -52,21 +49,16 @@ _DEFAULT_SCORES: dict[str, float] = {
 class _Run:
     metrics: list[str]
     poll_count: int = 0
-    session_id: str | None = None
     trace_ids: list[str] = field(default_factory=list)
-    target: str = "session"
 
 
 @dataclass
 class FakeCliClient:
-    """A scripted, stateful fake of the ``pandaprobe`` CLI (both targets)."""
+    """A scripted, stateful fake of the trace-target ``pandaprobe`` CLI."""
 
     running_polls: int = 0
     # metric name -> score in [0,1]. Mutate between turns to drive self-heal/trend.
     metric_values: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_SCORES))
-    # session id -> {metric: score} overriding `metric_values` for that session
-    # (lets a *replayed* session score differently from the live one).
-    session_metric_values: dict[str, dict[str, float]] = field(default_factory=dict)
     # trace id -> {metric: score}, the narrowest override. This is how a test
     # scripts a *trajectory*: give consecutive traces rising, flat or falling
     # values and let the gate decide.
@@ -74,6 +66,9 @@ class FakeCliClient:
     # session id -> explicit trace ids (oldest first). A session absent here
     # grows by one synthetic trace on every `traces list` call.
     session_traces: dict[str, list[str]] = field(default_factory=dict)
+    # session id -> successive oldest-first snapshots returned by trace listing.
+    # The last snapshot repeats after the script is exhausted.
+    session_trace_listings: dict[str, list[list[str]]] = field(default_factory=dict)
     auto_traces: bool = True
     metric_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Per-metric terminal status override (e.g. "FAILED" → null value).
@@ -87,11 +82,6 @@ class FakeCliClient:
     empty_runs: int = 0
     # Optional canned payload for `evals scores get`.
     scores_get_payload: dict[str, Any] | None = None
-    # Optional canned series for `evals scores list` (history cold-start).
-    scores_list_payload: list[dict[str, Any]] | None = None
-    # Per-session canned series for `evals scores list --session-id <id>`
-    # (backend trend hydration / harness_history).
-    session_scores_list: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # Optional canned payload for `traces spans`.
     traces_spans_payload: dict[str, Any] | None = None
     # Health-check knobs: `version` / `auth status` raise when flipped off.
@@ -108,6 +98,7 @@ class FakeCliClient:
     _counter: int = 0
     _runs_created: int = 0
     _auto_traces: dict[str, list[str]] = field(default_factory=dict)
+    _trace_listing_counts: dict[str, int] = field(default_factory=dict)
 
     # -- CliClient Protocol ---------------------------------------------------
 
@@ -135,11 +126,6 @@ class FakeCliClient:
 
         self.metric_values.update(values)
 
-    def set_session_scores(self, session_id: str, **values: float) -> None:
-        """Set per-session score overrides (e.g. for a replayed session)."""
-
-        self.session_metric_values.setdefault(session_id, {}).update(values)
-
     def script_trajectory(self, session_id: str, metric: str, values: Sequence[float]) -> None:
         """Give ``session_id`` one trace per value, each scoring ``metric`` at it.
 
@@ -147,10 +133,18 @@ class FakeCliClient:
         climb, a flat one for a stall, or a peak-then-drop for a regression.
         """
 
-        ids = [f"{session_id}-tr{i + 1}" for i in range(len(values))]
-        self.session_traces[session_id] = ids
-        for trace_id, value in zip(ids, values, strict=True):
-            self.set_trace_scores(trace_id, **{metric: value})
+        self.session_traces[session_id] = []
+        for value in values:
+            self.script_trace(session_id, **{metric: value})
+
+    def script_trace(self, session_id: str, **values: float) -> str:
+        """Append one completed trace with per-metric score overrides."""
+
+        ids = self.session_traces.setdefault(session_id, [])
+        trace_id = f"{session_id}-tr{len(ids) + 1}"
+        ids.append(trace_id)
+        self.set_trace_scores(trace_id, **values)
+        return trace_id
 
     def set_trace_scores(self, trace_id: str, **values: float) -> None:
         """Set per-trace score overrides (the narrowest scope)."""
@@ -176,11 +170,6 @@ class FakeCliClient:
             return self._create_run(args)
         if prefix == ("evals", "runs", "scores"):
             return self._scores(args)
-        if prefix == ("evals", "scores", "list"):
-            session_id = _flag_value(args, "--session-id")
-            if session_id and session_id in self.session_scores_list:
-                return {"items": self.session_scores_list[session_id]}
-            return {"items": self.scores_list_payload or []}
         if prefix == ("evals", "scores", "get"):
             return self.scores_get_payload or {
                 "id": _positional(args, 3),
@@ -208,7 +197,13 @@ class FakeCliClient:
         session_id = _flag_value(args, "--session-id")
         if not session_id:
             return {"items": [], "pagination": {"total": 0}}
-        ids = self.session_traces.get(session_id)
+        scripted = self.session_trace_listings.get(session_id)
+        if scripted:
+            count = self._trace_listing_counts.get(session_id, 0)
+            ids = scripted[min(count, len(scripted) - 1)]
+            self._trace_listing_counts[session_id] = count + 1
+        else:
+            ids = self.session_traces.get(session_id)
         if ids is None:
             # Not scripted: model one-trace-per-turn by appending on each listing.
             ids = self._auto_traces.setdefault(session_id, [])
@@ -245,9 +240,7 @@ class FakeCliClient:
         trace_csv = _flag_value(args, "--trace-ids") or ""
         self._runs[run_id] = _Run(
             metrics=[] if empty else metrics,
-            session_id=_flag_value(args, "--session-ids"),
             trace_ids=[t for t in trace_csv.split(",") if t],
-            target=target,
         )
         return {
             "id": run_id,
@@ -265,7 +258,7 @@ class FakeCliClient:
             return [{"name": m, "value": None, "status": "PENDING"} for m in run.metrics]
         targets: list[str | None] = list(run.trace_ids) or [None]
         return [
-            self._score_record(m, session_id=run.session_id, trace_id=trace_id)
+            self._score_record(m, trace_id=trace_id)
             for trace_id in targets
             for m in run.metrics
         ]
@@ -274,13 +267,11 @@ class FakeCliClient:
         self,
         metric: str,
         *,
-        session_id: str | None = None,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
         status = self.metric_status.get(metric, "SUCCESS")
-        # Narrowest override wins: trace, then session, then the global default.
+        # A trace override wins over the global default.
         trace_overrides = self.trace_metric_values.get(trace_id or "", {})
-        session_overrides = self.session_metric_values.get(session_id or "", {})
         value: str | None
         if metric in self.raw_metric_values:
             value = self.raw_metric_values[metric]  # verbatim (may be non-numeric)
@@ -288,8 +279,6 @@ class FakeCliClient:
             value = None  # the backend returns a null value for failed scores
         elif metric in trace_overrides:
             value = str(trace_overrides[metric])
-        elif metric in session_overrides:
-            value = str(session_overrides[metric])
         else:
             value = str(self.metric_values.get(metric))
         record: dict[str, Any] = {

@@ -1,7 +1,7 @@
 """Central configuration for the PandaProbe Harness.
 
 ``HarnessConfig`` is the single source of truth for filesystem paths, CLI
-invocation tunables, metric thresholds, and trend-detection knobs. It is a
+invocation tunables, metric thresholds, and trajectory-gate knobs. It is a
 frozen dataclass so it can be shared freely across async tasks without risk of
 mutation.
 """
@@ -14,9 +14,6 @@ from pathlib import Path
 
 __all__ = ["HarnessConfig"]
 
-DEFAULT_SESSION_METRICS: frozenset[str] = frozenset(
-    {"agent_reliability", "agent_consistency"}
-)
 DEFAULT_THRESHOLD = 0.5
 
 # -- v2 trace-level trigger ---------------------------------------------------
@@ -105,10 +102,7 @@ class HarnessConfig:
     # where ``drain_timeout_s`` is only a best-effort join.
     barrier_timeout_s: float = 180.0
 
-    # -- v2 trace-level trigger ------------------------------------------------
-    # "trace" runs the three-tier per-trace trigger (the v2 default); "session"
-    # restores the v1 session-composite trigger for the ablation.
-    trigger_mode: str = "trace"
+    # -- trace-level trigger ---------------------------------------------------
     trace_metrics_tier1: tuple[str, ...] = DEFAULT_TIER1_METRICS
     trace_metrics_tier2: tuple[str, ...] = DEFAULT_TIER2_METRICS
     trace_metrics_tier3: tuple[str, ...] = DEFAULT_TIER3_METRICS
@@ -131,33 +125,9 @@ class HarnessConfig:
     outcome_threshold: float = 0.9
 
     # -- metrics & thresholds -------------------------------------------------
-    # The session metrics to evaluate each turn. Both built-ins by default.
-    session_metrics: frozenset[str] = DEFAULT_SESSION_METRICS
     # Per-metric absolute thresholds (overrides the scalar defaults below).
     thresholds: dict[str, float] = field(default_factory=dict)
-    # Back-compat scalar thresholds (used when not in ``thresholds``).
-    reliability_threshold: float = DEFAULT_THRESHOLD
-    consistency_threshold: float = DEFAULT_THRESHOLD
-    # Optional per-signal aggregation weights forwarded to the platform.
-    signal_weights: dict[str, float] | None = None
-    # Back-compat selective flags (drop a metric from the active set).
-    eval_reliability: bool = True
-    eval_consistency: bool = True
     concurrent_eval: bool = True  # retained for back-compat; one run now covers all metrics
-
-    # -- trend detection (local, incremental EWMA) ---------------------------
-    enable_trend: bool = True
-    ewma_fast_span: int = 3
-    ewma_slow_span: int = 10
-    trend_margin_cross: float = 0.05
-    trend_min_samples: int = 4
-    # Adaptive (relative) threshold: breach when a score drops far below its own
-    # session baseline (slow EWMA), even while still above the absolute floor.
-    adaptive_threshold: bool = False
-    adaptive_margin_drop: float = 0.15
-    # Optional percentile-over-local-window corroborator (0 disables it).
-    percentile_window: int = 0
-    percentile_floor: float = 0.25
 
     # -- noticing (the pull-model mailbox) ------------------------------------
     # Suppress re-posting an identical notice signature for this many turns.
@@ -221,12 +191,9 @@ class HarnessConfig:
     # How many tagged rules the retrieval keeps in the system context.
     rules_context_topk: int = 8
 
-    # -- robustness / scale ----------------------------------------------------
+    # -- robustness ------------------------------------------------------------
     # Verify the CLI is present and authenticated before the first eval.
     health_check: bool = True
-    # Seed local trend history from the backend once per session (shared state
-    # for horizontally-scaled agents).
-    hydrate_history_from_backend: bool = False
 
     def __post_init__(self) -> None:
         root = Path(self.harness_root)
@@ -253,10 +220,6 @@ class HarnessConfig:
 
         if metric in self.thresholds:
             return self.thresholds[metric]
-        if metric == "agent_reliability":
-            return self.reliability_threshold
-        if metric == "agent_consistency":
-            return self.consistency_threshold
         if metric == "outcome_correct":
             return self.outcome_threshold
         return DEFAULT_THRESHOLD
@@ -296,17 +259,6 @@ class HarnessConfig:
 
         return self.rules_dir / f"{scope}.md"
 
-    def active_metrics(self) -> tuple[str, ...]:
-        """The session metrics to evaluate, honoring back-compat flags."""
-
-        metrics = set(self.session_metrics)
-        if not self.eval_reliability:
-            metrics.discard("agent_reliability")
-        if not self.eval_consistency:
-            metrics.discard("agent_consistency")
-        # Deterministic order for stable CLI args / assertions.
-        return tuple(sorted(metrics))
-
     @classmethod
     def from_env(cls, **overrides: object) -> HarnessConfig:
         """Build a config from ``HARNESS_*`` / ``PANDAPROBE_*`` environment vars.
@@ -327,23 +279,9 @@ class HarnessConfig:
             # trigger is defaulted on purpose — adopting the harness should
             # need almost no configuration.
             "barrier_timeout_s": _env_float("HARNESS_BARRIER_TIMEOUT_S", 180.0),
-            "trigger_mode": os.environ.get("HARNESS_TRIGGER_MODE", "trace"),
             "gate_window": _env_int("HARNESS_GATE_WINDOW", 5),
             "enable_tier3": _env_bool("HARNESS_ENABLE_TIER3", False),
-            "reliability_threshold": _env_float("HARNESS_RELIABILITY_THRESHOLD", DEFAULT_THRESHOLD),
-            "consistency_threshold": _env_float("HARNESS_CONSISTENCY_THRESHOLD", DEFAULT_THRESHOLD),
-            "eval_reliability": _env_bool("HARNESS_EVAL_RELIABILITY", True),
-            "eval_consistency": _env_bool("HARNESS_EVAL_CONSISTENCY", True),
             "concurrent_eval": _env_bool("HARNESS_CONCURRENT_EVAL", True),
-            "enable_trend": _env_bool("HARNESS_ENABLE_TREND", True),
-            "ewma_fast_span": _env_int("HARNESS_EWMA_FAST_SPAN", 3),
-            "ewma_slow_span": _env_int("HARNESS_EWMA_SLOW_SPAN", 10),
-            "trend_margin_cross": _env_float("HARNESS_TREND_MARGIN_CROSS", 0.05),
-            "trend_min_samples": _env_int("HARNESS_TREND_MIN_SAMPLES", 4),
-            "adaptive_threshold": _env_bool("HARNESS_ADAPTIVE_THRESHOLD", False),
-            "adaptive_margin_drop": _env_float("HARNESS_ADAPTIVE_MARGIN_DROP", 0.15),
-            "percentile_window": _env_int("HARNESS_PERCENTILE_WINDOW", 0),
-            "percentile_floor": _env_float("HARNESS_PERCENTILE_FLOOR", 0.25),
             "alert_cooldown_turns": _env_int("HARNESS_ALERT_COOLDOWN_TURNS", 0),
             "enrich_flagged_traces": _env_bool("HARNESS_ENRICH_FLAGGED_TRACES", False),
             "observe_only": _env_bool("HARNESS_OBSERVE_ONLY", False),
@@ -368,9 +306,6 @@ class HarnessConfig:
             "rule_retrieval": _env_bool("HARNESS_RULE_RETRIEVAL", True),
             "rules_context_topk": _env_int("HARNESS_RULES_CONTEXT_TOPK", 8),
             "health_check": _env_bool("HARNESS_HEALTH_CHECK", True),
-            "hydrate_history_from_backend": _env_bool(
-                "HARNESS_HYDRATE_HISTORY_FROM_BACKEND", False
-            ),
         }
         values.update(overrides)
         return cls(**values)  # type: ignore[arg-type]

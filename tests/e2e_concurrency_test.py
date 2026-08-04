@@ -31,12 +31,20 @@ async def test_eight_sessions_bounded_concurrency_and_deduped_notices(
         # All 8 sessions breach at once; disable the global circuit breaker so
         # each session's single notice reaches the mailbox (dedup is under test).
         circuit_breaker_max_notices=0,
-        trigger_mode="session",
+        gate_window=1,
     )
     cli = FakeCliClient(
         latency_s=0.01,
-        metric_values={"agent_reliability": 0.2, "agent_consistency": 0.2},
     )
+    for session in SESSIONS:
+        for _ in range(2):
+            cli.script_trace(
+                session,
+                task_completion=0.2,
+                coherence=0.2,
+                tool_correctness=0.2,
+                argument_correctness=0.2,
+            )
     harness = Harness.create(cfg, cli=cli)
 
     for round_index in range(ROUNDS):
@@ -74,7 +82,7 @@ async def test_eight_sessions_bounded_concurrency_and_deduped_notices(
     # Trend history recorded scores for every session.
     history = ScoreHistoryStore(cfg)
     for session in SESSIONS:
-        assert history.values(session, "agent_reliability")
+        assert history.values(session, "task_completion")
 
     # Atomic writes: no orphaned temp files anywhere under the workspace root.
     assert list(cfg.harness_root.rglob("*.tmp")) == []

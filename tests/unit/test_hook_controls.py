@@ -13,7 +13,12 @@ from pandaprobe_harness import HarnessConfig, HarnessFilesystem, RawLoopAdapter
 from pandaprobe_harness.hook.core import PandaHarnessHook
 from tests.fakes.fake_cli_client import FakeCliClient
 
-BREACHING = {"agent_reliability": 0.2, "agent_consistency": 0.2}
+BREACHING = {
+    "task_completion": 0.2,
+    "coherence": 0.2,
+    "tool_correctness": 0.2,
+    "argument_correctness": 0.2,
+}
 
 
 def _make(
@@ -24,7 +29,7 @@ def _make(
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
-        trigger_mode="session",
+        gate_window=1,
         **kw,  # type: ignore[arg-type]
     )
     fs = HarnessFilesystem(cfg)
@@ -88,6 +93,7 @@ async def test_semaphore_bounds_concurrent_evals(tmp_path: Path) -> None:
 
 async def test_observe_only_journals_without_posting(tmp_path: Path) -> None:
     cli = FakeCliClient(metric_values=dict(BREACHING))
+    cli.script_trajectory("s", "task_completion", [0.2, 0.2])
     hook, cfg = _make(tmp_path, cli, observe_only=True)
 
     hook.on_turn_end(RawLoopAdapter.make_turn("s", 1))

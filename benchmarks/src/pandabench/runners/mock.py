@@ -39,9 +39,10 @@ class MockTaskRunner(SingleTaskRunner):
     def list_tasks(self, dataset: str) -> list[str]:
         return [f"{self.name}_{i}" for i in range(1, self._tasks + 1)]
 
-    def outcome_for(self, task_id: str) -> float | None:
+    def outcome_for(self, task_id: str, session_id: str) -> float | None:
         """No ground-truth grader here, so the harness falls back to its own tiers."""
 
+        del task_id, session_id
         return None
 
     async def run_once(

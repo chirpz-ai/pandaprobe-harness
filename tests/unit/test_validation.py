@@ -19,7 +19,7 @@ from pandaprobe_harness.workspace.rules import Rule, TrialState
 from tests.fakes.fake_cli_client import FakeCliClient
 
 
-def _rule(trial: TrialState | None, *, metric: str | None = "agent_reliability") -> Rule:
+def _rule(trial: TrialState | None, *, metric: str | None = "task_completion") -> Rule:
     return Rule(
         id="r-under-test",
         created_at="2026-07-01T00:00:00+00:00",
@@ -27,7 +27,7 @@ def _rule(trial: TrialState | None, *, metric: str | None = "agent_reliability")
         rationale="repeated failures",
         metric=metric,
         status="candidate",
-        tags=("breach:agent_reliability",),
+        tags=("stall:task_completion",),
         trial=trial,
     )
 
@@ -96,7 +96,6 @@ def _stores(
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
-        trigger_mode="session",
         **overrides,  # type: ignore[arg-type]
     )
     journal = Journal(config)
@@ -108,8 +107,8 @@ def _stores(
 def _seed_failure_case(evalset: EvalSet, *, replayable: bool = True) -> EvalCase:
     case = evalset.capture(
         session_id="s-original",
-        signature=("breach:agent_reliability",),
-        baseline_scores={"agent_reliability": 0.3, "agent_consistency": 0.4},
+        signature=("stall:task_completion",),
+        baseline_scores={"task_completion": 0.3, "coherence": 0.4},
         replay_input={"task": "charge"} if replayable else None,
     )
     assert case is not None
@@ -119,12 +118,12 @@ def _seed_failure_case(evalset: EvalSet, *, replayable: bool = True) -> EvalCase
 async def test_replay_promotes_when_metric_improves(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
     candidate = rules.add(
-        "verify before retrying", "x", metric="agent_reliability",
-        tags=["breach:agent_reliability"],
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
     )
     _seed_failure_case(evalset)
     fake = FakeCliClient()
-    fake.set_session_scores("s-replayed", agent_reliability=0.92, agent_consistency=0.88)
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
     contexts: list[str] = []
 
     async def replay(case: EvalCase, context: str) -> str:
@@ -153,11 +152,11 @@ async def test_replay_promotes_when_metric_improves(tmp_path: Path) -> None:
 
 async def test_replay_retires_without_improvement(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     _seed_failure_case(evalset)
     fake = FakeCliClient()
     # Replayed session scores exactly the baseline: no improvement, no regression.
-    fake.set_session_scores("s-replayed", agent_reliability=0.3, agent_consistency=0.4)
+    fake.script_trace("s-replayed", task_completion=0.3, coherence=0.4)
 
     async def replay(case: EvalCase, context: str) -> str:
         return "s-replayed"
@@ -176,22 +175,22 @@ async def test_replay_retires_without_improvement(tmp_path: Path) -> None:
 
 async def test_replay_retires_on_win_regression(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     failure = _seed_failure_case(evalset)
     win = evalset.capture(
         session_id="s-win",
         kind="win",
         signature=("healthy",),
-        baseline_scores={"agent_reliability": 0.9},
+        baseline_scores={"task_completion": 0.9},
         replay_input={"task": "browse"},
     )
     assert win is not None
 
     fake = FakeCliClient()
-    fake.set_session_scores(
-        f"s-replay-{failure.id}", agent_reliability=0.92, agent_consistency=0.88
+    fake.script_trace(
+        f"s-replay-{failure.id}", task_completion=0.92, coherence=0.88
     )
-    fake.set_session_scores(f"s-replay-{win.id}", agent_reliability=0.2)
+    fake.script_trace(f"s-replay-{win.id}", task_completion=0.2)
 
     async def replay(case: EvalCase, context: str) -> str:
         return f"s-replay-{case.id}"
@@ -211,7 +210,7 @@ async def test_replay_retires_on_win_regression(tmp_path: Path) -> None:
 
 async def test_replay_pending_without_matching_replayable_case(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     _seed_failure_case(evalset, replayable=False)
 
     async def replay(case: EvalCase, context: str) -> str:  # pragma: no cover
@@ -231,7 +230,7 @@ async def test_replay_pending_without_matching_replayable_case(tmp_path: Path) -
 
 async def test_replay_inconclusive_when_replay_raises(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     _seed_failure_case(evalset)
 
     async def replay(case: EvalCase, context: str) -> str:
@@ -254,18 +253,18 @@ async def test_replay_pending_when_only_win_cases_conclude(tmp_path: Path) -> No
     zero conclusive failure cases there is no evidence either way."""
 
     config, journal, rules, evalset = _stores(tmp_path)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     failure = _seed_failure_case(evalset)
     win = evalset.capture(
         session_id="s-win",
         kind="win",
         signature=("healthy",),
-        baseline_scores={"agent_reliability": 0.9},
+        baseline_scores={"task_completion": 0.9},
         replay_input={"task": "browse"},
     )
     assert win is not None
     fake = FakeCliClient()
-    fake.set_session_scores(f"s-replay-{win.id}", agent_reliability=0.9)  # unchanged
+    fake.script_trace(f"s-replay-{win.id}", task_completion=0.9)  # unchanged
 
     async def replay(case: EvalCase, context: str) -> str:
         if case.id == failure.id:
@@ -289,10 +288,10 @@ async def test_replay_case_without_shared_metrics_is_inconclusive(tmp_path: Path
     nothing — it must not retire the candidate as 'no improvement'."""
 
     config, journal, rules, evalset = _stores(tmp_path)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     case = evalset.capture(
         session_id="s-original",
-        signature=("breach:agent_reliability",),
+        signature=("stall:task_completion",),
         baseline_scores={},  # nothing to compare against
         replay_input={"task": "charge"},
     )
@@ -319,7 +318,7 @@ async def test_hung_replay_times_out_to_inconclusive(tmp_path: Path) -> None:
     import asyncio
 
     config, journal, rules, evalset = _stores(tmp_path, replay_timeout_s=0.05)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     _seed_failure_case(evalset)
 
     async def replay(case: EvalCase, context: str) -> str:
@@ -343,7 +342,7 @@ async def test_hung_replay_times_out_to_inconclusive(tmp_path: Path) -> None:
 
 async def test_engine_observe_report_tracks_trials(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=3)
-    candidate = rules.add("verify before retrying", "x", metric="agent_reliability")
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
     engine = ValidationEngine(
         config=config,
         rules=rules,
@@ -353,9 +352,9 @@ async def test_engine_observe_report_tracks_trials(tmp_path: Path) -> None:
     )
 
     engine.observe_report("s-1", set())
-    engine.observe_report("s-2", {"breach:agent_reliability"})
-    engine.observe_report("s-2", {"breach:agent_reliability"})  # same session, once
-    engine.observe_report("s-3", {"trend:agent_consistency"})  # other metric family
+    engine.observe_report("s-2", {"stall:task_completion"})
+    engine.observe_report("s-2", {"stall:task_completion"})  # same session, once
+    engine.observe_report("s-3", {"stall:coherence"})  # other metric family
 
     (reloaded,) = rules.candidates()
     trial = reloaded.trial
@@ -366,7 +365,7 @@ async def test_engine_observe_report_tracks_trials(tmp_path: Path) -> None:
     # The window is full (3 sessions); an unseen session no longer enrolls,
     # but a known session that breaches later still flips to breached.
     engine.observe_report("s-4", set())
-    engine.observe_report("s-1", {"relative:agent_reliability"})
+    engine.observe_report("s-1", {"regression:task_completion"})
     (reloaded,) = rules.candidates()
     assert reloaded.trial is not None
     assert reloaded.trial.observed_sessions == ("s-1", "s-2", "s-3")
@@ -378,7 +377,7 @@ async def test_engine_forward_trial_promotes_and_logs_fallback_once(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=2)
-    rule = rules.add("verify before retrying", "x", metric="agent_reliability")
+    rule = rules.add("verify before retrying", "x", metric="task_completion")
     engine = ValidationEngine(
         config=config,
         rules=rules,
@@ -414,7 +413,7 @@ async def test_engine_forward_trial_promotes_and_logs_fallback_once(
 
 async def test_engine_retires_failed_trial(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=2)
-    rule = rules.add("verify before retrying", "x", metric="agent_reliability")
+    rule = rules.add("verify before retrying", "x", metric="task_completion")
     engine = ValidationEngine(
         config=config,
         rules=rules,
@@ -424,8 +423,8 @@ async def test_engine_retires_failed_trial(tmp_path: Path) -> None:
     )
     # Both trial sessions still breach; the baseline was empty (rate 1.0), so
     # a full-rate trial (1.0) shows no improvement.
-    engine.observe_report("s-1", {"breach:agent_reliability"})
-    engine.observe_report("s-2", {"breach:agent_reliability"})
+    engine.observe_report("s-1", {"stall:task_completion"})
+    engine.observe_report("s-2", {"stall:task_completion"})
 
     (verdict,) = await engine.evaluate_candidates()
     assert verdict.outcome == "retire"
@@ -443,12 +442,12 @@ async def test_engine_retires_failed_trial(tmp_path: Path) -> None:
 async def test_engine_prefers_replay_over_forward_trial(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
     rules.add(
-        "verify before retrying", "x", metric="agent_reliability",
-        tags=["breach:agent_reliability"],
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
     )
     _seed_failure_case(evalset)
     fake = FakeCliClient()
-    fake.set_session_scores("s-replayed", agent_reliability=0.92, agent_consistency=0.88)
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
 
     async def replay(case: EvalCase, context: str) -> str:
         return "s-replayed"
@@ -459,7 +458,7 @@ async def test_engine_prefers_replay_over_forward_trial(tmp_path: Path) -> None:
         evalset=evalset,
         evaluator=MetricEvaluator(fake, config),
         journal=journal,
-    replay=replay,
+        replay=replay,
     )
     assert engine.has_replay
 
@@ -471,7 +470,7 @@ async def test_engine_prefers_replay_over_forward_trial(tmp_path: Path) -> None:
 
 async def test_engine_never_raises(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
-    rules.add("verify before retrying", "x", metric="agent_reliability")
+    rules.add("verify before retrying", "x", metric="task_completion")
 
     class _Boom:
         async def validate(self, rule: object) -> object:
@@ -499,12 +498,12 @@ async def test_evidence_observed_during_a_replay_round_survives_the_verdict(
 
     config, journal, rules, evalset = _stores(tmp_path)
     rules.add(
-        "verify before retrying", "x", metric="agent_reliability",
-        tags=["breach:agent_reliability"],
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
     )
     _seed_failure_case(evalset)
     fake = FakeCliClient()
-    fake.set_session_scores("s-replayed", agent_reliability=0.92, agent_consistency=0.88)
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
     engine_ref: list[ValidationEngine] = []
 
     async def replay(case: EvalCase, context: str) -> str:
@@ -537,13 +536,13 @@ async def test_candidate_retired_mid_round_is_skipped(tmp_path: Path) -> None:
 
     config, journal, rules, evalset = _stores(tmp_path)
     first = rules.add(
-        "verify before retrying", "x", metric="agent_reliability",
-        tags=["breach:agent_reliability"],
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
     )
-    second = rules.add("an unrelated candidate", "y", metric="agent_consistency")
+    second = rules.add("an unrelated candidate", "y", metric="coherence")
     _seed_failure_case(evalset)
     fake = FakeCliClient()
-    fake.set_session_scores("s-replayed", agent_reliability=0.92, agent_consistency=0.88)
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
 
     async def replay(case: EvalCase, context: str) -> str:
         # While the first candidate replays, the agent retires the second.

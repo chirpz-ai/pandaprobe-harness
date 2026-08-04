@@ -12,8 +12,11 @@ from pandaprobe_harness import CliResult, Harness, HarnessConfig
 
 from pandabench.agents.harness_wiring import HarnessWiring
 from pandabench.agents.loop import run_agent_loop
+from pandabench.checkpoints import records_to_labels
 from pandabench.harness_glue import (
     make_session_id,
+    make_verifier_fn,
+    new_session_namespace,
     sanitize_component,
 )
 from pandabench.providers.litellm_client import MockClient
@@ -33,12 +36,56 @@ def test_sanitize_component():
     assert sanitize_component("!!!") == "x"
 
 
-def test_session_id_stable_and_recomputable():
-    kw = dict(benchmark="appworld", task_id="82e2fac_1", arm="harness",
-              model_key="claude-sonnet-4-6", seed=1, trial=0)
+def test_session_id_stable_within_one_invocation():
+    namespace = "0123456789abcdef0123456789abcdef"
+    kw = dict(
+        session_namespace=namespace, benchmark="appworld", task_id="82e2fac_1",
+        arm="harness", model_key="claude-sonnet-4-6", seed=1, trial=0,
+        phase="learning",
+    )
     a = make_session_id(**kw)
     b = make_session_id(**kw)
-    assert a == b == "appworld-82e2fac_1-harness-claude-sonnet-4-6-1-t0"
+    assert a == b == (
+        "appworld-82e2fac_1-harness-claude-sonnet-4-6-s1-learning-t0-"
+        "r0123456789abcdef0123456789abcdef"
+    )
+
+
+def test_session_ids_change_across_invocations_and_phases():
+    common = dict(
+        benchmark="tau2", task_id="37", arm="harness", model_key="claude-sonnet-4-6",
+        seed=1, trial=0,
+    )
+    first_namespace = new_session_namespace()
+    second_namespace = new_session_namespace()
+
+    learning = make_session_id(
+        session_namespace=first_namespace, phase="learning", **common
+    )
+    repeated_run = make_session_id(
+        session_namespace=second_namespace, phase="learning", **common
+    )
+    eval_session = make_session_id(
+        session_namespace=first_namespace, phase="eval", **common
+    )
+
+    assert first_namespace != second_namespace
+    assert len({learning, repeated_run, eval_session}) == 3
+
+
+def test_session_id_respects_platform_length_limit_without_losing_namespace():
+    namespace = "f" * 32
+    session_id = make_session_id(
+        session_namespace=namespace, benchmark="terminal_bench", task_id="t" * 400,
+        arm="harness", model_key="m" * 100, seed=1, trial=0, phase="learning",
+    )
+    same_prefix = make_session_id(
+        session_namespace=namespace, benchmark="terminal_bench", task_id=("t" * 399) + "x",
+        arm="harness", model_key="m" * 100, seed=1, trial=0, phase="learning",
+    )
+    assert len(session_id) == 255
+    assert session_id.endswith(f"-r{namespace}")
+    assert session_id != same_prefix
 
 
 # -- record schema ------------------------------------------------------------
@@ -63,6 +110,31 @@ def test_trial_record_round_trip():
 def test_resume_key_normalizes_backend():
     assert resume_key("b", "t", "a", "m", None, 1, 0, "eval")[4] == ""
     assert resume_key("b", "t", "a", "m", "vertex_ai", 1, 0, "eval")[4] == "vertex_ai"
+
+
+def test_calibration_uses_recorded_session_id(tmp_path):
+    records = tmp_path / "records.jsonl"
+    labels = tmp_path / "labels.json"
+    current = {
+        "schema_version": 2, "benchmark": "tau2", "task_id": "37", "arm": "harness",
+        "model": "claude-sonnet-4-6", "seed": 1, "trial": 0, "phase": "learning",
+        "passed": True, "harness": {"session_id": "actual-namespaced-session"},
+    }
+    records.write_text(json.dumps(current) + "\n", encoding="utf-8")
+
+    assert records_to_labels(records, labels, benchmark="tau2") == 1
+    assert json.loads(labels.read_text(encoding="utf-8")) == [
+        {"session_id": "actual-namespaced-session", "failed": False},
+    ]
+
+
+def test_outcome_verifier_forwards_task_and_session_id():
+    outcomes = {("same-task", "session-a"): 0.25, ("same-task", "session-b"): 1.0}
+    verifier = make_verifier_fn(outcome_for=lambda task, session: outcomes.get((task, session)))
+
+    assert verifier("session-a", {"task_id": "same-task"}) == 0.25
+    assert verifier("session-b", {"task_id": "same-task"}) == 1.0
+    assert verifier("unknown", {"task_id": "same-task"}) is None
 
 
 # -- the arm-B capture path (fake CLI) ----------------------------------------
@@ -139,8 +211,8 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     registry = load_registry(CONFIGS / "models.yaml")
     model = registry.resolve("mock")
     session_id = make_session_id(
-        benchmark="appworld", task_id="t1", arm="harness",
-        model_key="mock", seed=1, trial=0,
+        session_namespace="test-namespace", benchmark="appworld", task_id="t1",
+        arm="harness", model_key="mock", seed=1, trial=0, phase="learning",
     )
     descriptor = {"benchmark": "appworld", "task_id": "t1", "arm": "harness",
                   "model_key": "mock", "backend": None, "seed": 1, "trial": 0}

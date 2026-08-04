@@ -20,7 +20,7 @@ from pandaprobe_harness.adapters.crewai import CrewAIAdapter
 from pandaprobe_harness.adapters.langgraph import LangGraphAdapter
 from tests.fakes.fake_cli_client import FakeCliClient
 
-BREACHING = {"agent_reliability": 0.2, "agent_consistency": 0.2}
+BREACHING = {"task_completion": 0.2, "coherence": 0.2}
 
 
 def _cfg(tmp_path: Path, name: str) -> HarnessConfig:

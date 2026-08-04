@@ -107,7 +107,7 @@ class PandaTracer:
     def flush(self, timeout: float = 30.0) -> None:
         """Block until buffered spans are sent (no-op when disabled).
 
-        Called before the harness fires a session eval so scoring sees the full
+        Called before the harness discovers traces so scoring sees the full
         session, not one still sitting in the SDK's async send buffer.
         """
 

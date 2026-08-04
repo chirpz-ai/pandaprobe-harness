@@ -91,30 +91,27 @@ def test_status_pending_count_severity_ranking_and_latest_id(mailbox: Mailbox) -
     mailbox.post(_notice("n-1", severity="trend"))
     assert mailbox.status().max_severity == "trend"
 
-    mailbox.post(_notice("n-2", severity="relative"))
-    assert mailbox.status().max_severity == "relative"
-
-    mailbox.post(_notice("n-3", severity="breach"))
+    mailbox.post(_notice("n-2", severity="breach"))
     assert mailbox.status().max_severity == "breach"
 
-    mailbox.post(_notice("n-4", severity="needs_human"))
+    mailbox.post(_notice("n-3", severity="needs_human"))
+    status = mailbox.status()
+    assert status.max_severity == "needs_human"
+    assert status.pending_count == 3
+    assert status.latest_id == "n-3"
+
+    # A later, lower-severity notice does not lower the max.
+    mailbox.post(_notice("n-4", severity="trend"))
     status = mailbox.status()
     assert status.max_severity == "needs_human"
     assert status.pending_count == 4
     assert status.latest_id == "n-4"
 
-    # A later, lower-severity notice does not lower the max.
-    mailbox.post(_notice("n-5", severity="trend"))
-    status = mailbox.status()
-    assert status.max_severity == "needs_human"
-    assert status.pending_count == 5
-    assert status.latest_id == "n-5"
-
 
 def test_status_recomputes_after_deleting_status_file(
     mailbox: Mailbox, config: HarnessConfig
 ) -> None:
-    mailbox.post(_notice("n-1", severity="relative"))
+    mailbox.post(_notice("n-1", severity="trend"))
     mailbox.post(_notice("n-2", severity="breach"))
     config.mailbox_status_file.unlink()
 
@@ -158,6 +155,9 @@ def test_from_json_is_forgiving() -> None:
     assert empty.severity == "breach"
     assert empty.metrics == ()
 
+    legacy = DiagnosticNotice.from_json({"severity": "relative"})
+    assert legacy.severity == "trend"
+
 
 def test_to_json_from_json_round_trips_key_fields() -> None:
     original = DiagnosticNotice(
@@ -165,21 +165,21 @@ def test_to_json_from_json_round_trips_key_fields() -> None:
         created_at="2026-07-01T00:00:00+00:00",
         session_id="s-9",
         turn_index=3,
-        severity="relative",
+        severity="trend",
         metrics=(
             NoticeMetric(
-                name="agent_reliability",
+                name="task_completion",
                 value=0.4,
                 threshold=0.5,
-                reason="dropped below baseline",
-                conditions=("relative",),
+                reason="trajectory stopped progressing",
+                conditions=("stall",),
             ),
         ),
         flagged_traces=("t-1", "t-2"),
         signal_breakdown={"t-1": {"signal": "bad"}},
         dump_path="/tmp/dump.json",
-        summary="reliability dropped",
-        signatures=("relative:agent_reliability",),
+        summary="task completion stalled",
+        signatures=("stall:task_completion",),
         status="acknowledged",
         resolution=Resolution(
             acked_at="2026-07-01T01:00:00+00:00", rule_id="r-1", note="handled"

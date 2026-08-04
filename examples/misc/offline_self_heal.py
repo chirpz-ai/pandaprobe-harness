@@ -41,7 +41,7 @@ MITIGATION_RULE = (
 class ScriptedCliClient:
     """Minimal in-process stand-in for the ``pandaprobe`` binary (CliClient).
 
-    Models the trace-target surface the v2 trigger uses: a session's traces are
+    Models the trace-target surface the trigger uses: a session's traces are
     enumerable, and each trace can be scored on its own. Until the agent heals
     (``self.healed``) the scripted trajectory is **flat and below target** — which
     is what the trajectory gate flags. A climbing trajectory would not.

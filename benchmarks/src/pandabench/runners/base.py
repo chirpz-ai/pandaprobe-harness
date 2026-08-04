@@ -31,6 +31,7 @@ from ..harness_glue import (
     make_replay_fn,
     make_session_id,
     make_verifier_fn,
+    new_session_namespace,
 )
 from ..providers.litellm_client import ChatClient, LiteLLMClient, MockClient, Usage
 from ..providers.models import ModelRegistry, ResolvedModel
@@ -105,8 +106,8 @@ class SingleTaskRunner(Protocol):
         preamble: str | None = None,
     ) -> TaskOutcome: ...
 
-    def outcome_for(self, task_id: str) -> float | None:
-        """This benchmark's own verdict for ``task_id``, as a score in ``[0, 1]``.
+    def outcome_for(self, task_id: str, session_id: str) -> float | None:
+        """This benchmark's verdict for one task session, as a score in ``[0, 1]``.
 
         The gold signal for the harness's outcome verifier. Default ``None`` means
         "this benchmark has no grader", so a runner opts in by overriding — and the
@@ -128,6 +129,7 @@ class SingleTaskRunner(Protocol):
         harness_root: Path,
         writer: RecordWriter,
         run_id: str,
+        session_namespace: str,
         seed: int,
         backend: str | None,
         max_turns: int,
@@ -200,6 +202,7 @@ class BenchmarkRunner:
         self._single.configure_dataset(dataset)
         model = self._resolve_model(model_key, backend, dry_run)
         run_id = run_id or _run_id(benchmark, model.key, arm, seed)
+        session_namespace = new_session_namespace()
         run_dir = self._run_root / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         writer = RecordWriter(run_dir / "records.jsonl")
@@ -221,7 +224,8 @@ class BenchmarkRunner:
             harness = await self._run_phase(
                 phase="learning", tasks=splits.learning, k=k, arm=arm, model=model,
                 client=client, writer=writer, run_id=run_id,
-                seed=seed, backend=backend, max_turns=max_turns, benchmark=benchmark,
+                session_namespace=session_namespace, seed=seed, backend=backend,
+                max_turns=max_turns, benchmark=benchmark,
                 dataset=dataset, harness_root=harness_root, use_harness=use_harness,
                 noval=noval,
             )
@@ -239,7 +243,8 @@ class BenchmarkRunner:
             harness = await self._run_phase(
                 phase="eval", tasks=splits.eval, k=k, arm=arm, model=model,
                 client=client, writer=writer, run_id=run_id,
-                seed=seed, backend=backend, max_turns=max_turns, benchmark=benchmark,
+                session_namespace=session_namespace, seed=seed, backend=backend,
+                max_turns=max_turns, benchmark=benchmark,
                 dataset=dataset, harness_root=harness_root, use_harness=use_harness,
                 noval=noval,
             )
@@ -265,7 +270,7 @@ class BenchmarkRunner:
         self, *, phase: str, tasks: Sequence[str], k: int, arm: str, model: ResolvedModel,
         client: ChatClient, writer: RecordWriter, run_id: str, seed: int,
         backend: str | None, max_turns: int, benchmark: str, dataset: str,
-        harness_root: Path, use_harness: bool, noval: bool,
+        harness_root: Path, use_harness: bool, noval: bool, session_namespace: str,
     ) -> Any:
         bulk_hook = getattr(self._single, "run_phase", None)
         if bulk_hook is not None:
@@ -273,6 +278,7 @@ class BenchmarkRunner:
                 tasks=tasks, k=k, arm=arm, model=model, phase=phase, dataset=dataset,
                 harness_root=harness_root, writer=writer, run_id=run_id, seed=seed,
                 backend=backend, max_turns=max_turns, benchmark=benchmark, noval=noval,
+                session_namespace=session_namespace,
             )
             if handled:
                 # Harbor's custom agent owns the live per-turn Harness. Construct
@@ -280,14 +286,17 @@ class BenchmarkRunner:
                 # replay or verifier: Terminal-Bench supports neither capability.
                 return (
                     self._build_harness(
-                        harness_root, phase, benchmark, noval, model, seed, bulk=True
+                        harness_root, phase, benchmark, noval, model, seed,
+                        session_namespace, bulk=True,
                     )
                     if use_harness
                     else None
                 )
 
         harness = (
-            self._build_harness(harness_root, phase, benchmark, noval, model, seed)
+            self._build_harness(
+                harness_root, phase, benchmark, noval, model, seed, session_namespace
+            )
             if use_harness
             else None
         )
@@ -301,6 +310,7 @@ class BenchmarkRunner:
                     phase=phase, task_id=task_id, trial=trial, arm=arm, model=model,
                     client=client, harness=harness, run_id=run_id, seed=seed,
                     backend=backend, max_turns=max_turns, benchmark=benchmark,
+                    session_namespace=session_namespace,
                 )
                 writer.append(record)
                 status = "PASS" if record.passed else ("ERR" if record.error else "fail")
@@ -314,17 +324,18 @@ class BenchmarkRunner:
     async def _run_trial(
         self, *, phase: str, task_id: str, trial: int, arm: str, model: ResolvedModel,
         client: ChatClient, harness: Any, run_id: str, seed: int, backend: str | None,
-        max_turns: int, benchmark: str,
+        max_turns: int, benchmark: str, session_namespace: str,
     ) -> TrialRecord:
         session_id = make_session_id(
-            benchmark=benchmark, task_id=task_id, arm=arm,
-            model_key=model.key, seed=seed, trial=trial,
+            session_namespace=session_namespace, benchmark=benchmark, task_id=task_id,
+            arm=arm, model_key=model.key, seed=seed, trial=trial, phase=phase,
         )
         wiring: HarnessWiring | None = None
         if harness is not None:
             descriptor = {
                 "benchmark": benchmark, "task_id": task_id, "arm": arm,
                 "model_key": model.key, "backend": backend, "seed": seed, "trial": trial,
+                "run_id": run_id, "phase": phase,
             }
             wiring = HarnessWiring(
                 harness=harness, benchmark=benchmark, task_id=task_id,
@@ -378,7 +389,7 @@ class BenchmarkRunner:
 
     def _build_harness(
         self, harness_root: Path, phase: str, benchmark: str, noval: bool,
-        model: ResolvedModel, seed: int, *, bulk: bool = False,
+        model: ResolvedModel, seed: int, session_namespace: str, *, bulk: bool = False,
     ) -> Any:
         cfg = build_harness_config(
             harness_root=harness_root, phase=phase, study=self._study,
@@ -386,7 +397,11 @@ class BenchmarkRunner:
         )
         return build_harness(
             cfg=cfg,
-            replay=None if bulk else self._make_replay(benchmark, model, seed),
+            replay=(
+                None
+                if bulk
+                else self._make_replay(benchmark, model, seed, session_namespace)
+            ),
             verifier=(
                 None
                 if bulk
@@ -394,7 +409,9 @@ class BenchmarkRunner:
             ),
         )
 
-    def _make_replay(self, benchmark: str, model: ResolvedModel, seed: int) -> Any:
+    def _make_replay(
+        self, benchmark: str, model: ResolvedModel, seed: int, session_namespace: str
+    ) -> Any:
         """Build the harness ReplayFn: re-run a captured task under candidate rules.
 
         Uses a TRACED client (so the replayed session is scoreable) and
@@ -411,13 +428,17 @@ class BenchmarkRunner:
         async def replay_runner(task_id: str, preamble: str) -> str:
             self._replay_counter += 1
             session_id = make_session_id(
-                benchmark=benchmark, task_id=task_id, arm="replay",
-                model_key=model.key, seed=seed, trial=self._replay_counter,
+                session_namespace=session_namespace, benchmark=benchmark, task_id=task_id,
+                arm="replay", model_key=model.key, seed=seed,
+                trial=self._replay_counter, phase="replay",
             )
-            await self._single.run_once(
-                task_id=task_id, session_id=session_id, model=model, client=replay_client,
-                max_turns=replay_max_turns, wiring=None, preamble=preamble,
-            )
+            try:
+                await self._single.run_once(
+                    task_id=task_id, session_id=session_id, model=model, client=replay_client,
+                    max_turns=replay_max_turns, wiring=None, preamble=preamble,
+                )
+            finally:
+                replay_client.flush()
             return session_id
 
         return make_replay_fn(replay_runner=replay_runner)
@@ -443,7 +464,7 @@ class BenchmarkRunner:
             pending = harness.hook.pending_sessions
             if not pending:
                 break
-            logger.info("settle(%s): %d session eval(s) still pending...", label, len(pending))
+            logger.info("settle(%s): %d turn eval(s) still pending...", label, len(pending))
             await asyncio.sleep(self._study.harness.settle_poll_s)
         try:
             await harness.drain_validation()
