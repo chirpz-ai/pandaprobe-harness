@@ -21,13 +21,14 @@ def test_none_is_not_breach() -> None:
 
 
 def test_metric_score_breached_property() -> None:
-    assert MetricScore(Metric.RELIABILITY, 0.3, 0.5).breached is True
-    assert MetricScore(Metric.RELIABILITY, 0.6, 0.5).breached is False
-    assert MetricScore(Metric.RELIABILITY, None, 0.5).breached is False
-    assert MetricScore(Metric.RELIABILITY, None, 0.5).pending is True
+    assert MetricScore(Metric.OUTCOME, 0.3, 0.5).breached is True
+    assert MetricScore(Metric.OUTCOME, 0.6, 0.5).breached is False
+    assert MetricScore(Metric.OUTCOME, None, 0.5).breached is False
+    assert MetricScore(Metric.OUTCOME, None, 0.5).pending is True
+    assert MetricScore(Metric.TASK_COMPLETION, 0.3, 0.5, tier=1).breached is False
 
 
 def test_metric_targets() -> None:
-    # Both agent_reliability and agent_consistency are session-level metrics.
-    assert Metric.RELIABILITY.target == "session"
-    assert Metric.CONSISTENCY.target == "session"
+    assert Metric.TASK_COMPLETION.target == "trace"
+    assert Metric.COHERENCE.target == "trace"
+    assert Metric.OUTCOME.target == "local"
