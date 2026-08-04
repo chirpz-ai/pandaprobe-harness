@@ -105,22 +105,22 @@ def test_effectiveness_splits_notices_around_created_at(
         {
             "type": "notice",
             "ts": "2000-01-01T00:00:00+00:00",
-            "metrics": [{"name": "agent_reliability"}],
+            "metrics": [{"name": "task_completion"}],
         }
     )
     rule = rules.add(
-        "Check tool output before retrying", "reduces failures", metric="agent_reliability"
+        "Check tool output before retrying", "reduces failures", metric="task_completion"
     )
     journal.record(
         {
             "type": "notice",
             "ts": "2999-01-01T00:00:00+00:00",
-            "metrics": [{"name": "agent_reliability"}],
+            "metrics": [{"name": "task_completion"}],
         }
     )
 
     stats = rules.effectiveness()[rule.id]
-    assert stats["metric"] == "agent_reliability"
+    assert stats["metric"] == "task_completion"
     assert stats["status"] == "candidate"
     assert stats["created_at"] == rule.created_at
     assert stats["notices_before"] == 1
