@@ -137,8 +137,6 @@ def build_harness_config(
         rule_trial_min_sessions=study.harness.rule_trial_min_sessions,
         rule_promote_margin=study.harness.rule_promote_margin,
         rule_regress_margin=study.harness.rule_regress_margin,
-        reliability_threshold=threshold,
-        consistency_threshold=threshold,
         replay_timeout_s=study.harness.replay_timeout_s,
         regression_sample=study.harness.regression_sample,
         # Bound how long a barrier waits for platform scores per turn
@@ -148,9 +146,6 @@ def build_harness_config(
         poll_max_attempts=study.harness.poll_max_attempts,
         rule_retrieval=True,
         health_check=health_check,
-        # -- v2 trigger. Pinned per arm so the ablation is a single knob: arm B
-        # runs the trace tiers, arm B-session reproduces the v1 composites.
-        trigger_mode=study.harness.trigger_mode,
         gate_window=study.harness.gate_window,
         gate_target=threshold,
         enable_tier3=study.harness.enable_tier3,
