@@ -40,14 +40,14 @@ def _seed_evalset(tmp_path: Path) -> None:
     evalset = EvalSet(config)
     evalset.capture(
         session_id="s-bad",
-        signature=("breach:agent_reliability",),
-        baseline_scores={"agent_reliability": 0.30, "agent_consistency": 0.40},
+        signature=("stall:task_completion",),
+        baseline_scores={"task_completion": 0.30, "coherence": 0.40},
     )
     evalset.capture(
         session_id="s-good",
         kind="win",
         signature=("healthy",),
-        baseline_scores={"agent_reliability": 0.90, "agent_consistency": 0.85},
+        baseline_scores={"task_completion": 0.90, "coherence": 0.85},
     )
 
 
@@ -56,7 +56,7 @@ def test_no_scores_anywhere_is_error_exit_1(tmp_path: Path, fake_bin: Path) -> N
     assert proc.returncode == 1
     payload = json.loads(proc.stdout)
     assert payload["ok"] is False
-    assert "no session scores" in payload["error"]
+    assert "no trace scores" in payload["error"]
 
 
 def test_unlabeled_report_from_evalset_scores(tmp_path: Path, fake_bin: Path) -> None:
@@ -64,7 +64,7 @@ def test_unlabeled_report_from_evalset_scores(tmp_path: Path, fake_bin: Path) ->
     proc = _run([], tmp_path, fake_bin)
 
     assert proc.returncode == 0
-    assert "agent_reliability" in proc.stdout
+    assert "task_completion" in proc.stdout
     assert "histogram" in proc.stdout
     assert "precision" not in proc.stdout  # unlabeled
 
@@ -77,7 +77,7 @@ def test_from_evalset_proxy_labels_json_report(tmp_path: Path, fake_bin: Path) -
     payload = json.loads(proc.stdout)
     assert payload["sources"] == ["evalset"]
     reliability = next(
-        m for m in payload["metrics"] if m["metric"] == "agent_reliability"
+        m for m in payload["metrics"] if m["metric"] == "task_completion"
     )
     labeled = reliability["labeled"]
     # s-bad (0.30, failed) breaches; s-good (0.90, ok) does not: perfect split.
@@ -98,7 +98,7 @@ def test_explicit_labels_win_over_evalset(tmp_path: Path, fake_bin: Path) -> Non
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
     reliability = next(
-        m for m in payload["metrics"] if m["metric"] == "agent_reliability"
+        m for m in payload["metrics"] if m["metric"] == "task_completion"
     )
     labeled = reliability["labeled"]
     assert labeled["tp"] == 0 and labeled["fp"] == 1 and labeled["fn"] == 1
