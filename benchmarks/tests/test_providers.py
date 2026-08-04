@@ -40,15 +40,15 @@ def test_single_backend_resolution(registry):
     ("key", "bedrock_id", "anthropic_id", "prices"),
     [
         (
-            "claude-opus-4-6",
-            "global.anthropic.claude-opus-4-6-v1",
-            "claude-opus-4-6",
+            "claude-opus-5",
+            "global.anthropic.claude-opus-5",
+            "claude-opus-5",
             {"input": 5.0, "output": 25.0},
         ),
         (
-            "claude-sonnet-4-6",
-            "global.anthropic.claude-sonnet-4-6",
-            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "global.anthropic.claude-sonnet-5",
+            "claude-sonnet-5",
             {"input": 3.0, "output": 15.0},
         ),
         (
@@ -82,15 +82,15 @@ def test_claude_models_default_to_bedrock(
 
 def test_claude_backend_arg_overrides(registry):
     m = registry.resolve(
-        "claude-sonnet-4-6", backend="anthropic", env={"CLAUDE_BACKEND": "bedrock"}
+        "claude-sonnet-5", backend="anthropic", env={"CLAUDE_BACKEND": "bedrock"}
     )
-    assert m.litellm_model == "anthropic/claude-sonnet-4-6"
+    assert m.litellm_model == "anthropic/claude-sonnet-5"
     assert m.provider == "anthropic"
     assert m.backend == "anthropic"
 
 
 def test_claude_env_overrides_default(registry):
-    m = registry.resolve("claude-sonnet-4-6", env={"CLAUDE_BACKEND": "anthropic"})
+    m = registry.resolve("claude-sonnet-5", env={"CLAUDE_BACKEND": "anthropic"})
     assert m.backend == "anthropic"
 
 
@@ -106,7 +106,7 @@ def test_backend_on_single_backend_raises(registry):
 
 def test_unknown_backend_raises(registry):
     with pytest.raises(ValueError):
-        registry.resolve("claude-sonnet-4-6", backend="vertex_ai", env={})
+        registry.resolve("claude-sonnet-5", backend="vertex_ai", env={})
 
 
 def test_roles(registry):
@@ -118,7 +118,7 @@ def test_roles(registry):
 
 def test_provider_of():
     assert provider_of("bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0") == "bedrock"
-    assert provider_of("anthropic/claude-sonnet-4-6") == "anthropic"
+    assert provider_of("anthropic/claude-sonnet-5") == "anthropic"
     assert provider_of("openai/gpt-5.6-terra") == "openai"
     assert provider_of("something/weird") == "something"
 
@@ -128,7 +128,7 @@ def test_provider_of():
 
 def test_param_allowlist_drops_temperature_for_claude(registry):
     client = LiteLLMClient(tracer=PandaTracer.disabled())
-    claude = registry.resolve("claude-sonnet-4-6", env={})
+    claude = registry.resolve("claude-sonnet-5", env={})
     params = client._call_params(claude, max_tokens=1000, extra={"temperature": 0.7})
     assert "temperature" not in params  # not allowlisted
     assert params["max_tokens"] == 1000
