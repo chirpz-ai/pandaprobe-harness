@@ -1,16 +1,10 @@
-"""Local, persistent per-(session, metric) score history with EWMA + gate state.
+"""Local, persistent per-(session, metric) score history and gate state.
 
-This store is the substrate for both local detectors:
-
-* **trend** (``trends.py``) — each resolved turn appends one score and
-  incrementally updates a fast and a slow EWMA in **O(1)**, so the detector never
-  re-scans a window or makes a network call on the turn path.
-* **trajectory** (``trajectory.py``) — the running peak and stall counter live in
-  the same entry under a ``"gate"`` key, mutated through
-  :meth:`ScoreHistoryStore.update_gate`.
+The trajectory gate's running peak and stall counter live beside each retained
+score series under a ``"gate"`` key.
 
 Persisted as a single atomically-written JSON file under
-``<harness_root>/state/`` so both survive process restarts.
+``<harness_root>/state/`` so state survives process restarts.
 
 All methods are synchronous blocking I/O; async callers wrap them in
 ``asyncio.to_thread`` (the hook does). Because ``asyncio.to_thread`` uses a
@@ -33,7 +27,7 @@ from typing import Any
 
 from ..config import HarnessConfig
 
-__all__ = ["EwmaState", "GateFold", "GateState", "ScoreSample", "ScoreHistoryStore"]
+__all__ = ["GateFold", "GateState", "ScoreSample", "ScoreHistoryStore"]
 
 #: A gate fold: given the current state, return the next one. Run under the store
 #: lock so it always sees fresh state.
@@ -44,20 +38,11 @@ _MAX_SAMPLES = 500
 
 
 @dataclass(frozen=True, slots=True)
-class EwmaState:
-    """Incremental exponentially-weighted moving averages for one series."""
-
-    fast: float
-    slow: float
-    count: int
-
-
-@dataclass(frozen=True, slots=True)
 class GateState:
     """Trajectory-gate state for one series: the running peak and stall counter.
 
-    Lives alongside the EWMA state in the same entry so the gate never needs a
-    second file or a second lock.
+    Lives alongside the score series so the gate never needs a second file or
+    a second lock.
     """
 
     peak: float | None = None
@@ -85,18 +70,12 @@ class ScoreSample:
     run_id: str | None = None
 
 
-def _alpha(span: int) -> float:
-    return 2.0 / (max(1, span) + 1.0)
-
-
 class ScoreHistoryStore:
-    """Persistent score series + EWMA state, keyed by ``session × metric``."""
+    """Persistent score series + gate state, keyed by ``session × metric``."""
 
     def __init__(self, config: HarnessConfig) -> None:
         self._config = config
         self._path = config.history_file
-        self._alpha_fast = _alpha(config.ewma_fast_span)
-        self._alpha_slow = _alpha(config.ewma_slow_span)
         self._data: dict[str, dict[str, Any]] | None = None
         self._lock = threading.Lock()
 
@@ -107,7 +86,18 @@ class ScoreHistoryStore:
             return self._data
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            self._data = raw if isinstance(raw, dict) else {}
+            self._data = {}
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if not isinstance(value, dict):
+                        continue
+                    series = value.get("series")
+                    entry: dict[str, Any] = {
+                        "series": series if isinstance(series, list) else []
+                    }
+                    if isinstance(value.get("gate"), dict):
+                        entry["gate"] = value["gate"]
+                    self._data[str(key)] = entry
         except (FileNotFoundError, ValueError):
             self._data = {}
         return self._data
@@ -126,25 +116,6 @@ class ScoreHistoryStore:
 
     # -- API ------------------------------------------------------------------
 
-    def record(
-        self,
-        session_id: str,
-        metric: str,
-        value: float,
-        *,
-        run_id: str | None = None,
-        ts: str | None = None,
-    ) -> EwmaState:
-        """Append a score and incrementally update its EWMA state (O(1))."""
-
-        with self._lock:
-            entry = self._load().setdefault(
-                self._key(session_id, metric), {"series": [], "ewma": None}
-            )
-            state = self._append_locked(entry, value, run_id=run_id, ts=ts)
-            self._persist()
-            return state
-
     def _append_locked(
         self,
         entry: dict[str, Any],
@@ -152,72 +123,15 @@ class ScoreHistoryStore:
         *,
         run_id: str | None,
         ts: str | None,
-    ) -> EwmaState:
-        """Fold one sample into ``entry`` in place. Caller holds the lock and persists."""
+    ) -> None:
+        """Append one sample in place. Caller holds the lock and persists."""
 
-        prev = entry.get("ewma")
-        if prev is None:
-            state = EwmaState(fast=value, slow=value, count=1)
-        else:
-            fast = self._alpha_fast * value + (1.0 - self._alpha_fast) * prev["fast"]
-            slow = self._alpha_slow * value + (1.0 - self._alpha_slow) * prev["slow"]
-            state = EwmaState(fast=fast, slow=slow, count=int(prev["count"]) + 1)
-
-        entry["ewma"] = {"fast": state.fast, "slow": state.slow, "count": state.count}
         series: list[dict[str, Any]] = entry["series"]
         series.append(
             {"value": value, "ts": ts or datetime.now(UTC).isoformat(), "run_id": run_id}
         )
         if len(series) > _MAX_SAMPLES:
             del series[: len(series) - _MAX_SAMPLES]
-        return state
-
-    def seed(
-        self,
-        session_id: str,
-        metric: str,
-        samples: Sequence[tuple[float, str, str | None]],
-    ) -> None:
-        """Bulk-insert backend samples ``(value, ts, run_id)`` for cold-start.
-
-        Samples whose ``run_id`` is already present are skipped (idempotent
-        hydration), the EWMA state is advanced for each new sample, and the
-        file is persisted once.
-        """
-
-        with self._lock:
-            data = self._load()
-            key = self._key(session_id, metric)
-            entry = data.setdefault(key, {"series": [], "ewma": None})
-            series: list[dict[str, Any]] = entry["series"]
-            known_runs = {s.get("run_id") for s in series if s.get("run_id")}
-
-            inserted = False
-            for value, ts, run_id in samples:
-                if run_id and run_id in known_runs:
-                    continue
-                prev = entry.get("ewma")
-                if prev is None:
-                    state = EwmaState(fast=value, slow=value, count=1)
-                else:
-                    fast = self._alpha_fast * value + (1.0 - self._alpha_fast) * prev["fast"]
-                    slow = self._alpha_slow * value + (1.0 - self._alpha_slow) * prev["slow"]
-                    state = EwmaState(fast=fast, slow=slow, count=int(prev["count"]) + 1)
-                entry["ewma"] = {"fast": state.fast, "slow": state.slow, "count": state.count}
-                series.append(
-                    {
-                        "value": value,
-                        "ts": ts or datetime.now(UTC).isoformat(),
-                        "run_id": run_id,
-                    }
-                )
-                if run_id:
-                    known_runs.add(run_id)
-                inserted = True
-            if len(series) > _MAX_SAMPLES:
-                del series[: len(series) - _MAX_SAMPLES]
-            if inserted:
-                self._persist()
 
     def record_gated(
         self,
@@ -240,21 +154,13 @@ class ScoreHistoryStore:
             data = self._load()
             for metric, value, fold in samples:
                 key = self._key(session_id, metric)
-                entry = data.setdefault(key, {"series": [], "ewma": None})
+                entry = data.setdefault(key, {"series": []})
                 self._append_locked(entry, value, run_id=None, ts=None)
                 results[metric] = fold(GateState.from_json(entry.get("gate")))
                 entry["gate"] = results[metric].to_json()
             if samples:
                 self._persist()
         return results
-
-    def ewma(self, session_id: str, metric: str) -> EwmaState | None:
-        with self._lock:
-            entry = self._load().get(self._key(session_id, metric))
-            if not entry or entry.get("ewma") is None:
-                return None
-            e = entry["ewma"]
-            return EwmaState(fast=e["fast"], slow=e["slow"], count=int(e["count"]))
 
     def series(self, session_id: str, metric: str) -> list[ScoreSample]:
         with self._lock:
