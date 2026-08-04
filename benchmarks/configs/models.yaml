@@ -60,20 +60,20 @@ models:
     default_params: {reasoning_effort: none}
     price_per_mtok: {input: 5.00, output: 30.00}
 
-  claude-opus-4-6:
+  claude-opus-5:
     provider_family: claude
     backends:
-      bedrock: "bedrock/global.anthropic.claude-opus-4-6-v1"
-      anthropic: "anthropic/claude-opus-4-6"
+      bedrock: "bedrock/global.anthropic.claude-opus-5"
+      anthropic: "anthropic/claude-opus-5"
     default_backend: bedrock
     param_allowlist: [max_tokens]
     price_per_mtok: {input: 5.0, output: 25.0}
 
-  claude-sonnet-4-6:
+  claude-sonnet-5:
     provider_family: claude
     backends:
-      bedrock: "bedrock/global.anthropic.claude-sonnet-4-6"
-      anthropic: "anthropic/claude-sonnet-4-6"
+      bedrock: "bedrock/global.anthropic.claude-sonnet-5"
+      anthropic: "anthropic/claude-sonnet-5"
     default_backend: bedrock
     param_allowlist: [max_tokens]
     price_per_mtok: {input: 3.0, output: 15.0}

@@ -40,20 +40,20 @@ def test_session_id_stable_within_one_invocation():
     namespace = "0123456789abcdef0123456789abcdef"
     kw = dict(
         session_namespace=namespace, benchmark="appworld", task_id="82e2fac_1",
-        arm="harness", model_key="claude-sonnet-4-6", seed=1, trial=0,
+        arm="harness", model_key="claude-sonnet-5", seed=1, trial=0,
         phase="learning",
     )
     a = make_session_id(**kw)
     b = make_session_id(**kw)
     assert a == b == (
-        "appworld-82e2fac_1-harness-claude-sonnet-4-6-s1-learning-t0-"
+        "appworld-82e2fac_1-harness-claude-sonnet-5-s1-learning-t0-"
         "r0123456789abcdef0123456789abcdef"
     )
 
 
 def test_session_ids_change_across_invocations_and_phases():
     common = dict(
-        benchmark="tau2", task_id="37", arm="harness", model_key="claude-sonnet-4-6",
+        benchmark="tau2", task_id="37", arm="harness", model_key="claude-sonnet-5",
         seed=1, trial=0,
     )
     first_namespace = new_session_namespace()
@@ -117,7 +117,7 @@ def test_calibration_uses_recorded_session_id(tmp_path):
     labels = tmp_path / "labels.json"
     current = {
         "schema_version": 2, "benchmark": "tau2", "task_id": "37", "arm": "harness",
-        "model": "claude-sonnet-4-6", "seed": 1, "trial": 0, "phase": "learning",
+        "model": "claude-sonnet-5", "seed": 1, "trial": 0, "phase": "learning",
         "passed": True, "harness": {"session_id": "actual-namespaced-session"},
     }
     records.write_text(json.dumps(current) + "\n", encoding="utf-8")

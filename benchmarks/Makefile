@@ -3,7 +3,7 @@
 # Every target is sugar over a documented `uv run pandabench-*` command; the
 # Makefile carries no logic of its own.
 
-# Per-run knobs (overridable): make appworld ARM=harness MODEL=claude-sonnet-4-6 SEED=1 K=4 LIMIT=2
+# Per-run knobs (overridable): make appworld ARM=harness MODEL=claude-sonnet-5 SEED=1 K=4 LIMIT=2
 #   ARM      baseline | harness
 #   MODEL    a models.yaml key (see `configs/models.yaml`)
 #   SEED     shuffles task order; use several (1 2 3) for replicates

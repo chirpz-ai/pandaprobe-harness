@@ -43,9 +43,9 @@ class ResolvedModel:
     """A model key resolved to a concrete LiteLLM call target."""
 
     key: str
-    """The models.yaml key, e.g. ``claude-sonnet-4-6`` — recorded in results."""
+    """The models.yaml key, e.g. ``claude-sonnet-5`` — recorded in results."""
     litellm_model: str
-    """The LiteLLM string, e.g. ``bedrock/global.anthropic.claude-sonnet-4-6``."""
+    """The LiteLLM string, e.g. ``bedrock/global.anthropic.claude-sonnet-5``."""
     provider: str
     """Coarse provider label, e.g. ``bedrock`` / ``anthropic`` / ``openai``."""
     backend: str | None
