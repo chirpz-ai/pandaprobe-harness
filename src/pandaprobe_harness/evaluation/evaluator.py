@@ -1,7 +1,7 @@
 """Orchestrates metric evaluation against the PandaProbe platform.
 
-Both evaluation scopes run through one batch/poll pipeline, differing only in the
-``--target`` and the id flag:
+Evaluation runs through one batch/poll pipeline parameterized by the platform
+target and its id flag:
 
 1. ``evals runs batch --target <trace|session>
    <--trace-ids|--session-ids> <ids> --metrics <m1,m2>``
@@ -10,13 +10,8 @@ Both evaluation scopes run through one batch/poll pipeline, differing only in th
    (bounded).
 3. Map each score record to a ``MetricScore`` against its threshold.
 
-* :meth:`MetricEvaluator.evaluate_trace` is the v2 path — one trace, the metrics
-  of one tier.
-* :meth:`MetricEvaluator.evaluate_turn` is the v1 session path, kept intact for
-  ``trigger_mode="session"`` and the ablation.
-
-``--signal-weights`` is session-only on the platform and is therefore sent only
-on the session path.
+The harness uses :meth:`MetricEvaluator.evaluate_trace` and
+:meth:`MetricEvaluator.evaluate_traces` for its tiered trace trigger.
 
 Trace ingestion lags turn-end (the SDK flushes on a background thread), so the
 run is retried with backoff while it looks transiently empty/not-found. Every
@@ -27,7 +22,6 @@ never raises into, or blocks, the host agent loop.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Sequence
 
@@ -35,8 +29,7 @@ from ..cli.client import CliClient
 from ..cli.errors import CliError, is_transient
 from ..cli.models import RunCreated, RunScores, ScoreRecord
 from ..config import HarnessConfig
-from ..hook.turn import TurnContext
-from .metrics import EvalReport, Metric, MetricScore
+from .metrics import Metric, MetricScore
 from .traces import TraceLocator
 
 __all__ = ["MetricEvaluator"]
@@ -45,7 +38,7 @@ logger = logging.getLogger("pandaprobe_harness.evaluation")
 
 
 class MetricEvaluator:
-    """Computes the configured session metrics for a turn."""
+    """Computes configured metrics for completed traces."""
 
     def __init__(
         self,
@@ -63,15 +56,6 @@ class MetricEvaluator:
     @property
     def locator(self) -> TraceLocator:
         return self._locator
-
-    async def evaluate_turn(self, ctx: TurnContext) -> EvalReport:
-        """Evaluate the configured session metrics for ``ctx`` (v1 session path)."""
-
-        metrics = self._active_metrics()
-        if not metrics:
-            return EvalReport.from_scores(ctx.session_id, ctx.turn_index, [])
-        scores = await self._run_batch("session", [ctx.session_id], metrics)
-        return EvalReport.from_scores(ctx.session_id, ctx.turn_index, scores)
 
     async def evaluate_trace(
         self, trace_id: str, metric_names: Sequence[str], *, tier: int = 0
@@ -112,24 +96,9 @@ class MetricEvaluator:
         return await self.evaluate_trace(ref.trace_id, metric_names)
 
     async def score_for_trigger(self, session_id: str) -> dict[str, float]:
-        """Re-score a session on whichever signal the configured trigger uses.
+        """Re-score the latest trace on the same metrics that can trigger."""
 
-        The one place that mapping lives, shared by candidate-rule validation and
-        the regression runner: grading a replay on the *same* axis that fired is
-        what makes a promote/retire verdict mean anything. v1 graded replays with
-        the session composites — the metric that floors at roughly the same value
-        for every session — which is why promotion was close to random.
-        """
-
-        if self._config.trigger_mode == "session":
-            report = await self.evaluate_turn(
-                TurnContext(session_id=session_id, turn_index=0)
-            )
-            scores: Sequence[MetricScore] = report.scores
-        else:
-            scores = await self.score_last_trace(
-                session_id, self._config.replay_metrics()
-            )
+        scores = await self.score_last_trace(session_id, self._config.replay_metrics())
         return {
             str(score.metric): score.value
             for score in scores
@@ -206,10 +175,6 @@ class MetricEvaluator:
             id_flag, ",".join(ids),
             "--metrics", ",".join(metric_names),
         ]
-        # `--signal-weights` is session-only on the platform; sending it on the
-        # trace path is a validation error.
-        if target == "session" and self._config.signal_weights:
-            args += ["--signal-weights", json.dumps(self._config.signal_weights)]
         result = await self._cli.run(*args)
         return RunCreated.parse(result.json())
 
@@ -230,9 +195,6 @@ class MetricEvaluator:
         return last
 
     # -- mapping --------------------------------------------------------------
-
-    def _active_metrics(self) -> list[Metric]:
-        return self._resolve(self._config.active_metrics(), target="session")
 
     def _resolve(self, names: Sequence[str], *, target: str) -> list[Metric]:
         """Map metric names to enum members, dropping anything not ``target``-runnable."""
