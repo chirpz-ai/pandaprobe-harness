@@ -32,13 +32,12 @@ __all__ = [
     "Severity",
 ]
 
-Severity = Literal["breach", "relative", "trend", "needs_human"]
+Severity = Literal["breach", "trend", "needs_human"]
 
 _SEVERITY_RANK: dict[str, int] = {
     "trend": 0,
-    "relative": 1,
-    "breach": 2,
-    "needs_human": 3,
+    "breach": 1,
+    "needs_human": 2,
 }
 
 # Notice ids become filenames, so they must be a single safe path component.
@@ -54,6 +53,8 @@ def _safe_notice_id(notice_id: str) -> bool:
 def _as_severity(value: object) -> Severity:
     """Forgiving severity parse; unknown values degrade to ``breach``."""
 
+    if value == "relative":
+        return "trend"  # Pre-0.8 advisory notices must not silently escalate.
     if isinstance(value, str) and value in _SEVERITY_RANK:
         return cast(Severity, value)
     return "breach"
