@@ -74,6 +74,9 @@ class FakeCliClient:
     # session id -> explicit trace ids (oldest first). A session absent here
     # grows by one synthetic trace on every `traces list` call.
     session_traces: dict[str, list[str]] = field(default_factory=dict)
+    # session id -> successive oldest-first snapshots returned by trace listing.
+    # The last snapshot repeats after the script is exhausted.
+    session_trace_listings: dict[str, list[list[str]]] = field(default_factory=dict)
     auto_traces: bool = True
     metric_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Per-metric terminal status override (e.g. "FAILED" → null value).
@@ -108,6 +111,7 @@ class FakeCliClient:
     _counter: int = 0
     _runs_created: int = 0
     _auto_traces: dict[str, list[str]] = field(default_factory=dict)
+    _trace_listing_counts: dict[str, int] = field(default_factory=dict)
 
     # -- CliClient Protocol ---------------------------------------------------
 
@@ -208,7 +212,13 @@ class FakeCliClient:
         session_id = _flag_value(args, "--session-id")
         if not session_id:
             return {"items": [], "pagination": {"total": 0}}
-        ids = self.session_traces.get(session_id)
+        scripted = self.session_trace_listings.get(session_id)
+        if scripted:
+            count = self._trace_listing_counts.get(session_id, 0)
+            ids = scripted[min(count, len(scripted) - 1)]
+            self._trace_listing_counts[session_id] = count + 1
+        else:
+            ids = self.session_traces.get(session_id)
         if ids is None:
             # Not scripted: model one-trace-per-turn by appending on each listing.
             ids = self._auto_traces.setdefault(session_id, [])
