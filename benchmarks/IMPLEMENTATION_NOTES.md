@@ -6,7 +6,7 @@ building. Read alongside `RUNNING.md`.
 
 ## Pinned versions (benchmarks/uv.lock)
 
-- `pandaprobe-harness==0.7.0` (exact) — from PyPI, never `../src`.
+- `pandaprobe-harness==0.8.0` (exact) — from PyPI, never `../src`.
 - `harbor==0.18.0` — installed in this project so its custom-agent import can resolve
   `pandabench`.
 - `pandaprobe>=0.5` (the SDK; native LiteLLM wrapper + session binding).
