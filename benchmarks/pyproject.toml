@@ -15,7 +15,7 @@ requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
     # The harness, exact-pinned so the study measures one fixed artifact.
-    "pandaprobe-harness==0.7.0",
+    "pandaprobe-harness==0.8.0",
     # The PandaProbe SDK: session binding + the native LiteLLM wrapper (>=0.5)
     # that auto-traces every litellm call so sessions are scoreable.
     "pandaprobe>=0.5",
