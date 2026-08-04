@@ -46,7 +46,7 @@ make smoke                # dry-run pipeline gate: both arms x tiny task set, al
 make report               # regenerate results/summary/ from results/runs/
 
 # One real arm of one benchmark (needs that harness provisioned + creds):
-make appworld ARM=harness  MODEL=claude-sonnet-4-6 SEED=1 BACKEND=bedrock K=4 LIMIT=5
+make appworld ARM=harness  MODEL=claude-sonnet-5 SEED=1 BACKEND=bedrock K=4 LIMIT=5
 make terminal ARM=baseline MODEL=gemini-3.1-pro  SEED=1
 make tau2     ARM=harness   MODEL=gpt-5.6-terra    SEED=1
 
