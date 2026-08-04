@@ -177,7 +177,7 @@ def derive_notice_tags(notice: DiagnosticNotice) -> tuple[str, ...]:
 
 
 #: Lexical retrieval tokenizer: word-ish tokens, casefolded, ≥2 chars. ":"
-#: splits signatures ("breach:agent_reliability" → breach + agent_reliability)
+#: splits signatures ("breach:tool_correctness" → breach + tool_correctness)
 #: while "_" keeps metric names whole.
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
 
@@ -219,7 +219,7 @@ def _rank(rules: list[Rule], scores: dict[str, float]) -> list[Rule]:
 def _matches_metric_family(signatures: Sequence[str], metric: str | None) -> bool:
     """Whether any signature belongs to the metric's condition family.
 
-    Signatures look like ``breach:agent_reliability``; the family is "any
+    Signatures look like ``breach:tool_correctness``; the family is "any
     condition on this metric". With no metric, any signature at all matches.
     """
 
