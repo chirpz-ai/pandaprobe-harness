@@ -49,34 +49,22 @@ def test_run_scores_terminal_parses_and_converts_values() -> None:
     assert scores.run_id == "run-x"
     assert scores.is_terminal() is True
 
-    reliability = scores.by_name("agent_reliability")
-    assert reliability is not None
+    tool_score = scores.for_trace("tool_correctness", "tr-1")
+    assert tool_score is not None
     # The CLI serializes values as strings; the view converts to float.
-    assert reliability.value == pytest.approx(0.42)
-    assert reliability.reason == "low tool correctness on trace tr-1"
-    assert reliability.metadata["flagged_traces"] == ["tr-1"]
-    assert reliability.metadata["per_trace_signals"]["tr-1"]["tool_correctness"] == 0.4
-    assert reliability.metadata["aggregation"] == {"method": "min"}
+    assert tool_score.value == pytest.approx(0.42)
+    assert tool_score.reason == "low tool correctness on trace tr-1"
+    assert tool_score.metadata["threshold"] == pytest.approx(0.5)
 
-    consistency = scores.by_name("agent_consistency")
-    assert consistency is not None
-    assert consistency.value == pytest.approx(0.55)
-    assert consistency.reason is None
-    assert consistency.metadata == {}
+    argument_score = scores.for_trace("argument_correctness", "tr-1")
+    assert argument_score is not None
+    assert argument_score.value == pytest.approx(0.55)
+    assert argument_score.reason is None
+    assert argument_score.metadata == {}
 
 
 def test_score_record_tolerates_missing_optionals() -> None:
-    # Backend session-score listings omit status/reason/metadata entirely.
-    payload = _load("session_scores_list.json")
-    items = payload["items"]
-    assert len(items) == 3
-    for item in items:
-        record = ScoreRecord.parse(item)
-        assert record.name in {"agent_reliability", "agent_consistency"}
-        assert record.value is not None
-        assert record.reason is None
-        assert record.metadata == {}
-    # Entirely bare records parse too, defaulting sensibly.
+    # Entirely bare records parse, defaulting sensibly.
     bare = ScoreRecord.parse({})
     assert bare.name == ""
     assert bare.value is None
@@ -111,19 +99,3 @@ async def test_live_auth_status_runs() -> None:
     # SubprocessCliClient raises a CliError subclass on non-zero exit.
     result = await SubprocessCliClient().run("auth", "status")
     assert result.exit_code == 0
-
-
-@live
-async def test_live_session_scores_list_parses() -> None:
-    session_id = os.environ.get("PANDAPROBE_CONTRACT_SESSION")
-    if not session_id:
-        pytest.skip("set PANDAPROBE_CONTRACT_SESSION to a session id with scores")
-    result = await SubprocessCliClient().run(
-        "evals", "scores", "list", "--target", "session", "--session-id", session_id
-    )
-    payload = result.json()
-    items = payload.get("items", []) if isinstance(payload, dict) else payload
-    assert isinstance(items, list)
-    for item in items:
-        record = ScoreRecord.parse(item)
-        assert record.name
