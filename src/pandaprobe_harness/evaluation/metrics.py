@@ -3,17 +3,9 @@
 Scores returned by the platform are in ``[0.0, 1.0]`` where **higher is better**.
 A metric is *breached* when its score is strictly below its configured threshold.
 
-Two scopes exist on the platform, distinguished by :attr:`Metric.target`:
-
-* **trace** — the eight per-trace metrics the v2 tiered trigger runs. These are
-  the discriminating signals: they are scored against a single trace, so they do
-  not floor the way an aggregate does.
-* **session** — ``agent_reliability`` and ``agent_consistency``, registered via
-  ``@register_session_metric``. They are evaluated by ``session_id`` and roll up
-  the per-trace signals ``confidence``, ``coherence``, ``loop_detection`` and
-  ``tool_correctness``. Because that rollup is worst-case, one bad trace floors
-  the score — which is why v2 demotes them to the ``trigger_mode="session"``
-  ablation path rather than the default trigger.
+The platform metrics are trace-scoped. The tiered trigger evaluates completed
+traces directly, preserving the trajectory and step-level signals that session
+aggregation obscures.
 
 ``outcome_correct`` is neither: it is the synthetic score produced locally by an
 optional developer-supplied verifier, so its target is ``"local"``.
@@ -31,14 +23,13 @@ __all__ = [
     "EvalReport",
     "Metric",
     "MetricScore",
-    "SIGNAL_NAMES",
     "TRACE_METRIC_NAMES",
 ]
 
 #: Which tiers breach on a score's *absolute* value. The one place this policy
 #: lives, so every consumer agrees on it:
 #:
-#: * **0** (session composites, verifier outcome) — yes, a low value is the finding.
+#: * **0** (verifier outcome) — yes, a low value is the finding.
 #: * **1** — no. Tier 1 breaches on *trajectory* only: an agent three steps into a
 #:   task has legitimately not completed it, so a low early ``task_completion`` is
 #:   expected, not a fault. Its verdict is ``stalled`` / ``regressed``. Treating the
@@ -47,14 +38,6 @@ __all__ = [
 #: * **3** — no. Tier 3 only ever runs to *explain* a confirmed Tier-2 breach, so it
 #:   must never be a breach source of its own.
 ABSOLUTE_BREACH_TIERS: frozenset[int] = frozenset({0, 2})
-
-# The trace-level signals the platform aggregates into the session metrics.
-SIGNAL_NAMES: tuple[str, ...] = (
-    "confidence",
-    "coherence",
-    "loop_detection",
-    "tool_correctness",
-)
 
 # Exactly the metrics `evals metrics --target trace` reports as runnable.
 # `loop_detection` is deliberately absent: it is not trace-runnable (HTTP 422)
@@ -76,11 +59,7 @@ TRACE_METRIC_NAMES: frozenset[str] = frozenset(
 class Metric(StrEnum):
     """Registry names of the metrics this harness evaluates."""
 
-    # Session composites (v1 trigger; retained for the ablation).
-    RELIABILITY = "agent_reliability"
-    CONSISTENCY = "agent_consistency"
-
-    # Trace metrics (the v2 trigger).
+    # Trace metrics.
     TASK_COMPLETION = "task_completion"
     COHERENCE = "coherence"
     TOOL_CORRECTNESS = "tool_correctness"
@@ -99,7 +78,7 @@ class Metric(StrEnum):
 
         if self is Metric.OUTCOME:
             return "local"
-        return "trace" if self.value in TRACE_METRIC_NAMES else "session"
+        return "trace"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,16 +90,10 @@ class MetricScore:
     threshold: float
     reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    # Set by the trend detector; an absolute breach is not the only trigger.
-    trend_declining: bool = False
-    relative_breach: bool = False
-    # Soft corroborator (latest score in the low tail of its recent window);
-    # alert-worthy but advisory — never escalates to a critical SYSTEM alert.
-    percentile_breach: bool = False
     # The trace this score was computed against (trace-target metrics only).
     trace_id: str | None = None
     # Which tier produced this score: 1/2/3 for the trace tiers, 0 for the
-    # session composites and for a verifier's synthetic outcome score.
+    # a verifier's synthetic outcome score.
     tier: int = 0
     # Set by the trajectory gate on Tier-1 metrics. Neither is an absolute
     # breach: `stalled` means no gain toward the target across the window,
@@ -166,12 +139,6 @@ class MetricScore:
         out: list[str] = []
         if self.breached:
             out.append("breach")
-        if self.relative_breach:
-            out.append("relative")
-        if self.trend_declining:
-            out.append("trend")
-        if self.percentile_breach:
-            out.append("percentile")
         if self.stalled:
             out.append("stall")
         if self.regressed:
@@ -194,11 +161,6 @@ class MetricScore:
         return [str(t) for t in raw] if isinstance(raw, list) else []
 
     @property
-    def per_trace_signals(self) -> dict[str, Any]:
-        raw = self.metadata.get("per_trace_signals")
-        return dict(raw) if isinstance(raw, dict) else {}
-
-    @property
     def aggregation(self) -> dict[str, Any]:
         raw = self.metadata.get("aggregation")
         return dict(raw) if isinstance(raw, dict) else {}
@@ -210,9 +172,6 @@ class MetricScore:
             "threshold": self.threshold,
             "breached": self.breached,
             "below_threshold": self.below_threshold,
-            "relative_breach": self.relative_breach,
-            "trend_declining": self.trend_declining,
-            "percentile_breach": self.percentile_breach,
             "stalled": self.stalled,
             "regressed": self.regressed,
             "pending": self.pending,
@@ -221,7 +180,6 @@ class MetricScore:
             "tier": self.tier,
             "flagged_traces": self.flagged_traces,
             "aggregation": self.aggregation,
-            "per_trace_signals": self.per_trace_signals,
         }
 
 
@@ -241,7 +199,7 @@ class EvalReport:
 
     @property
     def any_alert(self) -> bool:
-        """Any alerting condition (absolute, relative, or trend)."""
+        """Any alerting condition (breach, stall, or regression)."""
 
         return any(score.alerting for score in self.scores)
 
@@ -257,10 +215,9 @@ class EvalReport:
     def flagged_traces(self) -> list[str]:
         """Trace ids implicated by this report, de-duplicated, order-preserving.
 
-        Two sources: the ``flagged_traces`` metadata a *session* composite
-        returns, and the ``trace_id`` of any alerting *trace*-scoped score. The
-        latter is what makes a trace-tier notice point at the trace the agent
-        needs to look at.
+        A score can identify a trace through platform metadata or its own
+        trace-scoped ``trace_id``. The latter is what makes a tiered notice point
+        at the trace the agent needs to inspect.
         """
 
         seen: dict[str, None] = {}
@@ -283,22 +240,12 @@ class EvalReport:
     def signal_breakdown(self) -> dict[str, dict[str, Any]]:
         """Per-trace detail merged across scores → ``{trace_id: {name: ...}}``.
 
-        Two contributions, in the same shape so the agent reads one map:
-
-        * ``per_trace_signals`` from a *session* composite — the four signals
-          (``confidence``, ``coherence``, ``loop_detection``,
-          ``tool_correctness``) it aggregated, already present in its metadata.
-        * the resolved value of each *trace*-scoped score, keyed by its own
-          ``trace_id`` — so a tiered report shows what each trace scored.
-
-        Either way this costs no extra CLI calls.
+        Each resolved trace-scoped score is keyed by its own ``trace_id``. This
+        costs no extra CLI calls.
         """
 
         merged: dict[str, dict[str, Any]] = {}
         for score in self.scores:
-            for trace_id, signals in score.per_trace_signals.items():
-                if isinstance(signals, dict):
-                    merged.setdefault(trace_id, {}).update(signals)
             if score.trace_id and score.value is not None:
                 merged.setdefault(score.trace_id, {})[str(score.metric)] = score.value
         return merged
