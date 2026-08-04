@@ -5,8 +5,8 @@ cheap producing-side controls (budget, sampling, per-session rate limit),
 supersedes any in-flight evaluation for the session, and schedules a detached
 wrapper task. The wrapper — :meth:`_run_eval` — awaits the evaluation under a
 global concurrency semaphore *and handles the resolved report itself*: it
-feeds scores to the local EWMA trend detector, applies the dedup/cooldown
-gate, and (when a breach/relative/trend condition fires) writes the telemetry
+applies the dedup/cooldown gate and, when a breach, stall, or regression fires,
+writes the telemetry
 dump and posts a structured :class:`DiagnosticNotice` to the mailbox, where
 the agent will *pull* it via its harness toolset.
 
@@ -33,7 +33,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -42,10 +42,10 @@ from ..cli.errors import CliAuthError, CliError
 from ..config import HarnessConfig
 from ..evaluation.evaluator import MetricEvaluator
 from ..evaluation.history import ScoreHistoryStore
+from ..evaluation.history_source import HistorySource
 from ..evaluation.metrics import EvalReport
 from ..evaluation.traces import TraceLocator
 from ..evaluation.trajectory import TrajectoryGate
-from ..evaluation.trends import TrendDetector
 from ..workspace.evalset import EvalSet, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.mailbox import DiagnosticNotice, Mailbox, NoticeMetric, Severity
@@ -104,7 +104,7 @@ class PandaHarnessHook:
         filesystem: HarnessFilesystem | None = None,
         evaluator: MetricEvaluator | None = None,
         parser: Callable[[object], TurnContext] | None = None,
-        history: ScoreHistoryStore | None = None,
+        history: HistorySource | None = None,
         evalset: EvalSet | None = None,
         validation: ValidationEngine | None = None,
         replay: ReplayFn | None = None,
@@ -113,14 +113,7 @@ class PandaHarnessHook:
     ) -> None:
         self._cli = cli
         self._config = config or HarnessConfig()
-        trace_mode = self._config.trigger_mode != "session"
         self._evaluator = evaluator or MetricEvaluator(cli, self._config)
-        if verifier is not None and not trace_mode:
-            logger.warning(
-                "an outcome verifier was supplied but trigger_mode=%r; the verifier "
-                "only runs on the trace trigger and will be ignored",
-                self._config.trigger_mode,
-            )
         if filesystem is None:
             # Imported lazily to avoid a hard cycle at module import time.
             from ..filesystem.layout import HarnessFilesystem
@@ -165,31 +158,18 @@ class PandaHarnessHook:
 
         # One store instance must be shared with any other reader (the store
         # memoizes its file cache), so the facade passes its instance in.
-        self._history: ScoreHistoryStore | None = history
-        if self._history is None and (
-            self._config.enable_trend
-            or self._config.hydrate_history_from_backend
-            # The trajectory gate keeps its peak/stall state in the same store,
-            # so the trace trigger needs it regardless of the trend knob.
-            or trace_mode
-        ):
-            self._history = ScoreHistoryStore(self._config)
-        self._detector: TrendDetector | None = None
-        if self._config.enable_trend and self._history is not None:
-            self._detector = TrendDetector(self._config, self._history)
+        self._history: HistorySource = history or ScoreHistoryStore(self._config)
 
-        # The v2 trace trigger: trace discovery + trajectory gate + tier ladder.
+        # Trace discovery + trajectory gate + tier ladder.
         # Share the evaluator's locator so one seen-set governs both paths.
         self._locator = locator or self._evaluator.locator
-        self._tiers: TierRunner | None = None
-        if trace_mode and self._history is not None:
-            self._tiers = TierRunner(
-                self._config,
-                self._evaluator,
-                self._locator,
-                TrajectoryGate(self._config, self._history),
-                verifier=verifier,
-            )
+        self._tiers = TierRunner(
+            self._config,
+            self._evaluator,
+            self._locator,
+            TrajectoryGate(self._config, self._history),
+            verifier=verifier,
+        )
 
         # Task tracking: per-session latest task (supersede + refresh) and a
         # strong-ref set so detached tasks are never garbage-collected early.
@@ -209,11 +189,10 @@ class PandaHarnessHook:
         self._evals_launched = 0
         self._budget_logged = False
 
-        # Startup health check (memoized) + one-time backend hydration.
+        # Startup health check (memoized).
         self._health_lock = asyncio.Lock()
         self._health_checked = False
         self._degraded_reason: str | None = None
-        self._hydrated: set[str] = set()
 
     # -- surface ---------------------------------------------------------------
 
@@ -334,8 +313,7 @@ class PandaHarnessHook:
         """Drop the earliest-seen session's bookkeeping (memory bound).
 
         A later turn from an evicted session simply restarts its sampling /
-        rate-limit counters and may re-hydrate once — never a correctness bug,
-        just a bounded reset.
+        rate-limit counters — never a correctness bug, just a bounded reset.
         """
 
         try:
@@ -344,7 +322,6 @@ class PandaHarnessHook:
             return
         self._turn_counts.pop(oldest, None)
         self._last_eval_at.pop(oldest, None)
-        self._hydrated.discard(oldest)
         self._notice_state.pop(oldest, None)
         self._replay_inputs.pop(oldest, None)
         # The locator's seen-set is bounded on its own, but evict in step so a
@@ -369,21 +346,9 @@ class PandaHarnessHook:
         try:
             if not await self._ensure_healthy():
                 return None
-            if (
-                self._config.hydrate_history_from_backend
-                and self._history is not None
-                and ctx.session_id not in self._hydrated
-            ):
-                await self._hydrate(ctx.session_id)
             async with self._semaphore:
-                if self._tiers is not None:
-                    report = await self._tiers.run(ctx)
-                else:
-                    report = await self._evaluator.evaluate_turn(ctx)
-            # The trace path already folded every score into the gate (which
-            # records history itself), so re-running the trend detector here
-            # would double-count the series.
-            return await self._handle_report(report, apply_trends=self._tiers is None)
+                report = await self._tiers.run(ctx)
+            return await self._handle_report(report)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - degrade gracefully, never lose the error
@@ -490,21 +455,13 @@ class PandaHarnessHook:
 
     # -- report handling ---------------------------------------------------------
 
-    async def _handle_report(
-        self, report: EvalReport, *, apply_trends: bool = True
-    ) -> EvalReport:
-        # 1. Feed every resolved score to the trend detector (records history +
-        #    sets trend/relative flags). Runs in a thread (sync store I/O).
-        #    Skipped on the trace path, where the trajectory gate already did it.
-        if apply_trends and self._detector is not None:
-            report = await asyncio.to_thread(self._apply_trends, report)
-
-        # 2. Candidate-rule validation: every handled report (healthy or
+    async def _handle_report(self, report: EvalReport) -> EvalReport:
+        # 1. Candidate-rule validation: every handled report (healthy or
         #    alerting) feeds the forward trials — the trial needs the
         #    denominator — and kicks one single-flight evaluation round.
         await self._observe_for_validation(report)
 
-        # 3. Dedup / cooldown / recovery gate.
+        # 2. Dedup / cooldown / recovery gate.
         post, recovered = self._should_notice(report)
         if recovered:
             self._breaker_tripped = False
@@ -516,7 +473,7 @@ class PandaHarnessHook:
         if not post:
             return report
 
-        # 4. Circuit breaker, dump, notice (+ eval-case capture inside the
+        # 3. Circuit breaker, dump, notice (+ eval-case capture inside the
         #    same thread hop).
         try:
             payload = await self._build_dump(report)
@@ -643,10 +600,8 @@ class PandaHarnessHook:
         self._journal.record(
             {"type": "notice", "observe_only": self._config.observe_only, **notice.to_json()}
         )
-        # Only absolute breaches become failure cases: trend/relative/
-        # percentile notices are advisory (their baseline scores can sit
-        # above the threshold, which would pollute the eval-set and its
-        # proxy labels), and `needs_human` is a rate alarm.
+        # Only breach-severity notices become failure cases. Tier-1 trajectory
+        # notices are advisory, and `needs_human` is a rate alarm.
         if (
             self._capture_enabled()
             and self._evalset is not None
@@ -669,25 +624,6 @@ class PandaHarnessHook:
 
     def _capture_enabled(self) -> bool:
         return self._config.capture_eval_cases and self._evalset is not None
-
-    # -- trend application ----------------------------------------------------
-
-    def _apply_trends(self, report: EvalReport) -> EvalReport:
-        assert self._detector is not None
-        updated = []
-        for score in report.scores:
-            if not score.pending and score.value is not None:
-                verdict = self._detector.update(
-                    report.session_id, str(score.metric), score.value
-                )
-                score = replace(
-                    score,
-                    trend_declining=verdict.declining,
-                    relative_breach=score.relative_breach or verdict.relative_breach,
-                    percentile_breach=verdict.percentile_breach,
-                )
-            updated.append(score)
-        return replace(report, scores=tuple(updated))
 
     # -- notice decisioning -----------------------------------------------------
 
@@ -731,8 +667,6 @@ class PandaHarnessHook:
     def _severity(report: EvalReport) -> Severity:
         if any(score.breached for score in report.scores):
             return "breach"
-        if any(score.relative_breach for score in report.scores):
-            return "relative"
         return "trend"
 
     # -- notice construction ------------------------------------------------------
@@ -785,9 +719,9 @@ class PandaHarnessHook:
 
         The only mechanical scope decision the harness makes: a surgical Tier-2/3
         breach is about a specific step, so it is ``scoped``; anything else (a
-        Tier-1 trajectory fire, a session composite, a verifier outcome) is a
-        whole-trajectory concern, so it is ``global``. Any finer organization is
-        the agent's to invent.
+        Tier-1 trajectory fire or verifier outcome) is a whole-trajectory
+        concern, so it is ``global``. Any finer organization is the agent's to
+        invent.
         """
 
         for score in report.alerting_scores:
@@ -864,56 +798,6 @@ class PandaHarnessHook:
         if not self._config.health_check:
             return True
         return await self.check_health()
-
-    # -- backend hydration (shared trend state at scale) ---------------------------
-
-    async def _hydrate(self, session_id: str) -> None:
-        """Seed local trend history from the backend, once per session."""
-
-        self._hydrated.add(session_id)  # one attempt, even on failure
-        assert self._history is not None
-        try:
-            result = await self._cli.run(
-                "evals", "scores", "list", "--target", "session", "--session-id", session_id
-            )
-            payload = result.json()
-        except CliError:
-            logger.debug("history hydration degraded for session=%s", session_id)
-            return
-
-        items: list[Any]
-        if isinstance(payload, dict):
-            raw = payload.get("items") or payload.get("scores") or []
-            items = raw if isinstance(raw, list) else []
-        elif isinstance(payload, list):
-            items = payload
-        else:
-            items = []
-
-        by_metric: dict[str, list[tuple[float, str, str | None]]] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name") or item.get("metric")
-            value = item.get("value")
-            try:
-                numeric = float(value)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                continue
-            if not name:
-                continue
-            ts = str(item.get("created_at") or item.get("ts") or "")
-            run_id = item.get("run_id") or item.get("id")
-            by_metric.setdefault(str(name), []).append(
-                (numeric, ts, str(run_id) if run_id is not None else None)
-            )
-        for metric, samples in by_metric.items():
-            # EWMA folding is order-sensitive, so seed in chronological order.
-            # The backend commonly returns scores newest-first; samples without
-            # a timestamp sort to the front (treated as oldest).
-            ordered = sorted(samples, key=lambda s: s[1])
-            await asyncio.to_thread(self._history.seed, session_id, metric, ordered)
-
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
