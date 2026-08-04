@@ -9,9 +9,13 @@ including no-collateral-damage). See ``appworld_env`` for the isolation rational
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 import time
 from typing import Any
+
+import httpx
 
 from ..agents.harness_wiring import HarnessWiring
 from ..agents.loop import run_agent_loop
@@ -88,7 +92,7 @@ class AppWorldRunner(SingleTaskRunner):
         # serializes the harness arm; the cost is that replays no longer
         # overlap live trials.
         self._server_lock = asyncio.Lock()
-        # The most recent /evaluate verdict per task, as a pass ratio. This is the
+        # The /evaluate verdict per session, as a pass ratio. This is the
         # harness's optional outcome verifier (`outcome_for`), and caching is what
         # makes it safe: the per-turn barrier runs *inside* `_server_lock`, so a
         # verifier that re-acquired it would deadlock, and calling /evaluate
@@ -98,8 +102,8 @@ class AppWorldRunner(SingleTaskRunner):
     def list_tasks(self, dataset: str) -> list[str]:
         return self._env.list_task_ids(dataset or "dev")
 
-    def outcome_for(self, task_id: str) -> float | None:
-        """AppWorld's own verdict for ``task_id`` as a pass ratio, if one exists.
+    def outcome_for(self, task_id: str, session_id: str) -> float | None:
+        """AppWorld's verdict for ``session_id`` as a pass ratio, if one exists.
 
         Deliberately the *continuous* ``num_passes / num_tests`` rather than the
         binary ``success``: in a measured 40-trial run binary success was 1/40
@@ -107,7 +111,8 @@ class AppWorldRunner(SingleTaskRunner):
         sessions — exactly the non-discriminating signal v2 exists to replace.
         """
 
-        return self._outcomes.get(task_id)
+        del task_id
+        return self._outcomes.get(session_id)
 
     async def run_once(
         self,
@@ -140,9 +145,10 @@ class AppWorldRunner(SingleTaskRunner):
         preamble: str | None = None,
     ) -> TaskOutcome:
         start = time.monotonic()
+        experiment_name = _experiment_name(self._experiment, session_id)
         try:
             info = await asyncio.to_thread(
-                self._env.initialize, task_id, experiment_name=self._experiment
+                self._env.initialize, task_id, experiment_name=experiment_name
             )
             api_docs = await asyncio.to_thread(self._env.api_docs)
         except Exception as exc:  # noqa: BLE001 - env failure is a trial error, not a crash
@@ -155,47 +161,94 @@ class AppWorldRunner(SingleTaskRunner):
 
         user_msg = _task_message(info)
 
-        async def executor(name: str, args: dict[str, Any]) -> Any:
-            if name != "execute":
-                return {"error": f"unknown tool {name!r}"}
-            return await asyncio.to_thread(self._env.execute, task_id, str(args.get("code", "")))
-
-        result = await run_agent_loop(
-            client=client, model=model, session_id=session_id,
-            system_prompt=system_prompt, tools=[_EXECUTE_TOOL], tool_executor=executor,
-            initial_messages=[{"role": "user", "content": user_msg}],
-            max_turns=max_turns, wiring=wiring,
-        )
-
+        server_error: str | None = None
+        eval_error: Exception | None = None
+        verdict = None
         try:
-            verdict = await asyncio.to_thread(self._env.evaluate, task_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("appworld evaluate failed for %s: %s", task_id, exc)
-            return TaskOutcome(
-                passed=False, native_metrics={"eval_error": str(exc)}, turns=result.turns,
-                wall_time_s=time.monotonic() - start, usage=result.usage,
-                error=result.error or f"evaluate: {exc}",
+            async def executor(name: str, args: dict[str, Any]) -> Any:
+                nonlocal server_error
+                if name != "execute":
+                    return {"error": f"unknown tool {name!r}"}
+                try:
+                    return await asyncio.to_thread(
+                        self._env.execute, task_id, str(args.get("code", ""))
+                    )
+                except Exception as exc:
+                    if server_error is None and _is_http_5xx(exc):
+                        server_error = f"execute: {exc}"
+                    raise
+
+            result = await run_agent_loop(
+                client=client, model=model, session_id=session_id,
+                system_prompt=system_prompt, tools=[_EXECUTE_TOOL], tool_executor=executor,
+                initial_messages=[{"role": "user", "content": user_msg}],
+                max_turns=max_turns, wiring=wiring,
             )
+
+            try:
+                verdict = await asyncio.to_thread(self._env.evaluate, task_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("appworld evaluate failed for %s: %s", task_id, exc)
+                eval_error = exc
+                if server_error is None and _is_http_5xx(exc):
+                    server_error = f"evaluate: {exc}"
         finally:
             await asyncio.to_thread(self._env.close, task_id)
+            if server_error is not None:
+                await self._recover_server()
+
+        if eval_error is not None:
+            return TaskOutcome(
+                passed=False, native_metrics={"eval_error": str(eval_error)}, turns=result.turns,
+                wall_time_s=time.monotonic() - start, usage=result.usage,
+                error=result.error or f"evaluate: {eval_error}",
+            )
+
+        assert verdict is not None
 
         pass_ratio = verdict.num_passes / verdict.num_tests if verdict.num_tests else 0.0
-        self._outcomes[task_id] = pass_ratio
+        native_metrics = {
+            "success": verdict.success,
+            "num_tests": verdict.num_tests,
+            "num_passes": verdict.num_passes,
+            "pass_ratio": pass_ratio,
+            "difficulty": verdict.difficulty,
+            "stopped_reason": result.stopped_reason,
+        }
+        if server_error is not None:
+            native_metrics["server_error"] = server_error
+            return TaskOutcome(
+                passed=False,
+                native_metrics=native_metrics,
+                turns=result.turns,
+                wall_time_s=time.monotonic() - start,
+                usage=result.usage,
+                error=result.error or server_error,
+            )
+
+        self._outcomes[session_id] = pass_ratio
         return TaskOutcome(
             passed=verdict.success,
-            native_metrics={
-                "success": verdict.success,
-                "num_tests": verdict.num_tests,
-                "num_passes": verdict.num_passes,
-                "pass_ratio": pass_ratio,
-                "difficulty": verdict.difficulty,
-                "stopped_reason": result.stopped_reason,
-            },
+            native_metrics=native_metrics,
             turns=result.turns,
             wall_time_s=time.monotonic() - start,
             usage=result.usage,
             error=result.error,
         )
+
+    async def _recover_server(self) -> None:
+        if self._server is None:
+            logger.warning(
+                "AppWorld returned HTTP 5xx, but PandaBench has no owned server to restart"
+            )
+            return
+        if not self._server.owns_process:
+            self._server.restart()
+            return
+        try:
+            await asyncio.to_thread(self._server.restart)
+        except Exception as exc:  # noqa: BLE001 - preserve the trial record
+            logger.error("could not restart owned AppWorld server after HTTP 5xx: %s", exc)
 
     async def aclose(self) -> None:
         if self._server is not None:
@@ -211,6 +264,16 @@ def _task_message(info: Any) -> str:
     if sup:
         lines += ["", f"Supervisor details: {sup}"]
     return "\n".join(lines)
+
+
+def _experiment_name(base: str, session_id: str) -> str:
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-._") or "pandabench"
+    digest = hashlib.sha256(session_id.encode()).hexdigest()[:16]
+    return f"{safe_base[:40]}-{digest}"
+
+
+def _is_http_5xx(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
 
 
 def _errored(msg: str, elapsed: float) -> TaskOutcome:
