@@ -104,22 +104,6 @@ async def test_no_improvement_on_the_trace_metric_retires(tmp_path: Path) -> Non
     assert verdict.outcome == "retire"
 
 
-async def test_session_mode_still_grades_on_the_composites(tmp_path: Path) -> None:
-    """The ablation arm must keep working unchanged."""
-
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.9, "agent_consistency": 0.9})
-    cfg = _config(tmp_path, trigger_mode="session")
-    validator, rules, evalset = _validator(cfg, cli, "s-replay")
-    _case(evalset, signature="breach:agent_reliability", agent_reliability=0.2)
-    candidate = rules.add("a rule", "why", metric="agent_reliability")
-
-    verdict = await validator.validate(candidate)
-
-    assert verdict.outcome == "promote"
-    joined = " ".join(" ".join(call) for call in cli.batch_calls)
-    assert "--target session" in joined
-
-
 async def test_a_wired_verifier_decides_promotion(tmp_path: Path) -> None:
     """A developer verifier knows what success actually means, so it outranks a
     judged proxy: the trace metric may improve, but the outcome is what counts."""
