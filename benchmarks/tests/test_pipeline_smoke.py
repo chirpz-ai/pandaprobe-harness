@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from pandabench.agents.harness_wiring import HarnessWiring
 from pandabench.config import load_study
-from pandabench.providers.litellm_client import ChatClient
+from pandabench.providers.litellm_client import ChatClient, Usage
 from pandabench.providers.models import ResolvedModel, load_registry
 from pandabench.report import aggregate
 from pandabench.runners.base import BenchmarkRunner, TaskOutcome
@@ -40,6 +44,30 @@ class RecordingMockTaskRunner(MockTaskRunner):
             task_id=task_id, session_id=session_id, model=model, client=client,
             max_turns=max_turns, wiring=wiring, preamble=preamble,
         )
+
+
+class ReplayTaskRunner(MockTaskRunner):
+    def __init__(self, events: list[str], *, fail: bool = False) -> None:
+        super().__init__("appworld")
+        self._events = events
+        self._fail = fail
+
+    async def run_once(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        model: ResolvedModel,
+        client: ChatClient,
+        max_turns: int,
+        wiring: HarnessWiring | None,
+        preamble: str | None = None,
+    ) -> TaskOutcome:
+        del task_id, session_id, model, client, max_turns, wiring, preamble
+        self._events.append("run")
+        if self._fail:
+            raise RuntimeError("replay failed")
+        return TaskOutcome(False, {}, 0, 0.0, Usage())
 
 
 def _runner(
@@ -105,6 +133,36 @@ async def test_repeated_setup_gets_a_fresh_remote_session_namespace(tmp_path):
 
     assert len(first.session_ids) == len(second.session_ids) == 1
     assert first.session_ids[0] != second.session_ids[0]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_replay_flushes_traces_before_return_or_error(tmp_path, monkeypatch, fail):
+    events: list[str] = []
+
+    class RecordingReplayClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def flush(self) -> None:
+            events.append("flush")
+
+    monkeypatch.setattr("pandabench.runners.base.LiteLLMClient", RecordingReplayClient)
+    runner = _runner(tmp_path, ReplayTaskRunner(events, fail=fail))
+    model = load_registry(CONFIGS / "models.yaml").resolve("mock")
+    replay = runner._make_replay("appworld", model, 1, "namespace")
+    case = SimpleNamespace(id="case-1", replay_input={"task_id": "same-task"})
+
+    if fail:
+        with pytest.raises(RuntimeError, match="replay failed"):
+            await replay(case, "candidate rule")
+    else:
+        session_id = await replay(case, "candidate rule")
+        events.append("validation_lookup")
+        assert "-replay-" in session_id
+
+    assert events[:2] == ["run", "flush"]
+    if not fail:
+        assert events == ["run", "flush", "validation_lookup"]
 
 
 async def test_report_keeps_datasets_as_separate_benchmark_cells(tmp_path):
