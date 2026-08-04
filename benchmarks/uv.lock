@@ -2006,7 +2006,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandaprobe", specifier = ">=0.5" },
-    { name = "pandaprobe-harness", specifier = "==0.7.0" },
+    { name = "pandaprobe-harness", specifier = "==0.8.0" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -2041,11 +2041,11 @@ wheels = [
 
 [[package]]
 name = "pandaprobe-harness"
-version = "0.7.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/12/39/ac708388dccef673a62da8cfaaf57022da7099afad966e547556ba3d53e8/pandaprobe_harness-0.7.0.tar.gz", hash = "sha256:1c4eeed9c9e0b1b025a92662e4d76e6bddefda9f0b1405a8429f7311386b5385", size = 701050, upload_time = "2026-07-30T18:27:17.849Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/a1/3ee1f220884f1f94a82dbf9e6f5f0590c7c896529b26e79efcaa3942976d/pandaprobe_harness-0.8.0.tar.gz", hash = "sha256:8e488850b23b426858e9a1a28685c0518eff03d5bd375eeab850e3f5c92e456a", size = 976895, upload_time = "2026-08-04T05:10:36.55Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/0d/6741422cf24265c8ba6f9405ed9b4afaa4e89f0556b3179ed64fb46ca7fb/pandaprobe_harness-0.7.0-py3-none-any.whl", hash = "sha256:0d2ebad50723c471e64fec337916c86278cd43b3c968d96d2280e0c59dd15aa7", size = 135680, upload_time = "2026-07-30T18:27:16.52Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/26/b405a6417aa2386f8f772f8239d15111246cfcb6a1e8f91d8e37e8167bb3/pandaprobe_harness-0.8.0-py3-none-any.whl", hash = "sha256:85063205db222f3b249390d7f8e3630c99892392666193e71d2800d2ff8e6e88", size = 128706, upload_time = "2026-08-04T05:10:35.063Z" },
 ]
 
 [[package]]
