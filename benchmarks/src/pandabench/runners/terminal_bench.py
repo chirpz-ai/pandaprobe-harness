@@ -229,8 +229,8 @@ class TerminalBenchRunner(SingleTaskRunner):
         del task_id, session_id, model, client, max_turns, wiring, preamble
         raise RuntimeError("Terminal-Bench is bulk-driven through run_phase(), not run_once()")
 
-    def outcome_for(self, task_id: str) -> float | None:
-        del task_id
+    def outcome_for(self, task_id: str, session_id: str) -> float | None:
+        del task_id, session_id
         # Harbor's verifier runs after agent.run(), so no in-trial gold signal exists.
         return None
 

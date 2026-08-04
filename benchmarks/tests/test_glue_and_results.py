@@ -15,6 +15,7 @@ from pandabench.agents.loop import run_agent_loop
 from pandabench.checkpoints import records_to_labels
 from pandabench.harness_glue import (
     make_session_id,
+    make_verifier_fn,
     new_session_namespace,
     sanitize_component,
 )
@@ -125,6 +126,15 @@ def test_calibration_uses_recorded_session_id(tmp_path):
     assert json.loads(labels.read_text(encoding="utf-8")) == [
         {"session_id": "actual-namespaced-session", "failed": False},
     ]
+
+
+def test_outcome_verifier_forwards_task_and_session_id():
+    outcomes = {("same-task", "session-a"): 0.25, ("same-task", "session-b"): 1.0}
+    verifier = make_verifier_fn(outcome_for=lambda task, session: outcomes.get((task, session)))
+
+    assert verifier("session-a", {"task_id": "same-task"}) == 0.25
+    assert verifier("session-b", {"task_id": "same-task"}) == 1.0
+    assert verifier("unknown", {"task_id": "same-task"}) is None
 
 
 # -- the arm-B capture path (fake CLI) ----------------------------------------

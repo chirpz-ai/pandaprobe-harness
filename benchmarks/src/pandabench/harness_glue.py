@@ -42,9 +42,9 @@ __all__ = [
 # NEW session id the run produced.
 ReplayRunner = Callable[[str, str], Awaitable[str]]
 
-# A benchmark's own grader: task id -> pass ratio in [0, 1], or None when it has
-# no verdict (no grader, or the task has not been evaluated yet).
-OutcomeGrader = Callable[[str], "float | None"]
+# A benchmark's own grader: task id + session id -> pass ratio in [0, 1], or
+# None when it has no verdict (no grader, or the session has not been graded).
+OutcomeGrader = Callable[[str, str], "float | None"]
 
 _UNSAFE = re.compile(r"[^a-z0-9._-]+")
 _SESSION_ID_MAX_LENGTH = 255
@@ -176,13 +176,12 @@ def make_verifier_fn(*, outcome_for: OutcomeGrader) -> VerifierFn:
     The task id travels in the ``end_state`` the runner hands to ``on_turn_end``,
     which is also what a captured eval case stores as its ``replay_input`` — so the
     same adapter grades live turns and replays. ``None`` back from the grader means
-    "no verdict for this task yet", which the harness treats as a normal answer.
+    "no verdict for this session yet", which the harness treats as a normal answer.
     """
 
     def verifier(session_id: str, end_state: Mapping[str, Any]) -> float | None:
-        del session_id  # the grader keys on the task, not the session
         task_id = end_state.get("task_id")
-        return outcome_for(str(task_id)) if task_id else None
+        return outcome_for(str(task_id), session_id) if task_id else None
 
     return verifier
 
