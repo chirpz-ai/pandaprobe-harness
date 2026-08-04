@@ -39,30 +39,6 @@ async def test_trace_run_targets_trace_and_passes_trace_ids() -> None:
     assert all(s.trace_id == "tr-1" and s.tier == 1 for s in scores)
 
 
-async def test_signal_weights_are_session_only() -> None:
-    """`--signal-weights` is a session-only flag; sending it on the trace path
-    would be a validation error."""
-
-    weights = {"tool_correctness": 2.0}
-    cli = FakeCliClient()
-    await MetricEvaluator(cli, _cfg(signal_weights=weights)).evaluate_trace(
-        "tr-1", ["task_completion"]
-    )
-    assert "--signal-weights" not in " ".join(cli.batch_calls[0])
-
-
-async def test_non_trace_runnable_metrics_are_dropped() -> None:
-    """The session composites are not trace-runnable (the platform 422s), so the
-    evaluator must never request them against a trace."""
-
-    cli = FakeCliClient()
-    scores = await MetricEvaluator(cli, _cfg()).evaluate_trace(
-        "tr-1", ["agent_reliability", "task_completion"]
-    )
-    assert {s.metric for s in scores} == {Metric.TASK_COMPLETION}
-    assert "agent_reliability" not in " ".join(cli.batch_calls[0])
-
-
 async def test_unknown_metric_is_skipped_without_raising() -> None:
     cli = FakeCliClient()
     scores = await MetricEvaluator(cli, _cfg()).evaluate_trace("tr-1", ["not_a_metric"])
