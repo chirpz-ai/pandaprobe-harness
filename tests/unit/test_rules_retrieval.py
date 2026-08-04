@@ -23,9 +23,9 @@ def _store(tmp_path: Path, *, topk: int = 2, retrieval: bool = True) -> RulesSto
 
 
 def test_tokenizer_splits_signatures_and_keeps_metric_names() -> None:
-    tokens = _tokenize("breach:agent_reliability Charge the payment!")
-    assert "breach" in tokens
-    assert "agent_reliability" in tokens  # underscore keeps the metric whole
+    tokens = _tokenize("stall:task_completion Charge the payment!")
+    assert "stall" in tokens
+    assert "task_completion" in tokens  # underscore keeps the metric whole
     assert "charge" in tokens
     assert "payment" in tokens
     assert "the" in tokens  # 3 chars, kept
@@ -35,7 +35,7 @@ def test_tokenizer_splits_signatures_and_keeps_metric_names() -> None:
 def test_tag_match_outranks_text_match_outranks_unrelated(tmp_path: Path) -> None:
     store = _store(tmp_path, topk=3)
     tagged = store.add(
-        "verify transactions first", "x", tags=["breach:agent_reliability", "payment"]
+        "verify transactions first", "x", tags=["stall:task_completion", "payment"]
     )
     text_only = store.add("check the payment ledger twice", "x", tags=["misc"])
     unrelated = store.add("prefer smaller diffs", "x", tags=["style"])
