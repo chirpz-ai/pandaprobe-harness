@@ -29,8 +29,8 @@ def _capture(
     case = evalset.capture(
         session_id=session,
         kind="win" if kind == "win" else "failure",
-        signature=("breach:agent_reliability",),
-        baseline_scores=baseline or {"agent_reliability": 0.3, "agent_consistency": 0.4},
+        signature=("stall:task_completion",),
+        baseline_scores=baseline or {"task_completion": 0.3, "coherence": 0.4},
         replay_input={"task": "charge"} if replayable else None,
     )
     assert case is not None
@@ -46,8 +46,8 @@ async def test_improved_case(
     journal: Journal,
 ) -> None:
     case = _capture(evalset, "s-fail")
-    fake_cli.set_session_scores(
-        "s-replay-1", agent_reliability=0.92, agent_consistency=0.88
+    fake_cli.script_trace(
+        "s-replay-1", task_completion=0.92, coherence=0.88
     )
     contexts: list[str] = []
 
@@ -71,7 +71,7 @@ async def test_improved_case(
     assert result.status == "improved"
     assert result.replay_session_id == "s-replay-1"
     assert result.deltas is not None
-    assert result.deltas["agent_reliability"] == pytest.approx(0.62)
+    assert result.deltas["task_completion"] == pytest.approx(0.62)
     assert contexts and "Harness Rules" in contexts[0]
 
     (event,) = journal.recent(types=("regression",))
@@ -85,8 +85,8 @@ async def test_regressed_win_case_flags_report(
     evaluator: MetricEvaluator,
     fake_cli: FakeCliClient,
 ) -> None:
-    _capture(evalset, "s-win", kind="win", baseline={"agent_reliability": 0.9})
-    fake_cli.set_session_scores("s-replay-w", agent_reliability=0.3)
+    _capture(evalset, "s-win", kind="win", baseline={"task_completion": 0.9})
+    fake_cli.script_trace("s-replay-w", task_completion=0.3)
 
     async def replay(case: EvalCase, context: str) -> str:
         return "s-replay-w"
@@ -108,7 +108,7 @@ async def test_unchanged_within_margins(
     _capture(
         evalset,
         "s-same",
-        baseline={"agent_reliability": 0.9, "agent_consistency": 0.9},
+        baseline={"task_completion": 0.9, "coherence": 0.9},
     )
 
     async def replay(case: EvalCase, context: str) -> str:
@@ -127,7 +127,7 @@ async def test_wins_replay_before_failures_and_sample_caps(
     evaluator: MetricEvaluator,
 ) -> None:
     _capture(evalset, "s-fail")
-    win = _capture(evalset, "s-win", kind="win", baseline={"agent_reliability": 0.9})
+    win = _capture(evalset, "s-win", kind="win", baseline={"task_completion": 0.9})
 
     order: list[str] = []
 
@@ -214,13 +214,13 @@ def test_render_text_summarizes(config: HarnessConfig) -> None:
                 kind="failure",
                 status="improved",
                 replay_session_id="s-r",
-                deltas={"agent_reliability": 0.62},
+                deltas={"task_completion": 0.62},
             ),
             CaseResult(case_id="c-2", kind="win", status="skipped", reason="no replay_input"),
         ),
     )
     text = report.render_text()
     assert "improved 1" in text
-    assert "agent_reliability +0.62" in text
+    assert "task_completion +0.62" in text
     assert "no replay_input" in text
     assert text.endswith("CLEAN")
