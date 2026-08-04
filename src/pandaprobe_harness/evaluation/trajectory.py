@@ -14,8 +14,7 @@ So Tier-1 metrics breach on the *shape* of the series instead:
   The agent had it and lost it.
 * **RESET-ON-GAIN** — any improvement of at least ``gate_gain`` resets the peak
   and the counter, so *a healthy climbing session never breaches* however long it
-  runs. This is the property an EWMA crossover cannot give you, and the reason
-  this is a separate detector rather than a re-pointing of ``trends.py``.
+  runs. This is the property a smoothed moving average cannot give you.
 
 After firing, the counter resets so one stall does not re-fire on every
 subsequent trace — the agent gets a notice, a chance to write a rule, and a fresh
@@ -31,7 +30,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from ..config import HarnessConfig
-from .history import GateFold, GateState, ScoreHistoryStore
+from .history import GateFold, GateState
+from .history_source import HistorySource
 from .metrics import MetricScore
 
 __all__ = ["GateVerdict", "TrajectoryGate"]
@@ -52,12 +52,10 @@ class GateVerdict:
     def breached(self) -> bool:
         return self.stalled or self.regressed
 
-
-
 class TrajectoryGate:
     """Peak/stall/regression detection over a Tier-1 metric's per-trace series."""
 
-    def __init__(self, config: HarnessConfig, store: ScoreHistoryStore) -> None:
+    def __init__(self, config: HarnessConfig, store: HistorySource) -> None:
         self._config = config
         self._store = store
 
@@ -87,10 +85,8 @@ class TrajectoryGate:
     ) -> dict[str, GateVerdict]:
         """Fold a whole trace's Tier-1 values in one store write.
 
-        The samples are also appended to the series, exactly as the trend detector
-        does for the session path: the series is what the operator inspects and
-        what ``calibration.collect_scores`` reads, so the trace path must not leave
-        it empty.
+        Samples are also appended to the series inspected by operators and read
+        by ``calibration.collect_scores``.
         """
 
         verdicts: dict[str, GateVerdict] = {}
