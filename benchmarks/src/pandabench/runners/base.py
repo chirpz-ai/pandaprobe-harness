@@ -106,8 +106,8 @@ class SingleTaskRunner(Protocol):
         preamble: str | None = None,
     ) -> TaskOutcome: ...
 
-    def outcome_for(self, task_id: str) -> float | None:
-        """This benchmark's own verdict for ``task_id``, as a score in ``[0, 1]``.
+    def outcome_for(self, task_id: str, session_id: str) -> float | None:
+        """This benchmark's verdict for one task session, as a score in ``[0, 1]``.
 
         The gold signal for the harness's outcome verifier. Default ``None`` means
         "this benchmark has no grader", so a runner opts in by overriding — and the
@@ -432,10 +432,13 @@ class BenchmarkRunner:
                 arm="replay", model_key=model.key, seed=seed,
                 trial=self._replay_counter, phase="replay",
             )
-            await self._single.run_once(
-                task_id=task_id, session_id=session_id, model=model, client=replay_client,
-                max_turns=replay_max_turns, wiring=None, preamble=preamble,
-            )
+            try:
+                await self._single.run_once(
+                    task_id=task_id, session_id=session_id, model=model, client=replay_client,
+                    max_turns=replay_max_turns, wiring=None, preamble=preamble,
+                )
+            finally:
+                replay_client.flush()
             return session_id
 
         return make_replay_fn(replay_runner=replay_runner)
