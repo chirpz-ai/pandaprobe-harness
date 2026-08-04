@@ -6,10 +6,8 @@ from pathlib import Path
 
 from pandaprobe_harness import HarnessConfig, HarnessFilesystem, Mailbox, RawLoopAdapter
 from pandaprobe_harness.cli.errors import CliError
-from pandaprobe_harness.evaluation.metrics import EvalReport
 from pandaprobe_harness.evaluation.traces import TraceLocator
 from pandaprobe_harness.hook.core import PandaHarnessHook
-from pandaprobe_harness.hook.turn import TurnContext
 from tests.fakes.fake_cli_client import FakeCliClient
 
 
@@ -25,7 +23,7 @@ def _make(
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
-        trigger_mode="session",
+        gate_window=1,
         **kw,  # type: ignore[arg-type]
     )
     fs = HarnessFilesystem(cfg)
@@ -33,9 +31,16 @@ def _make(
     return PandaHarnessHook(cli, config=cfg, filesystem=fs), fs, cfg
 
 
+def _breaching_cli(session_id: str, *, traces: int = 2) -> FakeCliClient:
+    cli = FakeCliClient(
+        metric_values={"tool_correctness": 0.2, "argument_correctness": 0.2}
+    )
+    cli.script_trajectory(session_id, "task_completion", [0.2] * traces)
+    return cli
+
+
 def _stub_locator() -> TraceLocator:
-    """The hook adopts its evaluator's locator; these stubs drive only the
-    session path, so an unused one satisfies the seam."""
+    """The hook adopts its evaluator's locator before calling the stub."""
 
     return TraceLocator(FakeCliClient(), HarnessConfig())
 
@@ -47,23 +52,25 @@ class _BlockingEvaluator:
         self.event = asyncio.Event()
         self.locator = _stub_locator()
 
-    async def evaluate_turn(self, ctx: TurnContext) -> EvalReport:
+    async def evaluate_traces(self, *args: object, **kwargs: object) -> list[object]:
+        del args, kwargs
         await self.event.wait()
-        return EvalReport.from_scores(ctx.session_id, ctx.turn_index, [])
+        return []
 
 
 class _RaisingEvaluator:
     def __init__(self) -> None:
         self.locator = _stub_locator()
 
-    async def evaluate_turn(self, ctx: TurnContext) -> EvalReport:
+    async def evaluate_traces(self, *args: object, **kwargs: object) -> list[object]:
+        del args, kwargs
         raise RuntimeError("unexpected eval failure")
 
 
 async def test_breach_writes_dump_and_posts_notice(
     config: HarnessConfig, fs: HarnessFilesystem, mailbox: Mailbox
 ) -> None:
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.2, "agent_consistency": 0.3})
+    cli = _breaching_cli("s-1", traces=6)
     hook = _hook(cli, config, fs)
 
     hook.on_turn_end(RawLoopAdapter.make_turn("s-1", 1, action="charge"))
@@ -79,9 +86,12 @@ async def test_breach_writes_dump_and_posts_notice(
     notice = pending[0]
     assert notice.severity == "breach"
     assert notice.session_id == "s-1"
-    assert {m.name for m in notice.metrics} == {"agent_reliability", "agent_consistency"}
+    assert {m.name for m in notice.metrics} == {
+        "task_completion", "tool_correctness", "argument_correctness"
+    }
     assert notice.dump_path and os.path.exists(notice.dump_path)
-    assert "breach:agent_reliability" in notice.signatures
+    assert "stall:task_completion" in notice.signatures
+    assert "breach:tool_correctness" in notice.signatures
 
     # The full cycle is journaled.
     events = hook.journal.recent(types=("notice",))
@@ -91,7 +101,7 @@ async def test_breach_writes_dump_and_posts_notice(
 async def test_no_breach_writes_nothing_and_no_notice(
     config: HarnessConfig, fs: HarnessFilesystem, mailbox: Mailbox
 ) -> None:
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.9, "agent_consistency": 0.9})
+    cli = FakeCliClient(metric_values={"task_completion": 0.9, "coherence": 0.9})
     hook = _hook(cli, config, fs)
 
     hook.on_turn_end(RawLoopAdapter.make_turn("s-1", 1))
@@ -120,7 +130,7 @@ async def test_parse_failure_is_swallowed(config: HarnessConfig, fs: HarnessFile
 async def test_refresh_pops_task_so_second_refresh_is_none(
     config: HarnessConfig, fs: HarnessFilesystem
 ) -> None:
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.9, "agent_consistency": 0.9})
+    cli = FakeCliClient(metric_values={"task_completion": 0.9, "coherence": 0.9})
     hook = _hook(cli, config, fs)
     hook.on_turn_end(RawLoopAdapter.make_turn("s-1", 1))
     assert await hook.refresh("s-1") is not None
@@ -132,7 +142,7 @@ async def test_notice_posts_without_any_refresh(
 ) -> None:
     """The pull model needs no drain barrier: the eval task posts on resolution."""
 
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.2, "agent_consistency": 0.2})
+    cli = _breaching_cli("s-1", traces=6)
     hook = _hook(cli, config, fs)
     hook.on_turn_end(RawLoopAdapter.make_turn("s-1", 1))
 
@@ -144,10 +154,8 @@ async def test_notice_posts_without_any_refresh(
 
 
 async def test_enrichment_attaches_flagged_trace_detail(tmp_path: Path) -> None:
-    cli = FakeCliClient(
-        metric_values={"agent_reliability": 0.2, "agent_consistency": 0.2},
-        metric_metadata={"agent_reliability": {"flagged_traces": ["trace-1"]}},
-    )
+    cli = _breaching_cli("s")
+    cli.metric_metadata["task_completion"] = {"flagged_traces": ["trace-1"]}
     hook, fs, _cfg = _make(tmp_path, cli, enrich_flagged_traces=True)
     hook.on_turn_end(RawLoopAdapter.make_turn("s", 1))
     await hook.refresh("s")
@@ -158,11 +166,9 @@ async def test_enrichment_attaches_flagged_trace_detail(tmp_path: Path) -> None:
 
 
 async def test_enrichment_failure_still_writes_dump_and_posts(tmp_path: Path) -> None:
-    cli = FakeCliClient(
-        metric_values={"agent_reliability": 0.2, "agent_consistency": 0.2},
-        metric_metadata={"agent_reliability": {"flagged_traces": ["trace-1"]}},
-        error_on_prefix={("traces", "get"): CliError("boom")},
-    )
+    cli = _breaching_cli("s")
+    cli.metric_metadata["task_completion"] = {"flagged_traces": ["trace-1"]}
+    cli.error_on_prefix[("traces", "get")] = CliError("boom")
     hook, fs, cfg = _make(tmp_path, cli, enrich_flagged_traces=True)
     hook.on_turn_end(RawLoopAdapter.make_turn("s", 1))
     await hook.refresh("s")
@@ -174,11 +180,7 @@ async def test_enrichment_failure_still_writes_dump_and_posts(tmp_path: Path) ->
 
 async def test_refresh_timeout_keeps_task_for_later(tmp_path: Path) -> None:
     evaluator = _BlockingEvaluator()
-    # A stub evaluator stands in for the platform, so pin the session path: the
-    # task lifecycle under test here is trigger-agnostic.
-    cfg = HarnessConfig(
-        harness_root=tmp_path / "h", drain_timeout_s=0.02, trigger_mode="session"
-    )
+    cfg = HarnessConfig(harness_root=tmp_path / "h", drain_timeout_s=0.02)
     fs = HarnessFilesystem(cfg)
     fs.provision()
     hook = PandaHarnessHook(
@@ -197,7 +199,7 @@ async def test_refresh_timeout_keeps_task_for_later(tmp_path: Path) -> None:
 
 async def test_eval_failure_is_contained_in_the_task(tmp_path: Path) -> None:
     cfg = HarnessConfig(
-        harness_root=tmp_path / "h", drain_timeout_s=1.0, trigger_mode="session"
+        harness_root=tmp_path / "h", drain_timeout_s=1.0
     )
     fs = HarnessFilesystem(cfg)
     fs.provision()
@@ -213,7 +215,7 @@ async def test_eval_failure_is_contained_in_the_task(tmp_path: Path) -> None:
 async def test_superseding_turn_cancels_prior_eval(tmp_path: Path) -> None:
     evaluator = _BlockingEvaluator()
     cfg = HarnessConfig(
-        harness_root=tmp_path / "h", drain_timeout_s=0.5, trigger_mode="session"
+        harness_root=tmp_path / "h", drain_timeout_s=0.5
     )
     fs = HarnessFilesystem(cfg)
     fs.provision()
