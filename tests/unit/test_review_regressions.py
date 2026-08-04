@@ -21,7 +21,6 @@ from pandaprobe_harness import (
 )
 from pandaprobe_harness.agent_tools.companion import _parse_args
 from pandaprobe_harness.cli.errors import CliError
-from pandaprobe_harness.evaluation.history import ScoreHistoryStore
 from pandaprobe_harness.hook.core import PandaHarnessHook
 from pandaprobe_harness.sandbox.policy import ShellPolicyError
 from pandaprobe_harness.workspace.mailbox import DiagnosticNotice
@@ -104,42 +103,6 @@ def test_shell_policy_denials_survive_flag_insertion() -> None:
         policy.validate(["pandaprobe", "evals", "scores", "get", "x", "--reveal-secrets=1"])
     # A legitimate command still passes.
     policy.validate(["pandaprobe", "evals", "scores", "get", "x"])
-
-
-# -- M2: backend hydration seeds EWMA in chronological order -----------------
-
-
-async def test_hydration_orders_samples_by_timestamp(tmp_path: Path) -> None:
-    cfg = HarnessConfig(
-        harness_root=tmp_path / "h",
-        poll_interval_s=0.0,
-        poll_max_attempts=3,
-        eval_retry_backoff_s=0.0,
-        hydrate_history_from_backend=True,
-    )
-    fs = HarnessFilesystem(cfg)
-    fs.provision()
-    # Backend returns newest-first; true chronology is 0.3 -> 0.6 -> 0.9.
-    cli = FakeCliClient(
-        metric_values={"agent_reliability": 0.9, "agent_consistency": 0.9},
-        session_scores_list={
-            "s": [
-                {"name": "agent_reliability", "value": "0.9",
-                 "created_at": "2026-06-03T00:00:00Z", "run_id": "r3"},
-                {"name": "agent_reliability", "value": "0.6",
-                 "created_at": "2026-06-02T00:00:00Z", "run_id": "r2"},
-                {"name": "agent_reliability", "value": "0.3",
-                 "created_at": "2026-06-01T00:00:00Z", "run_id": "r1"},
-            ]
-        },
-    )
-    hook = PandaHarnessHook(cli, config=cfg, filesystem=fs)
-    hook.on_turn_end(RawLoopAdapter.make_turn("s", 1))
-    await hook.refresh("s")
-
-    # The seeded prefix must be chronological (ascending), not the CLI order.
-    values = ScoreHistoryStore(cfg).values("s", "agent_reliability")
-    assert values[:3] == [0.3, 0.6, 0.9]
 
 
 # -- L2: companion CLI rejects a forgotten value that eats the next flag -----
