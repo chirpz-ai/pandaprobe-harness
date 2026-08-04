@@ -5,6 +5,7 @@ from __future__ import annotations
 from pandaprobe_harness import HarnessConfig
 from pandaprobe_harness.evaluation.evaluator import MetricEvaluator
 from pandaprobe_harness.evaluation.metrics import Metric
+from pandaprobe_harness.evaluation.traces import TraceLocator
 from tests.fakes.fake_cli_client import FakeCliClient
 
 
@@ -96,6 +97,50 @@ async def test_score_last_trace_degrades_when_no_trace_exists() -> None:
     cli = FakeCliClient(auto_traces=False)
     cli.session_traces["s-1"] = []
     assert await MetricEvaluator(cli, _cfg()).score_last_trace("s-1", ["task_completion"]) == []
+
+
+async def test_warm_session_waits_for_unseen_trace_without_redelivering_old_trace() -> None:
+    cli = FakeCliClient()
+    cli.session_trace_listings["s-1"] = [
+        ["trace-1"],
+        ["trace-1"],
+        ["trace-1", "trace-2"],
+    ]
+    locator = TraceLocator(cli, _cfg())
+
+    assert [ref.trace_id for ref in await locator.new_traces("s-1")] == ["trace-1"]
+    assert [ref.trace_id for ref in await locator.new_traces("s-1")] == ["trace-2"]
+
+    listings = [call for call in cli.calls if call[:2] == ("traces", "list")]
+    assert len(listings) == 3
+
+
+async def test_last_trace_waits_for_replay_trace_ingestion() -> None:
+    cli = FakeCliClient()
+    cli.session_trace_listings["replay-1"] = [[], ["replay-trace"]]
+
+    trace = await TraceLocator(cli, _cfg()).last_trace("replay-1")
+
+    assert trace is not None
+    assert trace.trace_id == "replay-trace"
+
+
+async def test_new_traces_exhausted_retries_returns_empty_without_rescoring() -> None:
+    cli = FakeCliClient()
+    cli.session_trace_listings["s-1"] = [["trace-1"]]
+    locator = TraceLocator(cli, _cfg(eval_retry_attempts=2))
+
+    assert [ref.trace_id for ref in await locator.new_traces("s-1")] == ["trace-1"]
+    assert await locator.new_traces("s-1") == []
+
+
+async def test_new_traces_preserves_oldest_first_order() -> None:
+    cli = FakeCliClient()
+    cli.session_traces["s-1"] = ["trace-1", "trace-2", "trace-3"]
+
+    traces = await TraceLocator(cli, _cfg()).new_traces("s-1")
+
+    assert [ref.trace_id for ref in traces] == ["trace-1", "trace-2", "trace-3"]
 
 
 async def test_tier1_absolute_floor_is_not_a_breach() -> None:
