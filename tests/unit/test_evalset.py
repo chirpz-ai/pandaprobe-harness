@@ -14,10 +14,10 @@ def _capture_failure(evalset: EvalSet, session: str, *, replayable: bool = True)
     case = evalset.capture(
         session_id=session,
         kind="failure",
-        signature=("breach:agent_reliability",),
-        baseline_scores={"agent_reliability": 0.3},
+        signature=("stall:task_completion",),
+        baseline_scores={"task_completion": 0.3},
         replay_input={"task": f"do the thing for {session}"} if replayable else None,
-        notes="agent_reliability=0.30 [breach]",
+        notes="task_completion=0.30 [breach]",
     )
     assert case is not None
     return case
@@ -73,11 +73,11 @@ def test_win_cases_never_evicted(tmp_path: Path) -> None:
         session_id="s-win",
         kind="win",
         signature=("healthy",),
-        baseline_scores={"agent_reliability": 0.92},
+        baseline_scores={"task_completion": 0.92},
     )
     assert win is not None
 
-    refused = evalset.capture(session_id="s-fail", signature=("breach:agent_reliability",))
+    refused = evalset.capture(session_id="s-fail", signature=("stall:task_completion",))
     assert refused is None
     assert [case.id for case in evalset.cases()] == [win.id]
 
@@ -88,7 +88,7 @@ def test_win_cases_never_evicted(tmp_path: Path) -> None:
 
 
 def test_attach_input_makes_case_replayable(evalset: EvalSet) -> None:
-    case = evalset.capture(session_id="s-1", signature=("breach:agent_reliability",))
+    case = evalset.capture(session_id="s-1", signature=("stall:task_completion",))
     assert case is not None and not case.replayable
 
     updated = evalset.attach_input(case.id, {"prompt": "charge the payment"})
@@ -117,18 +117,18 @@ def test_matching_overlaps_signatures_newest_first(evalset: EvalSet) -> None:
     old = _capture_failure(evalset, "s-1")
     new = evalset.capture(
         session_id="s-2",
-        signature=("breach:agent_reliability", "trend:agent_consistency"),
+        signature=("stall:task_completion", "stall:coherence"),
     )
     assert new is not None
-    evalset.capture(session_id="s-3", signature=("percentile:agent_consistency",))
+    evalset.capture(session_id="s-3", signature=("regression:coherence",))
 
-    matches = evalset.matching(("breach:agent_reliability",))
+    matches = evalset.matching(("stall:task_completion",))
     assert [case.id for case in matches] == [new.id, old.id]
     assert evalset.matching(()) == []
 
-    win = evalset.capture(session_id="s-4", kind="win", signature=("breach:agent_reliability",))
+    win = evalset.capture(session_id="s-4", kind="win", signature=("stall:task_completion",))
     assert win is not None
-    assert win.id not in {case.id for case in evalset.matching(("breach:agent_reliability",))}
+    assert win.id not in {case.id for case in evalset.matching(("stall:task_completion",))}
 
 
 def test_list_filters_by_kind(evalset: EvalSet) -> None:
