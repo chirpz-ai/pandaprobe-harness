@@ -33,17 +33,7 @@ SESSION = "s-closed-1"
 
 
 def _failing_cli() -> FakeCliClient:
-    return FakeCliClient(
-        metric_values={"agent_reliability": 0.30, "agent_consistency": 0.40},
-        metric_metadata={
-            "agent_reliability": {
-                "flagged_traces": ["trace-1"],
-                "per_trace_signals": {
-                    "trace-1": {"loop_detection": 0.1, "tool_correctness": 0.2}
-                },
-            }
-        },
-    )
+    return FakeCliClient()
 
 
 def _config(tmp_path: Path, **overrides: Any) -> HarnessConfig:
@@ -54,7 +44,7 @@ def _config(tmp_path: Path, **overrides: Any) -> HarnessConfig:
         eval_retry_backoff_s=0.0,
         drain_timeout_s=5.0,
         capture_eval_cases=True,
-        trigger_mode="session",
+        gate_window=1,
         **overrides,
     )
 
@@ -80,8 +70,24 @@ async def test_closed_loop_replay_validates_promotes_and_stays_regression_clean(
 
     async def run_turn() -> None:
         raw = await agent.take_turn()
-        if agent.healed:
-            cli.set_scores(agent_reliability=0.92, agent_consistency=0.88)
+        scores = (
+            {
+                "task_completion": 0.92,
+                "coherence": 0.88,
+                "tool_correctness": 0.92,
+                "argument_correctness": 0.88,
+            }
+            if agent.healed
+            else {
+                "task_completion": 0.30,
+                "coherence": 0.40,
+                "tool_correctness": 0.20,
+                "argument_correctness": 0.20,
+            }
+        )
+        cli.script_trace(SESSION, **scores)
+        if len(cli.session_traces[SESSION]) == 1:
+            cli.script_trace(SESSION, **scores)
         harness.on_turn_end(raw)
         await harness.refresh(SESSION)
         await harness.drain_validation()
@@ -91,13 +97,17 @@ async def test_closed_loop_replay_validates_promotes_and_stays_regression_clean(
     assert len(harness.mailbox.pending()) == 1
     (case,) = harness.evalset.cases()
     assert case.kind == "failure"
-    assert "breach:agent_reliability" in case.signature
+    assert "stall:task_completion" in case.signature
     assert case.replayable  # replay input captured from the turn's end_state
-    assert case.baseline_scores["agent_reliability"] == 0.30
+    assert case.baseline_scores["task_completion"] == 0.30
 
     # The replayed session will score healthy (the rule works).
-    cli.set_session_scores(
-        "s-replay-1", agent_reliability=0.92, agent_consistency=0.88
+    cli.script_trace(
+        "s-replay-1",
+        task_completion=0.92,
+        coherence=0.88,
+        tool_correctness=0.92,
+        argument_correctness=0.88,
     )
 
     # --- Turn 2: agent records the rule -> candidate -> replay -> promoted --
@@ -108,7 +118,7 @@ async def test_closed_loop_replay_validates_promotes_and_stays_regression_clean(
 
     (rule,) = harness.rules.active()
     assert rule.id == agent.rule_ids[0]
-    assert "breach:agent_reliability" in rule.tags  # derived from the notice
+    assert "stall:task_completion" in rule.tags  # derived from the notice
     assert harness.rules.candidates() == []
 
     # The agent saw the candidate state right after acking (pre-validation).
@@ -143,7 +153,7 @@ async def test_closed_loop_replay_validates_promotes_and_stays_regression_clean(
         session_id=SESSION,
         kind="win",
         signature=("healthy",),
-        baseline_scores={"agent_reliability": 0.92, "agent_consistency": 0.88},
+        baseline_scores={"task_completion": 0.92, "coherence": 0.88},
         replay_input={"action": "verified_payment_then_charge"},
     )
     assert win is not None
@@ -171,7 +181,7 @@ async def test_closed_loop_forward_trial_fallback_without_replay(
         {
             "rule": "Verify the transaction status before retrying a charge.",
             "rationale": "reliability breaches from blind retries",
-            "metric": "agent_reliability",
+            "metric": "task_completion",
         },
     )
     rule_id = added["rule"]["id"]
