@@ -38,22 +38,12 @@ def _compat_config(tmp_path: Path) -> HarnessConfig:
         drain_timeout_s=5.0,
         rule_validation=False,
         rule_retrieval=False,
-        trigger_mode="session",
+        gate_window=1,
     )
 
 
 def _failing_cli() -> FakeCliClient:
-    return FakeCliClient(
-        metric_values={"agent_reliability": 0.30, "agent_consistency": 0.40},
-        metric_metadata={
-            "agent_reliability": {
-                "flagged_traces": ["trace-1"],
-                "per_trace_signals": {
-                    "trace-1": {"loop_detection": 0.1, "tool_correctness": 0.2}
-                },
-            }
-        },
-    )
+    return FakeCliClient()
 
 
 async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
@@ -64,8 +54,24 @@ async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
 
     async def run_turn() -> None:
         raw = await agent.take_turn()
-        if agent.healed:
-            cli.set_scores(agent_reliability=0.92, agent_consistency=0.88)
+        scores = (
+            {
+                "task_completion": 0.92,
+                "coherence": 0.88,
+                "tool_correctness": 0.92,
+                "argument_correctness": 0.88,
+            }
+            if agent.healed
+            else {
+                "task_completion": 0.30,
+                "coherence": 0.40,
+                "tool_correctness": 0.20,
+                "argument_correctness": 0.20,
+            }
+        )
+        cli.script_trace(SESSION, **scores)
+        if len(cli.session_traces[SESSION]) == 1:
+            cli.script_trace(SESSION, **scores)
         harness.on_turn_end(raw)
         await harness.refresh(SESSION)
 
@@ -79,10 +85,12 @@ async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
     assert len(pending) == 1
     notice = pending[0]
     assert notice.severity == "breach"
-    assert notice.flagged_traces == ("trace-1",)
-    assert notice.signal_breakdown["trace-1"] == {
-        "loop_detection": 0.1,
+    assert notice.flagged_traces == (f"{SESSION}-tr2",)
+    assert notice.signal_breakdown[f"{SESSION}-tr2"] == {
+        "task_completion": 0.3,
+        "coherence": 0.4,
         "tool_correctness": 0.2,
+        "argument_correctness": 0.2,
     }
     assert os.path.exists(notice.dump_path)
     assert config.latest_eval_file.exists()
@@ -123,7 +131,7 @@ async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
     assert len(active) == 1
     assert active[0].status == "active"
     assert active[0].source_notice_id == notice.id
-    assert active[0].metric in {"agent_reliability", "agent_consistency"}
+    assert active[0].metric in {"task_completion", "coherence"}
     # The rule body lands in its scope file; the skill root only indexes it.
     scope_file = config.rules_scope_file(active[0].scope)
     assert MITIGATION_RULE[:30] in scope_file.read_text(encoding="utf-8")
@@ -153,31 +161,29 @@ async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
     assert agent.healed
 
 
-async def test_gradual_decline_posts_single_trend_notice(tmp_path: Path) -> None:
-    """A metric drifting down without crossing the absolute floor posts exactly
-    one advisory `trend` notice once the EWMA crosses over."""
+async def test_tier_one_stall_posts_single_advisory_notice(tmp_path: Path) -> None:
+    """A Tier-1 stall posts one advisory notice without a Tier-2 breach."""
 
     cfg = HarnessConfig(
         harness_root=tmp_path / "harness",
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
-        eval_consistency=False,  # isolate a single metric series
-        trend_min_samples=4,
-        trend_margin_cross=0.05,
-        trigger_mode="session",
+        gate_window=2,
     )
-    cli = FakeCliClient(metric_values={"agent_reliability": 0.80})
+    cli = FakeCliClient()
+    cli.script_trajectory("s-stall", "task_completion", (0.30, 0.30, 0.30))
     harness = Harness.create(cfg, cli=cli)
 
-    session = "s-trend"
-    for idx, score in enumerate((0.80, 0.74, 0.68, 0.62, 0.58, 0.55)):
-        cli.set_scores(agent_reliability=score)
-        harness.on_turn_end({"session_id": session, "turn_index": idx, "end_state": {}})
-        await harness.refresh(session)
+    session = "s-stall"
+    harness.on_turn_end({"session_id": session, "turn_index": 1, "end_state": {}})
+    await harness.refresh(session)
+    cli.script_trace(session, task_completion=0.30)
+    harness.on_turn_end({"session_id": session, "turn_index": 2, "end_state": {}})
+    await harness.refresh(session)
 
     pending = harness.mailbox.pending()
-    assert len(pending) == 1, "exactly one notice despite a persistent decline"
+    assert len(pending) == 1, "exactly one notice despite a persistent stall"
     assert pending[0].severity == "trend"
 
 
@@ -193,8 +199,24 @@ async def test_rules_and_journal_persist_across_runs(tmp_path: Path) -> None:
     agent = MockLLMAgent(session_id=SESSION, toolset=harness1.toolset)
     for _ in range(2):
         raw = await agent.take_turn()
-        if agent.healed:
-            cli.set_scores(agent_reliability=0.92, agent_consistency=0.88)
+        scores = (
+            {
+                "task_completion": 0.92,
+                "coherence": 0.88,
+                "tool_correctness": 0.92,
+                "argument_correctness": 0.88,
+            }
+            if agent.healed
+            else {
+                "task_completion": 0.30,
+                "coherence": 0.40,
+                "tool_correctness": 0.20,
+                "argument_correctness": 0.20,
+            }
+        )
+        cli.script_trace(SESSION, **scores)
+        if len(cli.session_traces[SESSION]) == 1:
+            cli.script_trace(SESSION, **scores)
         harness1.on_turn_end(raw)
         await harness1.refresh(SESSION)
     assert agent.healed
@@ -203,8 +225,8 @@ async def test_rules_and_journal_persist_across_runs(tmp_path: Path) -> None:
     # and is still reachable — the References index is regenerated from the store,
     # so a new process rediscovers the rule files without being told about them.
     harness2 = Harness.create(config, cli=FakeCliClient())
-    assert "rules/global.md" in harness2.system_context()
-    fetched = await harness2.toolset.call("harness_rules_read", {"scope": "global"})
+    assert "rules/scoped.md" in harness2.system_context()
+    fetched = await harness2.toolset.call("harness_rules_read", {"scope": "scoped"})
     assert "payment tool twice" in fetched["content"]
 
     events = harness2.journal.recent(types=("notice", "rule_add", "ack"))
