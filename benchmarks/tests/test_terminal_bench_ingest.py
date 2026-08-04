@@ -46,8 +46,6 @@ def _payload(
                 "stopped_reason": "final",
                 "harness": {
                     "session_id": f"session-{trial_name}",
-                    "reliability": None,
-                    "consistency": None,
                     "breached": True,
                     "rules_active": 1,
                     "rules_candidate": 0,
