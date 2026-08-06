@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from pandaprobe_harness import HarnessConfig, HarnessToolset, Journal, Mailbox, RulesStore
+from pandaprobe_harness import HarnessConfig, Journal, Mailbox, RulesStore, TaskToolset
 from pandaprobe_harness.hook.context import compose_system_preamble
 from pandaprobe_harness.workspace.rules import _tokenize
-from tests.fakes.fake_cli_client import FakeCliClient
 
 
 def _store(tmp_path: Path, *, topk: int = 2, retrieval: bool = True) -> RulesStore:
@@ -150,10 +149,7 @@ def test_search_filters_by_status(tmp_path: Path) -> None:
     assert [rule.id for rule, _ in retired_only] == [gone.id]
 
 
-def test_preamble_never_carries_rule_text_however_it_is_hinted(tmp_path: Path) -> None:
-    """v1 selected rules with a task hint and inlined them. v2 does not inline any
-    rule text at all, so the hint has nothing to select — the agent conditions its
-    own retrieval through `harness_rules_search` / `harness_rules_read`."""
+def test_preamble_carries_only_bounded_relevant_rule_text(tmp_path: Path) -> None:
 
     config = HarnessConfig(
         harness_root=tmp_path / "harness",
@@ -168,13 +164,12 @@ def test_preamble_never_carries_rule_text_however_it_is_hinted(tmp_path: Path) -
     rules.add("verify payment status first", "x", tags=["payment"], scope="scoped")
     rules.add("email retries must back off", "x", tags=["email"], scope="scoped")
 
-    for preamble in (
-        compose_system_preamble(rules, mailbox),
-        compose_system_preamble(rules, mailbox),
-    ):
-        assert "verify payment status first" not in preamble
-        assert "email retries must back off" not in preamble
-        assert "rules/scoped.md" in preamble  # named, so it is one call away
+    preamble = compose_system_preamble(
+        rules, mailbox, "s-1", task_hint="payment charge"
+    )
+    assert "verify payment status first" in preamble
+    assert "email retries must back off" not in preamble
+    assert "rules/scoped.md" in preamble
 
 
 async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
@@ -187,11 +182,8 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
     rules = RulesStore(config, journal=journal)
     mailbox = Mailbox(config)
     mailbox.provision()
-    toolset = HarnessToolset(
+    toolset = TaskToolset(
         config=config,
-        cli=FakeCliClient(),
-        mailbox=mailbox,
-        journal=journal,
         rules=rules,
     )
     payment = rules.add("verify payments", "x", tags=["payment"])
