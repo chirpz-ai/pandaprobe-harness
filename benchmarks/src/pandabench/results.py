@@ -56,6 +56,8 @@ class HarnessTelemetry:
     """Every resolved metric of the turn, by name."""
     gate_breached: bool = False
     """The trajectory gate fired (a stall or a regression) on this turn."""
+    repair: dict[str, Any] | None = None
+    """Package-owned managed-repair outcome returned by settlement, when any."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -214,7 +216,11 @@ def archive_workspace(harness_root: Path, dest: Path) -> None:
 
 
 def collect_harness_telemetry(
-    harness: Any, session_id: str, report: Any | None
+    harness: Any,
+    session_id: str,
+    report: Any | None,
+    *,
+    repair: Any | None = None,
 ) -> HarnessTelemetry:
     """Best-effort harness state for a session (never raises — telemetry only)."""
 
@@ -246,6 +252,14 @@ def collect_harness_telemetry(
         logger.debug("telemetry: rules read failed: %s", exc)
 
     notices = _count_session_notices(harness, session_id)
+    repair_payload: dict[str, Any] | None = None
+    if repair is not None:
+        try:
+            raw = repair.to_json()
+            if isinstance(raw, dict):
+                repair_payload = dict(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telemetry: repair result parse failed: %s", exc)
 
     return HarnessTelemetry(
         session_id=session_id,
@@ -256,6 +270,7 @@ def collect_harness_telemetry(
         notices=notices,
         scores=scores,
         gate_breached=gate_breached,
+        repair=repair_payload,
     )
 
 
