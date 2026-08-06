@@ -12,11 +12,8 @@ The wiring, in order:
    LangGraph adapter (turn detection via a LangChain callback).
 2. ``harness.adapter.make_callback()`` returns the handler; pass it in each
    invoke's ``config`` so the hook fires on every root chain end (one turn).
-3. ``harness.system_context()`` (rules + pull protocol + mailbox banner) is
-   prepended to the system prompt — and re-read every turn, so a freshly
-   posted notice surfaces as the banner on the very next turn.
-4. ``as_langchain_tools(harness.toolset)`` hands the agent its own
-   self-diagnostic tools (mailbox, trace inspection, rules, journal).
+3. ``harness.system_context(session_id)`` supplies bounded learned guidance.
+4. ``as_langchain_tools(harness.task_tools)`` adds optional read-only rule tools.
 
 For the fully offline, credential-free version of this loop, see
 ``examples/misc/offline_self_heal.py``.
@@ -25,9 +22,10 @@ For the fully offline, credential-free version of this loop, see
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
-from pandaprobe_harness import Harness
+from pandaprobe_harness import Harness, HarnessConfig
 from pandaprobe_harness.agent_tools.native import as_langchain_tools
 
 try:
@@ -40,24 +38,24 @@ BASE_PROMPT = "You are a payments support agent. Use your tools carefully."
 
 
 async def main() -> None:
-    # One factory call: workspace + hook + toolset + the LangGraph adapter.
-    harness = Harness.for_langgraph(session_id=SESSION_ID)
+    task_model = os.environ.get("TASK_MODEL")
+    if not task_model:
+        sys.exit("set TASK_MODEL and HARNESS_REPAIR_MODEL explicitly")
+    harness = Harness.for_langgraph(
+        session_id=SESSION_ID, config=HarnessConfig.from_env()
+    )
 
     # Turn detection: this LangChain callback fires `hook.on_turn_end` on the
     # ROOT chain end — one `ainvoke` == one evaluated agent turn.
     handler = harness.adapter.make_callback()
 
-    # The agent's self-diagnostic tools sit right next to your domain tools.
-    tools = as_langchain_tools(harness.toolset)  # + your own tools
+    tools = as_langchain_tools(harness.task_tools)  # + your own domain tools
 
-    # A callable prompt re-reads harness.system_context() EVERY turn: after the
-    # hook posts a notice, the '⚠ HARNESS' mailbox banner appears here and the
-    # standing pull protocol tells the agent to work the mailbox first.
     def prompt(state: dict) -> list:
-        system = harness.system_context() + "\n" + BASE_PROMPT
+        system = harness.system_context(SESSION_ID) + "\n" + BASE_PROMPT
         return [{"role": "system", "content": system}, *state["messages"]]
 
-    graph = create_react_agent("openai:gpt-4o-mini", tools, prompt=prompt)
+    graph = create_react_agent(task_model, tools, prompt=prompt)
 
     for user_input in (
         "Charge customer 42 the monthly fee.",
@@ -68,9 +66,7 @@ async def main() -> None:
             config={"callbacks": [handler], "configurable": {"thread_id": SESSION_ID}},
         )
         print(result["messages"][-1].content)
-        # Optional: join the in-flight evaluation (bounded by drain_timeout_s)
-        # so this simple loop observes each turn's outcome before continuing.
-        await harness.refresh(SESSION_ID)
+        await harness.settle(SESSION_ID)
 
 
 if __name__ == "__main__":
