@@ -8,7 +8,7 @@ loop + harness verbatim — the bash tool is just ``environment.exec``.
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
   --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-5 \
   --ak backend=bedrock --ak phase=learning --ak frozen_eval=false \
-  --ak capture=true --ak harness_root=/abs/path --ak noval=false \
+  --ak capture=true --ak harness_root=/abs/path \
   --ak session_namespace=<runner-uuid>
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
@@ -89,7 +89,6 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         frozen_rules_path: str | None = None,
         harness_root: str | None = None,
         max_turns: int = 100,
-        noval: bool = False,
         session_namespace: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -126,7 +125,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             # (from .env / --agent-env) — we never override it.
             cfg = build_harness_config(
                 harness_root=Path(harness_root), phase=self._phase, study=_load_study(),
-                benchmark="terminal_bench", noval=noval,
+                benchmark="terminal_bench", repair_model=self._model.litellm_model,
             )
             self._harness = build_harness(cfg=cfg)
 
@@ -184,7 +183,10 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             settled = await wiring.settle_turn(max(result.turns, 1))
             report = settled.report if settled is not None else None
             telemetry = collect_harness_telemetry(
-                self._harness, session_id, report
+                self._harness,
+                session_id,
+                report,
+                repair=settled.repair if settled is not None else None,
             ).to_dict()
         elif self._frozen_snapshot is not None:
             # Preserve eval traces for later inspection without listing or
