@@ -186,7 +186,7 @@ def test_ingest_exception_and_synthetic_error_record(tmp_path):
     assert missing.native_metrics == {"harbor_exit_code": 2}
 
 
-def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
+def test_harbor_learning_argv_is_serial_and_requests_managed_harness(tmp_path):
     model = load_registry(CONFIGS / "models.yaml").resolve("mock")
     argv = _harbor_argv(
         dataset="terminal-bench-sample@2.0",
@@ -200,7 +200,6 @@ def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
         backend=None,
         harness_root=tmp_path / "harness_root",
         max_turns=50,
-        noval=True,
         session_namespace="test-namespace",
         frozen_rules_path=None,
     )
@@ -210,7 +209,6 @@ def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
     assert argv[argv.index("-d") + 1] == "terminal-bench-sample@2.0"
     assert argv[argv.index("-n") + 1] == "1"
     assert "-y" in argv
-    assert "noval=true" in argv
     assert "capture=true" in argv
     assert "phase=learning" in argv
     assert "frozen_eval=false" in argv
@@ -231,7 +229,7 @@ def test_harbor_eval_argv_explicitly_forwards_frozen_snapshot(tmp_path):
         dataset="terminal-bench-sample@2.0", tasks=["task-a"], k=1,
         arm="harness", model=model, phase="eval", raw_dir=tmp_path / "raw",
         seed=1, backend=None, harness_root=tmp_path / "harness_root",
-        max_turns=20, noval=False, session_namespace="test-namespace",
+        max_turns=20, session_namespace="test-namespace",
         frozen_rules_path=snapshot_path,
     )
 
