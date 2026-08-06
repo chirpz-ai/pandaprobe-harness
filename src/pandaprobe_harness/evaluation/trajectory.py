@@ -17,8 +17,8 @@ So Tier-1 metrics breach on the *shape* of the series instead:
   runs. This is the property a smoothed moving average cannot give you.
 
 After firing, the counter resets so one stall does not re-fire on every
-subsequent trace — the agent gets a notice, a chance to write a rule, and a fresh
-window to show improvement.
+subsequent trace — managed repair gets one notice and a fresh window to produce
+useful guidance.
 
 State is per ``(session, metric)`` and lives in the shared score-history file, so
 it is O(1) per update, survives restarts, and needs no network call.
