@@ -1,13 +1,13 @@
-"""The one-call facade: workspace + hook + toolset, with a zero-adapter path.
+"""The one-call facade for developer-owned task agents and managed repair.
 
 ``Harness.create()`` provisions the diagnostic workspace, wires the hook,
 mailbox, journal, rules, and toolset together, and (optionally) runs the
 startup health check. Any custom agent loop integrates in a handful of lines
 — no adapter required::
 
-    harness = Harness.create()
-    system_prompt = harness.system_context() + my_prompt
-    tools = my_tools + list(harness.toolset.specs())
+    harness = Harness.create(HarnessConfig(repair_model="openai/..."))
+    system_prompt = harness.system_context(session_id) + my_prompt
+    tools = my_tools + list(harness.task_tools.specs())
 
     async with harness.turn(session_id):
         await my_agent_step(...)
@@ -29,7 +29,7 @@ from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Any, ParamSpec, TypeVar
 
-from .agent_tools.toolset import HarnessToolset
+from .agent_tools.toolset import TaskToolset
 from .cli.client import CliClient
 from .cli.subprocess_client import SubprocessCliClient
 from .config import HarnessConfig
@@ -39,8 +39,9 @@ from .evaluation.metrics import EvalReport
 from .filesystem.layout import HarnessFilesystem
 from .hook.core import PandaHarnessHook, SettleResult
 from .hook.tiers import VerifierFn
-from .sandbox.policy import ShellPolicy
-from .sandbox.shell import RestrictedShellTool
+from .repair.agent import ManagedRepairAgent
+from .repair.completion import PandaProbeLiteLLMCompletion, RepairCompletion
+from .repair.coordinator import ManagedRepairCoordinator
 from .validation.regression import RegressionReport, run_regression
 from .validation.validator import ValidationVerdict
 from .workspace.evalset import EvalSet, ReplayFn
@@ -59,8 +60,8 @@ R = TypeVar("R")
 class _TurnScope:
     """Async context manager *and* decorator delimiting one agent turn.
 
-    With ``settle=True`` the scope also **waits** for the turn's self-heal cycle
-    before returning, so a rule the agent learns from this turn is in force for
+    With ``settle=True`` the scope also waits for evaluation and managed repair
+    before returning, so a rule learned from this turn is in force for
     the next one. Off by default: it adds per-turn latency, and every existing
     caller's semantics are fire-and-forget.
     """
@@ -100,7 +101,7 @@ class _TurnScope:
 
 
 class Harness:
-    """The assembled self-healing envelope around an agent."""
+    """Task instrumentation, evaluation, managed repair, and learned guidance."""
 
     def __init__(
         self,
@@ -113,8 +114,7 @@ class Harness:
         rules: RulesStore,
         history: ScoreHistoryStore,
         hook: PandaHarnessHook,
-        toolset: HarnessToolset,
-        shell: RestrictedShellTool,
+        task_tools: TaskToolset,
         evalset: EvalSet,
         evaluator: MetricEvaluator,
         replay: ReplayFn | None = None,
@@ -128,8 +128,7 @@ class Harness:
         self._rules = rules
         self._history = history
         self._hook = hook
-        self._toolset = toolset
-        self._shell = shell
+        self._task_tools = task_tools
         self._evalset = evalset
         self._evaluator = evaluator
         self._replay = replay
@@ -147,6 +146,7 @@ class Harness:
         cli: CliClient | None = None,
         replay: ReplayFn | None = None,
         verifier: VerifierFn | None = None,
+        _repair_completion: RepairCompletion | None = None,
     ) -> Harness:
         """Provision the workspace and assemble the full harness (no adapter).
 
@@ -162,10 +162,19 @@ class Harness:
         and rule promotion. Prefer a *continuous* score over a pass/fail flag: a
         binary that is almost always 0 discriminates no better than the degenerate
         session metrics v2 exists to replace.
+
+        ``_repair_completion`` is a private transport-only seam for deterministic
+        tests and credential-free examples. It cannot replace the package-owned
+        repair prompt, orchestration, capabilities, or lifecycle.
         """
 
         return cls._build(
-            config=config, cli=cli, adapter=None, replay=replay, verifier=verifier
+            config=config,
+            cli=cli,
+            adapter=None,
+            replay=replay,
+            verifier=verifier,
+            repair_completion=_repair_completion,
         )
 
     @classmethod
@@ -177,8 +186,21 @@ class Harness:
         adapter: Any | None,
         replay: ReplayFn | None = None,
         verifier: VerifierFn | None = None,
+        repair_completion: RepairCompletion | None = None,
     ) -> Harness:
         cfg = config or HarnessConfig.from_env()
+        if not cfg.observe_only and not cfg.repair_model:
+            raise ValueError(
+                "managed repair requires HarnessConfig.repair_model or "
+                "HARNESS_REPAIR_MODEL; no billable default is selected"
+            )
+        if not cfg.observe_only and not cfg.rule_validation:
+            raise ValueError(
+                "managed repair requires rule_validation=True so repair-authored "
+                "guidance cannot bypass the candidate lifecycle"
+            )
+        if cfg.repair_timeout_s <= 0 or cfg.repair_max_turns <= 0 or cfg.repair_max_tokens <= 0:
+            raise ValueError("repair timeout, turn limit, and token limit must be positive")
         client = cli or SubprocessCliClient(cfg.cli_binary, default_timeout=cfg.cli_timeout_s)
 
         filesystem = HarnessFilesystem(cfg)
@@ -193,6 +215,22 @@ class Harness:
         evalset.provision()
         evaluator = MetricEvaluator(client, cfg)
 
+        managed_repair = None
+        if not cfg.observe_only:
+            repair_agent = ManagedRepairAgent(
+                config=cfg,
+                completion=repair_completion or PandaProbeLiteLLMCompletion(),
+                journal=journal,
+            )
+            managed_repair = ManagedRepairCoordinator(
+                config=cfg,
+                cli=client,
+                mailbox=mailbox,
+                journal=journal,
+                rules=rules,
+                agent=repair_agent,
+            )
+
         hook = PandaHarnessHook(
             client,
             config=cfg,
@@ -206,18 +244,12 @@ class Harness:
             replay=replay,
             verifier=verifier,
             parser=adapter.parse_turn if adapter is not None else None,
+            managed_repair=managed_repair,
         )
         if adapter is not None:
             adapter.register(hook)
 
-        toolset = HarnessToolset(
-            config=cfg,
-            cli=client,
-            mailbox=mailbox,
-            journal=journal,
-            rules=rules,
-        )
-        shell = RestrictedShellTool(ShellPolicy(workdir=cfg.harness_root))
+        task_tools = TaskToolset(config=cfg, rules=rules)
 
         harness = cls(
             config=cfg,
@@ -228,8 +260,7 @@ class Harness:
             rules=rules,
             history=history,
             hook=hook,
-            toolset=toolset,
-            shell=shell,
+            task_tools=task_tools,
             evalset=evalset,
             evaluator=evaluator,
             replay=replay,
@@ -381,8 +412,10 @@ class Harness:
         return self._rules
 
     @property
-    def toolset(self) -> HarnessToolset:
-        return self._toolset
+    def task_tools(self) -> TaskToolset:
+        """Read-only learned-rule tools safe to attach to the task agent."""
+
+        return self._task_tools
 
     @property
     def evalset(self) -> EvalSet:
@@ -391,25 +424,15 @@ class Harness:
         return self._evalset
 
     @property
-    def shell(self) -> RestrictedShellTool:
-        return self._shell
-
-    @property
     def adapter(self) -> Any:
         """The framework adapter wired by a ``for_*`` factory (else ``None``)."""
 
         return self._adapter
 
-    def system_context(self) -> str:
-        """The block to prepend to the agent's system prompt.
+    def system_context(self, session_id: str, *, task_hint: str | None = None) -> str:
+        """Read-only learned guidance to attach before one task-agent turn."""
 
-        The skill root — self-heal protocol, tool list, and a generated index of
-        the agent's rule files — plus a banner when notices are pending. It carries
-        **no rule text**: the agent reads the files it judges relevant with
-        ``harness_rules_read``, so the workspace stays its own.
-        """
-
-        return self._hook.startup_context()
+        return self._hook.startup_context(session_id, task_hint=task_hint)
 
     def on_turn_end(self, raw_turn: object) -> None:
         self._hook.on_turn_end(raw_turn)
@@ -423,16 +446,16 @@ class Harness:
     async def settle(
         self, session_id: str, *, timeout: float | None = None
     ) -> SettleResult:
-        """Wait for this turn's self-heal cycle: evaluation, notice, validation.
+        """Wait for task evaluation and bounded package-owned repair.
 
         Call once per turn to get **in-session** healing — the agent then starts
-        its next turn already able to see the notice its last turn produced and
-        any rule promoted from it. Without this barrier the agent can run several
+        its next turn already able to see a candidate learned from its last turn.
+        Without this barrier the task agent can run several
         turns ahead of the (slower) evaluation, which is how a session ends before
         its own diagnosis arrives.
 
-        Bounded by ``barrier_timeout_s``; on expiry the work continues detached
-        and ``SettleResult.timed_out`` is set.
+        Bounded by ``barrier_timeout_s``. Repair failure or timeout is returned
+        structurally and never fails the developer task.
         """
 
         return await self._hook.settle(session_id, timeout=timeout)
@@ -473,7 +496,7 @@ class Harness:
     def turn(self, session_id: str, *, settle: bool = False) -> _TurnScope:
         """Delimit one agent turn: ``async with`` context manager or decorator.
 
-        Pass ``settle=True`` to also await the turn's self-heal cycle on exit
+        Pass ``settle=True`` to await evaluation and managed repair on exit
         (see :meth:`settle`).
         """
 
@@ -489,7 +512,7 @@ class Harness:
     ) -> R:
         """Run one arbitrary agent step, firing turn-end on completion.
 
-        To also await the turn's self-heal cycle, use
+        To also await task evaluation and managed repair, use
         ``async with harness.turn(session_id, settle=True):`` instead — this
         signature forwards ``**kwargs`` verbatim to ``fn``, so it cannot claim a
         keyword of its own without risking a collision.
