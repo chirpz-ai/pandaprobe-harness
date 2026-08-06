@@ -1,31 +1,11 @@
-"""The skill root + mailbox banner → the agent's startup/system context.
-
-This is the *only* framework-facing "push" left in the pull model, and it is a
-passive one: a block the developer prepends to the agent's system prompt (every
-framework already loads one). It carries exactly two things:
-
-1. the **skill root** — the self-heal protocol, the tool list, and a generated
-   References index of the rule files that exist, and
-2. a compact mailbox banner when diagnostic notices are pending.
-
-It deliberately carries **no rule text**. v1 rendered every active rule into the
-prompt; v2 does not, because the workspace belongs to the agent: it reads
-``rules/global.md`` and any scoped file it judges relevant, on demand, via
-``harness_rules_read``. The root names those files so the pull is one tool call
-away.
-
-No eval-derived free text enters this preamble either — the banner is counts plus
-a severity enum. For frameworks that rebuild the system prompt each turn, the
-banner is the trigger; for static-prompt frameworks, the protocol's "work through
-pending notices" instruction is.
-"""
+"""Bounded read-only learned guidance for the developer's task agent."""
 
 from __future__ import annotations
 
 import logging
 
 from ..workspace.mailbox import Mailbox
-from ..workspace.rules import RulesStore
+from ..workspace.rules import GLOBAL_SCOPE, Rule, RulesStore
 
 __all__ = ["compose_system_preamble"]
 
@@ -35,35 +15,78 @@ _HEADER = "===================== PANDAPROBE HARNESS ==========================="
 _FOOTER = "===================================================================="
 
 
-def compose_system_preamble(rules: RulesStore, mailbox: Mailbox) -> str:
-    """Return the harness system-context block (skill root + pending-notice banner).
-
-    Takes no task hint: v1 used one to pre-select which rules to inline, and there
-    is no rule text here to select any more. The agent conditions its own retrieval
-    on the task through ``harness_rules_search`` / ``harness_rules_read``.
-
-    Degrades gracefully: any workspace read failure yields a smaller block, never
-    an exception into the host loop.
-    """
-
-    banner = ""
-    try:
-        status = mailbox.status()
-        if status.pending_count > 0:
-            severity = status.max_severity or "breach"
-            banner = (
-                f"\n⚠ HARNESS: {status.pending_count} pending diagnostic notice(s) "
-                f"(max severity: {severity}). Before continuing, use your harness "
-                "tools to read the mailbox, inspect the flagged trace, record a "
-                "mitigation rule, and acknowledge each notice.\n"
-            )
-    except Exception:  # noqa: BLE001 - context assembly must never raise
-        logger.debug("failed to read mailbox status for context", exc_info=True)
+def compose_system_preamble(
+    rules: RulesStore,
+    mailbox: Mailbox,
+    session_id: str,
+    *,
+    task_hint: str | None = None,
+) -> str:
+    """Render session-relevant live guidance without administrative instructions."""
 
     try:
         root = rules.render_root().strip()
-    except Exception:  # noqa: BLE001 - context assembly must never raise
-        logger.debug("failed to render the skill root for context", exc_info=True)
-        root = ""
+        selected = _select(rules, mailbox, session_id, task_hint)
+    except Exception:  # noqa: BLE001 - context assembly must never break a task
+        logger.debug("failed to render learned guidance", exc_info=True)
+        root = "PandaProbe supplies read-only learned guidance for this task."
+        selected = []
 
-    return f"{_HEADER}\n{root}\n{banner}{_FOOTER}\n"
+    guidance = ["Relevant learned guidance:", ""]
+    if not selected:
+        guidance.append("- No relevant live guidance is available yet.")
+    else:
+        for rule, turn_index in selected:
+            if rule.status == "candidate":
+                after = f", added after turn {turn_index}" if turn_index is not None else ""
+                guidance.extend(
+                    [f"- [candidate {rule.id}{after}]", f"  {rule.rule}"]
+                )
+            else:
+                guidance.extend([f"- [active {rule.id}]", f"  {rule.rule}"])
+    return f"{_HEADER}\n{root}\n\n" + "\n".join(guidance) + f"\n{_FOOTER}\n"
+
+
+def _select(
+    rules: RulesStore,
+    mailbox: Mailbox,
+    session_id: str,
+    task_hint: str | None,
+) -> list[tuple[Rule, int | None]]:
+    live = rules.live()
+    source_turns: dict[str, int] = {}
+    current_candidates: list[Rule] = []
+    for rule in live:
+        if rule.status != "candidate" or rule.source_notice_id is None:
+            continue
+        notice = mailbox.read(rule.source_notice_id)
+        if notice is None or notice.session_id != session_id:
+            continue
+        current_candidates.append(rule)
+        source_turns[rule.id] = notice.turn_index
+    current_candidates.reverse()  # newest current-session guidance first
+
+    topk = max(0, rules.config.rules_context_topk)
+    if task_hint:
+        ranked = [
+            rule
+            for rule, _ in rules.search(
+                task_hint, limit=max(1, topk), statuses=("active", "candidate")
+            )
+        ]
+    else:
+        global_active = [
+            rule for rule in live if rule.status == "active" and rule.scope == GLOBAL_SCOPE
+        ]
+        remaining = [rule for rule in live if rule not in global_active]
+        ranked = global_active + list(reversed(remaining))
+
+    limit = max(1, topk) if current_candidates else topk
+    selected: list[Rule] = []
+    for rule in [*current_candidates, *ranked]:
+        if len(selected) >= limit:
+            break
+        if rule in selected:
+            continue
+        selected.append(rule)
+    return [(rule, source_turns.get(rule.id)) for rule in selected]
