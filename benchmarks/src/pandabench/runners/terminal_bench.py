@@ -108,7 +108,6 @@ class TerminalBenchRunner(SingleTaskRunner):
         backend: str | None,
         max_turns: int,
         benchmark: str,
-        noval: bool,
         frozen_rules_path: Path | None,
     ) -> bool:
         effective_backend = model.backend
@@ -151,7 +150,6 @@ class TerminalBenchRunner(SingleTaskRunner):
             backend=backend,
             harness_root=harness_root,
             max_turns=max_turns,
-            noval=noval,
             session_namespace=session_namespace,
             frozen_rules_path=frozen_rules_path,
         )
@@ -270,7 +268,6 @@ def _harbor_argv(
     backend: str | None,
     harness_root: Path,
     max_turns: int,
-    noval: bool,
     session_namespace: str,
     frozen_rules_path: Path | None,
 ) -> list[str]:
@@ -292,7 +289,6 @@ def _harbor_argv(
         "--ak", f"capture={str(phase == 'learning').lower()}",
         "--ak", f"harness_root={harness_root.resolve()}",
         "--ak", f"max_turns={max_turns}",
-        "--ak", f"noval={str(noval).lower()}",
         "--ak", f"session_namespace={session_namespace}",
     ]
     if arm == "harness" and phase == "eval":
