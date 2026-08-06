@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from pandaprobe_harness import Harness, HarnessConfig
 from tests.fakes.fake_cli_client import FakeCliClient
 
@@ -26,6 +28,7 @@ def _config(tmp_path: Path, **overrides: object) -> HarnessConfig:
         eval_retry_backoff_s=0.0,
         drain_timeout_s=5.0,
         gate_window=1,
+        repair_model="test/fake-repair",
         **overrides,  # type: ignore[arg-type]
     )
 
@@ -84,10 +87,9 @@ async def test_healthy_turns_capture_nothing(tmp_path: Path) -> None:
     assert harness.evalset.cases() == []
 
 
-async def test_validation_disabled_means_no_engine(tmp_path: Path) -> None:
-    harness = Harness.create(_config(tmp_path, rule_validation=False), cli=FakeCliClient())
-    assert await harness.validate_candidates() == []
-    await harness.drain_validation()  # no-op, never raises
+def test_managed_harness_cannot_disable_candidate_lifecycle(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="rule_validation=True"):
+        Harness.create(_config(tmp_path, rule_validation=False), cli=FakeCliClient())
 
 
 async def test_poisoned_validation_never_breaks_the_loop(tmp_path: Path) -> None:
@@ -118,11 +120,10 @@ async def test_candidate_rule_promoted_automatically_from_live_turns(
 
     cfg = _config(tmp_path, rule_trial_min_sessions=2)
     harness = Harness.create(cfg, cli=FakeCliClient())
-    added = await harness.toolset.call(
-        "harness_rule_add",
-        {"rule": "check before retrying", "rationale": "x", "metric": "task_completion"},
+    added = harness.rules.add(
+        "check before retrying", "x", metric="task_completion"
     )
-    assert added["rule"]["status"] == "candidate"
+    assert added.status == "candidate"
 
     for session in ("s-a", "s-b"):
         harness.on_turn_end({"session_id": session, "turn_index": 1, "end_state": {}})
@@ -130,7 +131,7 @@ async def test_candidate_rule_promoted_automatically_from_live_turns(
         await harness.drain_validation()
 
     (rule,) = harness.rules.active()
-    assert rule.id == added["rule"]["id"]
+    assert rule.id == added.id
 
 
 async def test_tier1_only_notice_captures_no_eval_case(tmp_path: Path) -> None:
@@ -144,6 +145,7 @@ async def test_tier1_only_notice_captures_no_eval_case(tmp_path: Path) -> None:
         drain_timeout_s=5.0,
         capture_eval_cases=True,
         gate_window=2,
+        repair_model="test/fake-repair",
     )
     cli = FakeCliClient()
     cli.script_trajectory("s-tier1", "task_completion", [0.80, 0.70, 0.60])
