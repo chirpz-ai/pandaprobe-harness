@@ -29,7 +29,7 @@ import os
 import time
 from typing import Any
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.harness_wiring import AgentWiring
 from ..providers.litellm_client import ChatClient, Usage
 from ..providers.models import ModelRegistry, ResolvedModel, load_registry
 from .base import SingleTaskRunner, TaskOutcome
@@ -121,7 +121,7 @@ class Tau2Runner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
+        wiring: AgentWiring | None,
         preamble: str | None = None,
     ) -> TaskOutcome:
         start = time.monotonic()
@@ -173,7 +173,7 @@ class Tau2Runner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
+        wiring: AgentWiring | None,
         preamble: str | None,
     ) -> tuple[Any, Any]:
         from tau2.orchestrator.orchestrator import Orchestrator
