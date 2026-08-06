@@ -2,8 +2,8 @@
 
 CrewAI is instrumented by monkey-patching ``Crew.kickoff`` (the SDK uses the same
 ``wrapt`` approach) so a completed crew run fires ``hook.on_turn_end``; session
-identity comes from the SDK session ``ContextVar``. Diagnostics reach the agent
-through the workspace mailbox + harness toolset, not through this adapter.
+identity comes from the SDK session ``ContextVar``. Managed repair consumes
+diagnostics; this adapter only reports task turns.
 """
 
 from __future__ import annotations
