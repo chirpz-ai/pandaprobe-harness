@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.harness_wiring import AgentWiring
 from ..agents.loop import run_agent_loop
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
@@ -53,7 +53,7 @@ class MockTaskRunner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
+        wiring: AgentWiring | None,
         preamble: str | None = None,
     ) -> TaskOutcome:
         start = time.monotonic()
