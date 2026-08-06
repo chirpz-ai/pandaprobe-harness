@@ -18,14 +18,35 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from pandaprobe_harness import Harness, SettleResult
 
-__all__ = ["HarnessWiring", "specs_to_openai"]
+__all__ = ["AgentWiring", "HarnessWiring", "specs_to_openai"]
 
 logger = logging.getLogger("pandabench.harness")
+
+
+class AgentWiring(Protocol):
+    """Agent-facing surface shared by live learning and frozen evaluation."""
+
+    @property
+    def settles_turns(self) -> bool: ...
+
+    def system_preamble(self) -> str: ...
+
+    def harness_tools(self) -> list[dict[str, Any]]: ...
+
+    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]: ...
+
+    def live_rule_scopes(self) -> tuple[str, ...]: ...
+
+    def is_harness_tool(self, name: str) -> bool: ...
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def settle_turn(self, turn_index: int) -> Any: ...
 
 
 def specs_to_openai(specs: Any) -> list[dict[str, Any]]:
@@ -83,6 +104,12 @@ class HarnessWiring:
         # The most recent (turn_index, result), so settling a turn twice returns
         # the first answer instead of re-evaluating. See settle_turn.
         self._settled: tuple[int, SettleResult | None] | None = None
+
+    @property
+    def settles_turns(self) -> bool:
+        """Whether callers should invoke the live per-turn evaluation barrier."""
+
+        return self._settle_each_turn
 
     def system_preamble(self) -> str:
         """The preamble to prepend to the benchmark system prompt this turn.
@@ -193,9 +220,9 @@ class HarnessWiring:
 
         Serves two consumers: it is stashed verbatim as ``EvalCase.replay_input``
         when a breach is captured, and it identifies the task to the outcome
-        verifier. It therefore carries the task id in **both** phases — capture is
-        gated by ``capture_eval_cases`` (off outside the learning phase), so the
-        frozen eval phase still gets a verified outcome without capturing cases.
+        verifier. The live wiring therefore always carries the task id; capture is
+        separately gated by ``capture_eval_cases``. Frozen eval does not call this
+        method because it has no live harness or outcome verifier.
         """
 
         state: dict[str, Any] = {"benchmark": self.benchmark, "task_id": self.task_id}
