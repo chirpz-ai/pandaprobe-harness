@@ -41,25 +41,38 @@ building. Read alongside `RUNNING.md`.
    LiteLLM or open a session. (Earlier builds used manual `start_trace`+span
    instrumentation because SDK 0.4 had no LiteLLM wrapper; 0.5 added it.)
 
-4. **The v2 arm settles every completed agent turn.** `HarnessWiring.settle_turn`
+4. **The v2 arm settles every completed learning turn.** `HarnessWiring.settle_turn`
    flushes traces, supplies a replayable `end_state`, calls `on_turn_end`, and waits
    for the turn's diagnosis before the next prompt. The runner performs an idempotent
-   final-turn settle and phase barriers drain outstanding validation. tau2 crosses its
-   synchronous worker-thread boundary with `run_coroutine_threadsafe`; Terminal-Bench
-   performs the same barrier inside Harbor's custom agent.
+   final-turn settle and the learning boundary drains outstanding validation. tau2
+   crosses its synchronous worker-thread boundary with `run_coroutine_threadsafe`;
+   Terminal-Bench performs the same learning barrier inside Harbor's custom agent.
 
 5. **Terminal-Bench arm B has two explicit capability deviations.** It uses the
-   per-turn barrier and a post-job phase settle, but candidate rules receive only
+   learning per-turn barrier and a post-learning job settle, but candidate rules receive only
    forward-trial validation: replay would require another container build and full
    task run per candidate. It also has no live outcome verifier because Harbor's
    authoritative reward is produced after `agent.run()` returns. These are structural
    limitations, not parity with AppWorld/tau2.
 
-6. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
+6. **Harness eval is genuinely frozen.** After the bounded learning settlement,
+   PandaBench snapshots every active, provisional candidate, and retired rule into
+   `frozen-rules.json`. Canonical JSON plus deterministic rule ordering produces the
+   recorded SHA-256. AppWorld and tau2 use `FrozenEvalWiring` directly; Harbor receives
+   an explicit `phase=eval`, `frozen_eval=true`, and absolute snapshot path. Frozen
+   wiring exposes only list/search/read/status operations, reports no pending notices,
+   and never constructs a `Harness` or enters settlement. Native `/evaluate`, tau2
+   reward evaluation, and Harbor verification remain unchanged.
+
+7. **The benchmark Tier-1 stall window is 10.** `study.yaml` propagates this through
+   `build_harness_config`; it delays only learning-phase STALL detection. The released
+   `pandaprobe-harness==0.8.0` package remains exact-pinned and retains its default of 5.
+
+8. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
    separate later pass, because the vertical slice's acceptance gate is
    run → records → report end-to-end.
 
-7. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
+9. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
    the deterministic pipeline gate. Real per-benchmark smokes are separate targets
    that need each harness provisioned + live creds (see below). This matches the
    brief's `--dry-run` requirement and gives a dependency-free acceptance check.
@@ -114,7 +127,9 @@ paid live-model smokes for tau2 and Terminal-Bench.
   `environment.exec`). Config reaches it via `--agent-kwarg k=v` (JSON-typed →
   `__init__`) and `--agent-env K=V` (→ auto-injected into `exec`). Run:
   `harbor run -d terminal-bench@2.0 -a pandabench.adapters.harbor_agent:PandaBenchAgent
-  -m <model> -k <k> -n 1 -o <dir> --ak arm=... --ak harness_root=...`. Per-attempt
+  -m <model> -k <k> -n 1 -o <dir> --ak arm=... --ak phase=... --ak frozen_eval=...
+  --ak harness_root=...`. Frozen eval also receives
+  `--ak frozen_rules_path=<absolute-path>`. Per-attempt
   result at `<dir>/<job>/<task>__<id>/result.json` →
   `verifier_result.rewards: dict[str, float | int]`; TB2 normally uses
   `{"reward": 0|1}`, with first-value fallback for compatible verifiers. GATES:
@@ -142,13 +157,14 @@ paid live-model smokes for tau2 and Terminal-Bench.
   policy, tools, and evaluator as one unit. `passed` = `is_successful(reward)` (== 1.0
   within 1e-6, not a threshold). `Orchestrator.run()` is blocking, so the runner drives
   it in a worker thread and the agent submits its coroutines — chat, harness dispatch,
-  the per-turn barrier — back to the runner's loop. tau2's workspace maintenance is a
+  the learning per-turn barrier — back to the runner's loop. tau2's learning workspace maintenance is a
   distinct harness-only repair phase: its calls are traced under `<task-session>-repair`
   and are therefore auditable without entering the task trajectory. The adapter stages
   each notice through read → trace inspection → rule/ack, automatically links a newly
   created rule to its source notice when the model omits the separate ack, and explicitly
   reads live rule scopes into the next stateless tau2 domain call. The returned tau2
-  assistant usage includes these private repair calls. The domain call exposes only the
+  assistant usage includes these private repair calls. Frozen eval skips this repair
+  phase and reads the immutable rule scopes into the domain prompt. The domain call exposes only the
   benchmark tools, so evaluators cannot mistake `harness_rule_add` for an airline,
   retail, or telecom action.
   GATES: `uv sync --extra tau2` + `TAU2_DATA_DIR` + live creds (incl. Vertex ADC for
@@ -156,13 +172,13 @@ paid live-model smokes for tau2 and Terminal-Bench.
 
 ## Verification status (this build)
 
-- **Offline gates (2026-08-03)**: 46 PandaBench tests pass; Ruff and strict mypy are
-  green; both tau2 and Terminal-Bench dry-runs pass; `make smoke` passes all three
-  benchmarks × both arms. tau2 regression coverage loads every official task set and
+- **Offline gates (2026-08-05)**: 63 PandaBench tests pass (one normal full-suite
+  tau2 data-directory skip); Ruff and strict mypy are green; AppWorld, tau2, and
+  Terminal-Bench dry-runs pass. Focused tau2 coverage loads every official task set and
   builds the matching airline, retail, and telecom orchestrators. It also verifies the
   isolated repair session, staged notice resolution, final-turn repair, rule-context
   retrieval, usage attribution, domain-only tool surface, and Bedrock-safe transcript.
-  The parent project remains green at 425 passed / 8 skipped. The paid tau2 smoke below
+  The parent project remains green at 397 passed / 7 skipped. The paid tau2 smoke below
   predates the isolated repair phase; repeat it before treating that behavior as live-
   verified.
 - **tau2 paid smoke** (`tau2_gpt-5.6-terra_harness_1_20260730-202115`): four real
