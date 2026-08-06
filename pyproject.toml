@@ -6,15 +6,18 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
-# The harness core has NO runtime dependencies — it only shells out to the
-# `pandaprobe` CLI through a stdlib subprocess seam. Framework adapters add their
-# own optional deps via the extras below.
-dependencies = []
+# Managed repair uses PandaProbe's official LiteLLM wrapper for one normalized
+# provider path and SDK-native trace attribution.
+dependencies = [
+    "pandaprobe[litellm]>=0.5.0",
+    # Vertex AI authentication/transport for LiteLLM's Gemini provider.
+    "litellm[google]>=1.55",
+    # LiteLLM's Bedrock transport imports boto3 at call time. Keep the advertised
+    # managed-repair provider usable from the base package installation.
+    "boto3>=1.43.1,<2.0",
+]
 
 [project.scripts]
-# The agent-facing companion CLI (allow-listed in the sandbox shell policy so
-# sandboxed agents can self-diagnose without allow-listing `python`).
-pandaprobe-harness-agent = "pandaprobe_harness.agent_tools.companion:main"
 # Operator CLIs (not part of the sandbox allow-list): regression runs over the
 # replayable eval-set, and offline metric-threshold calibration.
 pandaprobe-harness-eval = "pandaprobe_harness.validation.regression:main"
