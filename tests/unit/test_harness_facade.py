@@ -29,6 +29,7 @@ def _cfg(tmp_path: Path, name: str) -> HarnessConfig:
         poll_interval_s=0.0,
         poll_max_attempts=5,
         eval_retry_backoff_s=0.0,
+        repair_model="test/fake-repair",
     )
 
 
@@ -44,9 +45,16 @@ def test_create_provisions_workspace_and_context(
 
     assert config.rules_dir.is_dir()
 
-    context = harness.system_context()
+    context = harness.system_context("s-facade")
     assert "PANDAPROBE HARNESS" in context
-    assert "harness_mailbox_list" in context
+    assert "Relevant learned guidance" in context
+    assert "harness_mailbox_list" not in context
+    assert {spec.name for spec in harness.task_tools.specs()} == {
+        "harness_rules_read",
+        "harness_rules_search",
+        "harness_rules_list",
+        "harness_rule_status",
+    }
 
 
 async def test_turn_context_manager_fires_one_eval(
@@ -117,7 +125,7 @@ def test_for_crewai_builds_without_the_crewai_dep(tmp_path: Path) -> None:
     # the harness itself is fully assembled and usable.
     assert harness.adapter.instrument() is False
     assert harness.mailbox.pending() == []
-    assert "PANDAPROBE HARNESS" in harness.system_context()
+    assert "PANDAPROBE HARNESS" in harness.system_context("x")
 
 
 async def test_degraded_mode_skips_evals_with_one_warning(
