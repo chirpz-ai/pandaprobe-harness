@@ -41,7 +41,7 @@ from typing import Any
 from tau2.agent.llm_agent import LLMAgent
 from tau2.data_model.message import AssistantMessage, MultiToolMessage, ToolCall
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.harness_wiring import AgentWiring
 from ..providers.litellm_client import ChatClient, Usage
 from ..providers.models import ResolvedModel
 
@@ -74,7 +74,7 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
         client: ChatClient,
         model: ResolvedModel,
         session_id: str,
-        wiring: HarnessWiring | None = None,
+        wiring: AgentWiring | None = None,
         max_tokens: int | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
@@ -114,8 +114,9 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
             state.messages.append(message)
 
         repair_usage = Usage()
-        if self._wiring is not None:
+        if self._wiring is not None and self._wiring.settles_turns:
             repair_usage += self._await(self._repair_one_pending_notice())
+        if self._wiring is not None:
             self._await(self._refresh_rule_context())
 
         assistant = _to_tau2_assistant(self._decide_domain(state))
@@ -126,7 +127,7 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
         # session once per trial and the trajectory gate would never accumulate a
         # series — the v1 inertness this release exists to fix.
         self._turns += 1
-        if self._wiring is not None:
+        if self._wiring is not None and self._wiring.settles_turns:
             self._await(self._wiring.settle_turn(self._turns))
             repair_usage += self._await(self._repair_one_pending_notice())
             self._await(self._refresh_rule_context())
