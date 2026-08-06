@@ -14,8 +14,8 @@ async. Without a replay function the run degrades honestly — one clear
 warning, every case reported ``skipped`` — and never raises.
 
 ``main`` is the ``pandaprobe-harness-eval`` operator CLI over the
-env-configured workspace (``HARNESS_*``), mirroring the companion CLI's
-subprocess-friendly JSON output.
+environment-configured workspace (``HARNESS_*``), with JSON output suitable
+for automation.
 """
 
 from __future__ import annotations
