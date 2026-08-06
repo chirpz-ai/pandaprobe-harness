@@ -103,18 +103,9 @@ class RecordingMockClient(MockClient):
 
 
 class StubWiring:
-    def __init__(
-        self,
-        *,
-        pending: list[str] | None = None,
-        notice_after_settle: str | None = None,
-        live_scopes: tuple[str, ...] = (),
-    ) -> None:
+    def __init__(self) -> None:
         self.settled: list[int] = []
         self.dispatched: list[str] = []
-        self.pending = list(pending or [])
-        self.notice_after_settle = notice_after_settle
-        self.live_scopes = live_scopes
 
     @property
     def settles_turns(self) -> bool:
@@ -125,15 +116,10 @@ class StubWiring:
 
     def harness_tools(self) -> list[dict[str, Any]]:
         names = [
-            "harness_mailbox_list",
-            "harness_mailbox_read",
-            "harness_mailbox_ack",
-            "harness_trace_inspect",
             "harness_rules_list",
             "harness_rules_read",
             "harness_rules_search",
-            "harness_rule_add",
-            "harness_rule_retire",
+            "harness_rule_status",
         ]
         return [
             {
@@ -150,50 +136,12 @@ class StubWiring:
     def is_harness_tool(self, name: str) -> bool:
         return name.startswith("harness_")
 
-    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]:
-        return tuple(self.pending)
-
-    def live_rule_scopes(self) -> tuple[str, ...]:
-        return self.live_scopes
-
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         self.dispatched.append(name)
-        if name == "harness_mailbox_read":
-            notice_id = str(args["notice_id"])
-            return {
-                "ok": True,
-                "notice": {"id": notice_id, "flagged_traces": ["trace_bad"]},
-            }
-        if name == "harness_trace_inspect":
-            return {"ok": True, "trace_id": args.get("trace_id")}
-        if name == "harness_rule_add":
-            return {
-                "ok": True,
-                "rule": {
-                    "id": "rule_1",
-                    "scope": "global",
-                    "source_notice_id": args.get("notice_id"),
-                    "rule": args.get("rule", "check the evidence first"),
-                },
-            }
-        if name == "harness_mailbox_ack":
-            notice_id = str(args["notice_id"])
-            if notice_id in self.pending:
-                self.pending.remove(notice_id)
-            return {"ok": True}
-        if name == "harness_rules_read":
-            return {
-                "ok": True,
-                "scope": args.get("scope", "global"),
-                "content": "# Rules — global\n\n- Check the evidence first.",
-            }
         return {"ok": True}
 
     async def settle_turn(self, turn_index: int) -> None:
         self.settled.append(turn_index)
-        if self.notice_after_settle is not None:
-            self.pending.append(self.notice_after_settle)
-            self.notice_after_settle = None
 
 
 @pytest.fixture(scope="module")
@@ -263,32 +211,9 @@ def test_set_seed_does_not_require_tau2_llm(retail, mock_model):
     assert agent._seed == 7
 
 
-def test_repair_phase_is_isolated_and_acknowledges_rule_notice(retail, mock_model):
-    client = RecordingMockClient(
-        scripted=[
-            _result(
-                tool_name="harness_mailbox_read",
-                tool_args={"notice_id": "notice_1"},
-                call_id="call_read",
-            ),
-            _result(
-                tool_name="harness_trace_inspect",
-                tool_args={"trace_id": "trace_bad"},
-                call_id="call_trace",
-            ),
-            _result(
-                tool_name="harness_rule_add",
-                tool_args={
-                    "rule": "Check the evidence first.",
-                    "rationale": "The trace showed an unsupported action.",
-                    "notice_id": "notice_1",
-                },
-                call_id="call_rule",
-            ),
-            _result(content="done"),
-        ]
-    )
-    wiring = StubWiring(pending=["notice_1"], live_scopes=("global",))
+def test_tau2_task_agent_never_runs_workspace_repair(retail, mock_model):
+    client = RecordingMockClient(scripted=[_result(content="done")])
+    wiring = StubWiring()
     agent = _agent(retail, mock_model, client, wiring)
 
     assistant, _ = agent.generate_next_message(
@@ -296,59 +221,20 @@ def test_repair_phase_is_isolated_and_acknowledges_rule_notice(retail, mock_mode
     )
 
     assert assistant.content == "done"
-    assert wiring.pending == []
-    assert wiring.dispatched == [
-        "harness_mailbox_read",
-        "harness_trace_inspect",
-        "harness_rule_add",
-        "harness_mailbox_ack",
-        "harness_rules_read",
-        "harness_rules_read",
-    ]
-    assert [call["session_id"] for call in client.calls] == [
-        "tau2-test-repair",
-        "tau2-test-repair",
-        "tau2-test-repair",
-        "tau2-test",
-    ]
-    assert set(client.tool_batches[0]) == {
-        "harness_mailbox_list",
-        "harness_mailbox_read",
-    }
-    assert "harness_trace_inspect" in client.tool_batches[1]
-    assert "harness_rule_add" not in client.tool_batches[1]
-    assert "harness_rule_add" in client.tool_batches[2]
-    assert all(not name.startswith("harness_") for name in client.tool_batches[3])
-    assert "Check the evidence first" in client.message_batches[3][0]["content"]
-    assert assistant.usage == {"prompt_tokens": 40, "completion_tokens": 20}
-    assert client.flushes == 1
+    assert wiring.dispatched == []
+    assert wiring.settled == [1]
+    assert [call["session_id"] for call in client.calls] == ["tau2-test"]
+    assert all(not name.startswith("harness_") for name in client.tool_batches[0])
+    assert "PandaProbe owns workspace repair" in client.message_batches[0][0]["content"]
+    assert assistant.usage == {"prompt_tokens": 10, "completion_tokens": 5}
+    assert client.flushes == 0
 
 
-def test_notice_from_final_turn_is_repaired_before_returning(retail, mock_model):
+def test_tau2_domain_turn_settles_without_model_driven_notice_phase(retail, mock_model):
     client = RecordingMockClient(
-        scripted=[
-            _result(tool_name="get_user_details", call_id="call_domain"),
-            _result(
-                tool_name="harness_mailbox_read",
-                tool_args={"notice_id": "notice_final"},
-                call_id="call_read",
-            ),
-            _result(
-                tool_name="harness_trace_inspect",
-                tool_args={"trace_id": "trace_bad"},
-                call_id="call_trace",
-            ),
-            _result(
-                tool_name="harness_mailbox_ack",
-                tool_args={
-                    "notice_id": "notice_final",
-                    "note": "No safe general rule from this isolated failure.",
-                },
-                call_id="call_ack",
-            ),
-        ]
+        scripted=[_result(tool_name="get_user_details", call_id="call_domain")]
     )
-    wiring = StubWiring(notice_after_settle="notice_final")
+    wiring = StubWiring()
     agent = _agent(retail, mock_model, client, wiring)
 
     assistant, _ = agent.generate_next_message(
@@ -356,21 +242,11 @@ def test_notice_from_final_turn_is_repaired_before_returning(retail, mock_model)
     )
 
     assert [call.id for call in assistant.tool_calls or []] == ["call_domain"]
-    assert wiring.pending == []
-    assert wiring.dispatched == [
-        "harness_mailbox_read",
-        "harness_trace_inspect",
-        "harness_mailbox_ack",
-    ]
-    assert [call["session_id"] for call in client.calls] == [
-        "tau2-test",
-        "tau2-test-repair",
-        "tau2-test-repair",
-        "tau2-test-repair",
-    ]
-    assert "get_user_details" not in repr(client.message_batches[1:])
-    assert assistant.usage == {"prompt_tokens": 40, "completion_tokens": 20}
-    assert client.flushes == 1
+    assert wiring.dispatched == []
+    assert wiring.settled == [1]
+    assert [call["session_id"] for call in client.calls] == ["tau2-test"]
+    assert assistant.usage == {"prompt_tokens": 10, "completion_tokens": 5}
+    assert client.flushes == 0
 
 
 def test_unexpected_harness_call_in_domain_phase_survives_tau2_validation(
@@ -431,7 +307,6 @@ def test_frozen_eval_injects_learning_rules_without_repair_or_settlement(
     )
 
     assert assistant.content == "I can help with that."
-    assert len(client.calls) == 1  # no isolated notice-repair model phase
-    assert wiring.pending_notice_ids() == ()
+    assert len(client.calls) == 1  # no task-agent notice-repair model phase
     assert all(not name.startswith("harness_") for name in client.tool_batches[0])
     assert "Verify the reservation owner" in client.message_batches[0][0]["content"]
