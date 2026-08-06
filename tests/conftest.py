@@ -13,14 +13,16 @@ from pandaprobe_harness import (
     Harness,
     HarnessConfig,
     HarnessFilesystem,
-    HarnessToolset,
-    Journal,
-    Mailbox,
     RawLoopAdapter,
-    RulesStore,
+    TaskToolset,
 )
+from pandaprobe_harness.repair.completion import PandaProbeLiteLLMCompletion
 from pandaprobe_harness.workspace.evalset import EvalSet
+from pandaprobe_harness.workspace.journal import Journal
+from pandaprobe_harness.workspace.mailbox import Mailbox
+from pandaprobe_harness.workspace.rules import RulesStore
 from tests.fakes.fake_cli_client import FakeCliClient
+from tests.fakes.fake_repair_completion import FakeRepairCompletion
 
 FAKE_BIN = Path(__file__).parent / "bin" / "fake_pandaprobe"
 
@@ -34,6 +36,7 @@ def config(tmp_path: Path) -> HarnessConfig:
         poll_interval_s=0.0,
         poll_max_attempts=5,
         drain_timeout_s=5.0,
+        repair_model="test/fake-repair",
     )
 
 
@@ -48,6 +51,7 @@ def trace_config(tmp_path: Path) -> HarnessConfig:
         drain_timeout_s=5.0,
         barrier_timeout_s=5.0,
         gate_window=3,
+        repair_model="test/fake-repair",
     )
 
 
@@ -55,7 +59,21 @@ def trace_config(tmp_path: Path) -> HarnessConfig:
 def trace_harness(trace_config: HarnessConfig, fake_cli: FakeCliClient) -> Harness:
     """A fully-assembled offline harness on the v2 trace trigger."""
 
-    return Harness.create(trace_config, cli=fake_cli)
+    return Harness.create(
+        trace_config, cli=fake_cli, _repair_completion=FakeRepairCompletion()
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_network_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any test that uses the default transport remains deterministic/offline."""
+
+    fake = FakeRepairCompletion()
+
+    async def complete(self: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        return await fake.complete(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(PandaProbeLiteLLMCompletion, "complete", complete)
 
 
 @pytest.fixture
@@ -114,12 +132,9 @@ def toolset(
     journal: Journal,
     rules: RulesStore,
     evalset: EvalSet,
-) -> HarnessToolset:
-    return HarnessToolset(
+) -> TaskToolset:
+    return TaskToolset(
         config=config,
-        cli=fake_cli,
-        mailbox=mailbox,
-        journal=journal,
         rules=rules,
     )
 
@@ -128,7 +143,9 @@ def toolset(
 def harness(config: HarnessConfig, fake_cli: FakeCliClient) -> Harness:
     """A fully-assembled offline harness over the fake CLI."""
 
-    return Harness.create(config, cli=fake_cli)
+    return Harness.create(
+        config, cli=fake_cli, _repair_completion=FakeRepairCompletion()
+    )
 
 
 @pytest.fixture
