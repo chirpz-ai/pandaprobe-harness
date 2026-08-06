@@ -1,9 +1,9 @@
-"""the diagnostic filesystem provisioner.
+"""The diagnostic filesystem provisioner.
 
-Manages the persistent ``/harness`` workspace the agent reads and rewrites to
-self-heal:
+Manages the persistent workspace that PandaProbe repair writes and task and
+repair agents read:
 
-- ``harness_rules.md`` — the skill root: protocol plus a generated References
+- ``harness_rules.md`` — read-only guidance plus a generated References
   index (seeded from the template, then rendered by ``workspace.RulesStore``).
 - ``rules/`` — the rule files themselves, one per scope, written by
   ``RulesStore.sync_markdown``.
@@ -41,7 +41,7 @@ class HarnessFilesystem:
     def provision(self) -> None:
         """Create the ``/harness`` tree and seed the skill root if absent.
 
-        Idempotent: an existing root (which the agent or a prior run may have
+        Idempotent: an existing root (which a prior run may have
         rewritten) is never overwritten here — ``RulesStore.sync_markdown``
         regenerates it, and the ``rules/`` subtree with it.
         """
@@ -70,7 +70,7 @@ class HarnessFilesystem:
         """Atomically write the latest eval dump.
 
         Writes to a unique temp file in the same directory then ``os.replace``
-        so a concurrent reader (the agent) never observes a half-written file
+        so a concurrent reader never observes a half-written file
         and concurrent writers never collide on the temp path.
         """
 
