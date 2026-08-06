@@ -8,7 +8,7 @@ prompts, and task sets — the only difference is harness wiring:
 | Arm | Description |
 |---|---|
 | `baseline` | Plain tool-calling loop; no harness. |
-| `harness` | Learning runs the full self-heal loop. Eval uses one hashed, read-only snapshot of the learning rules and keeps native benchmark grading active without trace evaluation or repair. |
+| `harness` | Learning evaluates the developer-owned task agent and uses the package-owned managed repair agent. Eval uses one hashed, read-only snapshot of the learning rules and keeps native benchmark grading active without trace evaluation or repair. |
 
 The benchmark override is `gate_window: 10`: a Tier-1 STALL needs ten
 consecutive non-improving evaluated trace updates during learning. REGRESSION
@@ -18,9 +18,10 @@ every harness-arm eval trial. Eval tracing may remain enabled for later
 inspection, but no PandaProbe trace listing, scoring, notices, rule mutation,
 validation, replay, or settle barrier runs.
 
-Self-contained uv project that installs the **released** harness from PyPI (never
-`../src`). See `RUNNING.md` for the study workflow and `IMPLEMENTATION_NOTES.md`
-for engineering decisions, benchmark deviations, and verification status.
+Self-contained uv project currently locked to the locally built root wheel via
+`[tool.uv.sources]`. This validates the distributable managed-repair candidate
+without an editable import or a premature release. After publication, remove the
+source override and update the exact version pin. See `RUNNING.md` for the workflow.
 
 ## Prerequisites
 
@@ -33,10 +34,12 @@ for engineering decisions, benchmark deviations, and verification status.
   needs `PANDAPROBE_API_KEY`.
 - Docker running (Terminal-Bench only). Harbor is installed with this project.
 - AppWorld isolated env (`make setup` provisions it; ~183 MB data).
+- A current root wheel at `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl`.
 
 ## Setup
 
 ```bash
+cd .. && uv build --wheel && cd benchmarks
 cp .env.example .env      # fill in credentials
 make setup                # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
@@ -44,6 +47,12 @@ uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
 
 `make setup` prints two env vars to export for real AppWorld runs
 (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`) — add them to `.env`.
+
+During learning, the benchmark reuses the run's resolved task model for managed
+repair unless `harness.repair_model` selects another current model.
+`repair_reasoning_effort: "none"` keeps current OpenAI reasoning models on the
+tool-capable chat-completions path wrapped by PandaProbe. Repair is reported
+separately in harness telemetry.
 
 ## Running
 
