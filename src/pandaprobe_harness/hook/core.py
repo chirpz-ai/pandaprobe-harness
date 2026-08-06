@@ -1,4 +1,4 @@
-"""The lifecycle hook: turn end → evaluation → mailbox notice.
+"""The lifecycle hook: task turn → evaluation → notice → managed repair.
 
 ``PandaHarnessHook`` is non-blocking by design. ``on_turn_end`` applies the
 cheap producing-side controls (budget, sampling, per-session rate limit),
@@ -6,9 +6,8 @@ supersedes any in-flight evaluation for the session, and schedules a detached
 wrapper task. The wrapper — :meth:`_run_eval` — awaits the evaluation under a
 global concurrency semaphore *and handles the resolved report itself*: it
 applies the dedup/cooldown gate and, when a breach, stall, or regression fires,
-writes the telemetry
-dump and posts a structured :class:`DiagnosticNotice` to the mailbox, where
-the agent will *pull* it via its harness toolset.
+writes the telemetry dump and posts a structured :class:`DiagnosticNotice` to
+the mailbox, where package-owned managed repair consumes it.
 
 Nothing is ever injected into the agent's input queue. Because handling lives
 inside the wrapper task, evaluations resolve and post as soon as they finish;
@@ -17,13 +16,12 @@ exceptions cannot vanish — every failure path is caught and logged inside the
 task.
 
 :meth:`PandaHarnessHook.settle` is the opt-in **per-turn barrier** that makes
-healing take effect *within* a session: it blocks until the turn's evaluation has
-landed, any notice is posted and any candidate validation has finished, so the
-agent cannot run past the turn its own diagnosis is about. It costs wall-clock
-per turn, which is the deliberate trade for in-session self-healing.
+repair take effect *within* a session: it blocks until the turn's evaluation has
+landed, any notice is posted, and managed repair has completed or timed out.
+Candidate validation stays detached so replay cannot deadlock a task-owned
+environment.
 
-``startup_context()`` returns the rendered rules + pull protocol + mailbox
-banner for prepending to the agent's system prompt.
+``startup_context()`` returns bounded read-only learned guidance.
 """
 
 from __future__ import annotations
@@ -57,6 +55,8 @@ from .turn import TurnContext, parse_turn_payload
 
 if TYPE_CHECKING:
     from ..filesystem.layout import HarnessFilesystem
+    from ..repair.coordinator import ManagedRepairCoordinator
+    from ..repair.models import RepairResult
     from ..validation.validator import ValidationEngine, ValidationVerdict
 
 __all__ = ["PandaHarnessHook", "SettleResult"]
@@ -70,6 +70,7 @@ class SettleResult:
 
     session_id: str
     report: EvalReport | None = None
+    repair: RepairResult | None = None
     #: True when the barrier's budget expired with work still in flight. The work
     #: continues detached, so this is a latency signal, not an error.
     timed_out: bool = False
@@ -110,6 +111,7 @@ class PandaHarnessHook:
         replay: ReplayFn | None = None,
         verifier: VerifierFn | None = None,
         locator: TraceLocator | None = None,
+        managed_repair: ManagedRepairCoordinator | None = None,
     ) -> None:
         self._cli = cli
         self._config = config or HarnessConfig()
@@ -124,6 +126,7 @@ class PandaHarnessHook:
         self._mailbox = mailbox or Mailbox(self._config)
         self._rules = rules or RulesStore(self._config, journal=self._journal)
         self._parser = parser or parse_turn_payload
+        self._repair = managed_repair
 
         # The regression eval-set: breaching sessions are captured as replayable
         # failure cases when the knob is on; the validation engine also replays
@@ -141,7 +144,11 @@ class PandaHarnessHook:
         # Candidate-rule validation (evidence before trust). Imported lazily to
         # avoid a hard cycle at module import time (same as HarnessFilesystem).
         self._validation = validation
-        if self._validation is None and self._config.rule_validation:
+        if (
+            self._validation is None
+            and self._config.rule_validation
+            and not self._config.observe_only
+        ):
             from ..validation.validator import ValidationEngine
 
             assert self._evalset is not None  # built above when validation is on
@@ -223,13 +230,12 @@ class PandaHarnessHook:
             if not task.done()
         )
 
-    def startup_context(self) -> str:
-        """The skill root + mailbox banner, for the agent's system prompt.
+    def startup_context(self, session_id: str, *, task_hint: str | None = None) -> str:
+        """Bounded read-only learned guidance for one task session."""
 
-        Carries no rule text — the agent pulls that from ``rules/*.md``.
-        """
-
-        return compose_system_preamble(self._rules, self._mailbox)
+        return compose_system_preamble(
+            self._rules, self._mailbox, session_id, task_hint=task_hint
+        )
 
     # -- producing side (turn end) -------------------------------------------
 
@@ -244,6 +250,9 @@ class PandaHarnessHook:
 
         if not self._admit(ctx):
             return
+
+        if self._repair is not None:
+            self._repair.remember_turn(ctx)
 
         # Remember the turn payload so a breach can be captured as a
         # *replayable* eval case. Stashed only for admitted turns: only
@@ -395,18 +404,18 @@ class PandaHarnessHook:
             await asyncio.wait(tasks, timeout=self._config.drain_timeout_s)
 
     async def settle(self, session_id: str, *, timeout: float | None = None) -> SettleResult:
-        """Block until this turn's diagnosis has landed.
+        """Block until task evaluation and managed repair have landed.
 
         The per-turn barrier that makes healing *in-session*: it waits for the
         turn's evaluation to resolve, its report to be handled (trial observation
-        recorded, eval case captured) and any notice to be posted, so the agent's
-        next turn sees the mailbox and rule set the harness just produced rather
-        than racing ahead of them.
+        recorded, eval case captured), any notice to be posted, and one bounded
+        managed repair attempt to finish. The next task turn can therefore see a
+        newly written provisional candidate without racing the repair.
 
         It runs on ``barrier_timeout_s`` — deliberately generous, and separate
         from ``drain_timeout_s``, which is only a best-effort join. On expiry the
-        work stays running detached and ``timed_out`` is set: a slow platform
-        degrades the loop's latency, never its correctness.
+        evaluation work stays detached. Repair timeouts are cancelled, journaled,
+        and leave the notice recoverable; neither path fails the developer task.
 
         It deliberately does **not** wait for the candidate-validation *round*.
         That round replays a captured case through the developer's agent, which
@@ -423,8 +432,21 @@ class PandaHarnessHook:
         deadline = loop.time() + max(0.0, budget)
 
         report = await self._await_eval(session_id, deadline)
-        timed_out = report is None and self._pending.get(session_id) is not None
-        return SettleResult(session_id=session_id, report=report, timed_out=timed_out)
+        eval_timed_out = report is None and self._pending.get(session_id) is not None
+        repair = None
+        if not eval_timed_out and self._repair is not None:
+            remaining = max(0.0, deadline - loop.time())
+            repair = await self._repair.settle(
+                session_id,
+                timeout_s=min(remaining, max(0.0, self._config.repair_timeout_s)),
+            )
+        timed_out = eval_timed_out or (repair is not None and repair.status == "timed_out")
+        return SettleResult(
+            session_id=session_id,
+            report=report,
+            repair=repair,
+            timed_out=timed_out,
+        )
 
     async def _await_eval(self, session_id: str, deadline: float) -> EvalReport | None:
         """Join the session's in-flight eval within the shared deadline."""
@@ -570,7 +592,7 @@ class PandaHarnessHook:
                     dump_path="",
                     summary=(
                         f"notice rate exceeded ({len(self._notice_times)} notices in "
-                        f"{window:.0f}s) — self-healing paused; human attention required"
+                        f"{window:.0f}s) — managed repair paused; human attention required"
                     ),
                 )
             self._notice_times.append(now)
@@ -689,8 +711,8 @@ class PandaHarnessHook:
                 name=str(score.metric),
                 value=score.value,
                 threshold=score.threshold,
-                # The judge's free-text `reason` is the raw material the agent
-                # turns into a specific rule, so it must survive into the notice.
+                # The judge's free-text `reason` is evidence used by managed
+                # repair, so it must survive into the notice.
                 reason=sanitize_text(score.reason, max_len=max_len) or None,
                 conditions=score.conditions,
                 trace_id=score.trace_id,
@@ -720,8 +742,7 @@ class PandaHarnessHook:
         The only mechanical scope decision the harness makes: a surgical Tier-2/3
         breach is about a specific step, so it is ``scoped``; anything else (a
         Tier-1 trajectory fire or verifier outcome) is a whole-trajectory
-        concern, so it is ``global``. Any finer organization is the agent's to
-        invent.
+        concern, so it is ``global``. Managed repair may choose a finer scope.
         """
 
         for score in report.alerting_scores:
