@@ -138,7 +138,6 @@ class SingleTaskRunner(Protocol):
         backend: str | None,
         max_turns: int,
         benchmark: str,
-        noval: bool,
         frozen_rules_path: Path | None,
     ) -> bool:
         """Drive a whole phase when the benchmark owns task/attempt iteration.
@@ -197,7 +196,6 @@ class BenchmarkRunner:
         dry_run: bool = False,
         phases: Sequence[str] = ("learning", "eval"),
         run_id: str | None = None,
-        noval: bool = False,
         max_turns_override: int | None = None,
         dataset_override: str | None = None,
     ) -> Path:
@@ -234,7 +232,7 @@ class BenchmarkRunner:
                 session_namespace=session_namespace, seed=seed, backend=backend,
                 max_turns=max_turns, benchmark=benchmark,
                 dataset=dataset, harness_root=harness_root, use_harness=use_harness,
-                noval=noval, frozen_snapshot=None, frozen_rules_path=None,
+                frozen_snapshot=None, frozen_rules_path=None,
             )
             if harness is not None:
                 # Barrier: drain learning-phase evals + candidate validation within
@@ -258,7 +256,7 @@ class BenchmarkRunner:
                 session_namespace=session_namespace, seed=seed, backend=backend,
                 max_turns=max_turns, benchmark=benchmark,
                 dataset=dataset, harness_root=harness_root, use_harness=use_harness,
-                noval=noval, frozen_snapshot=snapshot,
+                frozen_snapshot=snapshot,
                 frozen_rules_path=snapshot_path if snapshot is not None else None,
             )
 
@@ -277,7 +275,7 @@ class BenchmarkRunner:
         self, *, phase: str, tasks: Sequence[str], k: int, arm: str, model: ResolvedModel,
         client: ChatClient, writer: RecordWriter, run_id: str, seed: int,
         backend: str | None, max_turns: int, benchmark: str, dataset: str,
-        harness_root: Path, use_harness: bool, noval: bool, session_namespace: str,
+        harness_root: Path, use_harness: bool, session_namespace: str,
         frozen_snapshot: FrozenRulesSnapshot | None,
         frozen_rules_path: Path | None,
     ) -> Any:
@@ -286,7 +284,7 @@ class BenchmarkRunner:
             handled = await bulk_hook(
                 tasks=tasks, k=k, arm=arm, model=model, phase=phase, dataset=dataset,
                 harness_root=harness_root, writer=writer, run_id=run_id, seed=seed,
-                backend=backend, max_turns=max_turns, benchmark=benchmark, noval=noval,
+                backend=backend, max_turns=max_turns, benchmark=benchmark,
                 session_namespace=session_namespace,
                 frozen_rules_path=frozen_rules_path,
             )
@@ -296,7 +294,7 @@ class BenchmarkRunner:
                 # replay or verifier: Terminal-Bench supports neither capability.
                 return (
                     self._build_harness(
-                        harness_root, phase, benchmark, noval, model, seed,
+                        harness_root, phase, benchmark, model, seed,
                         session_namespace, bulk=True,
                     )
                     if use_harness and phase == "learning"
@@ -305,7 +303,7 @@ class BenchmarkRunner:
 
         harness = (
             self._build_harness(
-                harness_root, phase, benchmark, noval, model, seed, session_namespace
+                harness_root, phase, benchmark, model, seed, session_namespace
             )
             if use_harness and phase == "learning"
             else None
@@ -375,7 +373,10 @@ class BenchmarkRunner:
             # scores on every row for exactly that reason).
             settled = await wiring.settle_turn(max(outcome.turns, 1))
             report = settled.report if settled is not None else None
-            telemetry = collect_harness_telemetry(harness, session_id, report).to_dict()
+            repair = settled.repair if settled is not None else None
+            telemetry = collect_harness_telemetry(
+                harness, session_id, report, repair=repair
+            ).to_dict()
         elif frozen_snapshot is not None and arm == "harness" and phase == "eval":
             telemetry = frozen_harness_telemetry(frozen_snapshot, session_id).to_dict()
 
@@ -404,12 +405,13 @@ class BenchmarkRunner:
         )
 
     def _build_harness(
-        self, harness_root: Path, phase: str, benchmark: str, noval: bool,
-        model: ResolvedModel, seed: int, session_namespace: str, *, bulk: bool = False,
+        self, harness_root: Path, phase: str, benchmark: str, model: ResolvedModel,
+        seed: int, session_namespace: str, *, bulk: bool = False,
     ) -> Any:
         cfg = build_harness_config(
             harness_root=harness_root, phase=phase, study=self._study,
-            benchmark=benchmark, noval=noval, health_check=not bulk,
+            benchmark=benchmark, repair_model=model.litellm_model,
+            health_check=not bulk,
         )
         return build_harness(
             cfg=cfg,
@@ -555,6 +557,16 @@ class BenchmarkRunner:
                 "breach_threshold": self._study.breach_threshold(benchmark),
                 "rule_trial_min_sessions": self._study.harness.rule_trial_min_sessions,
                 "gate_window": self._study.harness.gate_window,
+                "repair_model": self._study.harness.repair_model or model.litellm_model,
+                "repair_timeout_s": self._study.harness.repair_timeout_s,
+                "repair_max_turns": self._study.harness.repair_max_turns,
+                "repair_max_tokens": self._study.harness.repair_max_tokens,
+                "repair_temperature": self._study.harness.repair_temperature,
+                "repair_reasoning_effort": (
+                    self._study.harness.repair_reasoning_effort
+                ),
+                "trace_repair_agent": self._study.harness.trace_repair_agent,
+                "managed_repair": True,
                 "eval_policy": "frozen_rules" if arm == "harness" else "baseline",
                 "trace_eval_during_eval": False,
                 **(
