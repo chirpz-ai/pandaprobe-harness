@@ -126,8 +126,7 @@ class FakeLiveHarness:
         self.refresh_calls = 0
         self.validation_drains = 0
         self.rule = FakeRule()
-        self.toolset = SimpleNamespace(specs=lambda: [], call=self._tool_call)
-        self.mailbox = SimpleNamespace(pending=lambda: [])
+        self.task_tools = SimpleNamespace(specs=lambda: [], call=self._tool_call)
         self.hook = SimpleNamespace(pending_sessions=())
         self.rules = SimpleNamespace(
             all=self._all_rules,
@@ -142,7 +141,8 @@ class FakeLiveHarness:
         self.events.append("rules-read")
         return [self.rule]
 
-    def system_context(self) -> str:
+    def system_context(self, session_id: str, *, task_hint: str | None = None) -> str:
+        del session_id, task_hint
         return "live learning harness"
 
     def on_turn_end(self, payload: dict[str, Any]) -> None:
@@ -154,7 +154,7 @@ class FakeLiveHarness:
         del session_id
         self.settle_calls += 1
         self.events.append("turn-settle")
-        return SimpleNamespace(timed_out=False, report=None)
+        return SimpleNamespace(timed_out=False, report=None, repair=None)
 
     async def refresh_all(self) -> None:
         self.refresh_calls += 1
@@ -259,6 +259,10 @@ async def test_live_learning_freezes_once_and_eval_never_builds_or_settles(
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     resolved = manifest["resolved_config"]
     assert resolved["gate_window"] == 10
+    assert resolved["repair_model"] == "mock/mock"
+    assert resolved["repair_reasoning_effort"] == "none"
+    assert resolved["managed_repair"] is True
+    assert resolved["trace_repair_agent"] is True
     assert resolved["eval_policy"] == "frozen_rules"
     assert resolved["trace_eval_during_eval"] is False
     assert resolved["ruleset_hash"] == eval_records[0]["harness"]["ruleset_hash"]
