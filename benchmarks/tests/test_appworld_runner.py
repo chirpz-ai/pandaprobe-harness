@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 import pytest
 
+from pandabench.agents.frozen_wiring import FrozenEvalWiring
+from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
 from pandabench.runners.appworld import AppWorldRunner, _experiment_name
@@ -54,6 +56,26 @@ def _verdict(passes: int, tests: int = 4) -> EvalResult:
     return EvalResult(passes == tests, tests, passes, 1, {})
 
 
+class RecordingToolsClient(MockClient):
+    def __init__(self, *, scripted: list[ChatResult]) -> None:
+        super().__init__(scripted=scripted)
+        self.tool_names: list[list[str]] = []
+        self.message_batches: list[list[dict[str, Any]]] = []
+
+    async def chat(self, **kwargs: Any) -> ChatResult:
+        self.tool_names.append([
+            str((schema.get("function") or {}).get("name", ""))
+            for schema in kwargs.get("tools") or []
+        ])
+        self.message_batches.append(list(kwargs["messages"]))
+        return await super().chat(**kwargs)
+
+
+class NoSettleFrozenWiring(FrozenEvalWiring):
+    async def settle_turn(self, turn_index: int) -> None:
+        raise AssertionError(f"frozen AppWorld eval settled turn {turn_index}")
+
+
 async def test_appworld_outcomes_and_experiments_are_session_scoped() -> None:
     env = SequenceAppWorldEnv([_verdict(1), _verdict(4), _verdict(3)])
     runner = AppWorldRunner(env)
@@ -81,6 +103,68 @@ async def test_appworld_outcomes_and_experiments_are_session_scoped() -> None:
         "pandabench", "session-a"
     )
     assert _experiment_name("unsafe name!", "session-a").startswith("unsafe-name-")
+
+
+async def test_appworld_frozen_eval_reads_rules_and_only_runs_native_grading() -> None:
+    env = SequenceAppWorldEnv([_verdict(4)])
+    runner = AppWorldRunner(env)
+    model = load_registry(CONFIGS / "models.yaml").resolve("mock")
+    snapshot = FrozenRulesSnapshot.create(
+        [{
+            "id": "r-learned",
+            "created_at": "2026-08-05T00:00:00+00:00",
+            "rule": "Read the order before refunding it.",
+            "rationale": "Learned from the training split.",
+            "source_notice_id": "n-1",
+            "metric": "task_completion",
+            "status": "active",
+            "tags": ["order", "refund"],
+            "trial": None,
+            "scope": "global",
+        }],
+        created_at="2026-08-05T01:00:00+00:00",
+    )
+    wiring = NoSettleFrozenWiring(snapshot)
+    client = RecordingToolsClient(
+        scripted=[
+            ChatResult(
+                assistant_message={
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{
+                        "id": "read-1", "type": "function",
+                        "function": {
+                            "name": "harness_rules_read",
+                            "arguments": '{"scope":"global"}',
+                        },
+                    }],
+                },
+                tool_calls=[ToolCall("read-1", "harness_rules_read", {"scope": "global"})],
+                usage=Usage(), finish_reason="tool_calls", resolved_model="mock",
+            ),
+            ChatResult(
+                assistant_message={"role": "assistant", "content": "done"},
+                tool_calls=[], usage=Usage(), finish_reason="stop", resolved_model="mock",
+            ),
+        ]
+    )
+
+    before = snapshot.to_dict()
+    outcome = await runner.run_once(
+        task_id="same-task", session_id="frozen-session", model=model,
+        client=client, max_turns=3, wiring=wiring,
+    )
+
+    assert outcome.passed is True
+    assert outcome.native_metrics["pass_ratio"] == 1.0
+    assert runner.outcome_for("same-task", "frozen-session") == 1.0
+    assert "Read the order before refunding" in client.message_batches[1][-1]["content"]
+    assert set(client.tool_names[0]) == {
+        "execute", "harness_rules_read", "harness_rules_search",
+        "harness_rules_list", "harness_rule_status",
+    }
+    assert all("harness_rule_add" not in tools for tools in client.tool_names)
+    assert wiring.pending_notice_ids() == ()
+    assert snapshot.to_dict() == before
 
 
 def test_tau2_outcomes_are_session_scoped() -> None:
