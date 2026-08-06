@@ -29,6 +29,7 @@ __all__ = [
     "TrialRecord",
     "archive_workspace",
     "collect_harness_telemetry",
+    "frozen_harness_telemetry",
     "resume_key",
 ]
 
@@ -49,6 +50,8 @@ class HarnessTelemetry:
     rules_candidate: int
     rules_retired: int
     notices: int
+    mode: str = "live"
+    ruleset_hash: str | None = None
     scores: dict[str, float] = field(default_factory=dict)
     """Every resolved metric of the turn, by name."""
     gate_breached: bool = False
@@ -253,6 +256,23 @@ def collect_harness_telemetry(
         notices=notices,
         scores=scores,
         gate_breached=gate_breached,
+    )
+
+
+def frozen_harness_telemetry(snapshot: Any, session_id: str) -> HarnessTelemetry:
+    """Explicit arm-B telemetry for eval, where no trace scores are produced."""
+
+    return HarnessTelemetry(
+        session_id=session_id,
+        breached=False,
+        rules_active=int(snapshot.active_count),
+        rules_candidate=int(snapshot.candidate_count),
+        rules_retired=int(snapshot.retired_count),
+        notices=0,
+        mode="frozen_eval",
+        ruleset_hash=str(snapshot.sha256),
+        scores={},
+        gate_breached=False,
     )
 
 
