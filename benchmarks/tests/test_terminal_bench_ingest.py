@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from pandabench.adapters import harbor_agent
+from pandabench.frozen_rules import FrozenRulesSnapshot
+from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
 from pandabench.results import RecordWriter, TrialRecord
 from pandabench.runners.terminal_bench import (
@@ -198,6 +202,7 @@ def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
         max_turns=50,
         noval=True,
         session_namespace="test-namespace",
+        frozen_rules_path=None,
     )
 
     assert Path(argv[0]).name == "harbor"
@@ -207,8 +212,128 @@ def test_harbor_argv_is_serial_noninteractive_and_forwards_ablation(tmp_path):
     assert "-y" in argv
     assert "noval=true" in argv
     assert "capture=true" in argv
+    assert "phase=learning" in argv
+    assert "frozen_eval=false" in argv
     assert "session_namespace=test-namespace" in argv
     assert [argv[index + 1] for index, value in enumerate(argv) if value == "-i"] == [
         "task-a",
         "task-b",
     ]
+
+
+def test_harbor_eval_argv_explicitly_forwards_frozen_snapshot(tmp_path):
+    model = load_registry(CONFIGS / "models.yaml").resolve("mock")
+    snapshot_path = tmp_path / "frozen-rules.json"
+    FrozenRulesSnapshot.create((), created_at="2026-08-05T00:00:00+00:00").save(
+        snapshot_path
+    )
+    argv = _harbor_argv(
+        dataset="terminal-bench-sample@2.0", tasks=["task-a"], k=1,
+        arm="harness", model=model, phase="eval", raw_dir=tmp_path / "raw",
+        seed=1, backend=None, harness_root=tmp_path / "harness_root",
+        max_turns=20, noval=False, session_namespace="test-namespace",
+        frozen_rules_path=snapshot_path,
+    )
+
+    assert "phase=eval" in argv
+    assert "frozen_eval=true" in argv
+    assert "capture=false" in argv
+    assert f"frozen_rules_path={snapshot_path.resolve()}" in argv
+
+
+class RecordingHarborClient(MockClient):
+    def __init__(self) -> None:
+        super().__init__(scripted=[
+            ChatResult(
+                assistant_message={
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{
+                        "id": "read", "type": "function",
+                        "function": {
+                            "name": "harness_rules_read",
+                            "arguments": '{"scope":"global"}',
+                        },
+                    }],
+                },
+                tool_calls=[ToolCall("read", "harness_rules_read", {"scope": "global"})],
+                usage=Usage(), finish_reason="tool_calls", resolved_model="mock",
+            ),
+            ChatResult(
+                assistant_message={"role": "assistant", "content": "done"},
+                tool_calls=[], usage=Usage(), finish_reason="stop", resolved_model="mock",
+            ),
+        ])
+        self.tool_names: list[list[str]] = []
+        self.messages: list[list[dict[str, Any]]] = []
+        self.flushes = 0
+
+    async def chat(self, **kwargs: Any) -> ChatResult:
+        self.tool_names.append([
+            str((tool.get("function") or {}).get("name", ""))
+            for tool in kwargs.get("tools") or []
+        ])
+        self.messages.append(list(kwargs["messages"]))
+        return await super().chat(**kwargs)
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+async def test_frozen_harbor_agent_never_builds_live_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot_path = tmp_path / "frozen-rules.json"
+    snapshot = FrozenRulesSnapshot.create(
+        [{
+            "id": "r-harbor",
+            "created_at": "2026-08-05T00:00:00+00:00",
+            "rule": "Inspect the repository before editing.",
+            "rationale": "Learned from a training task.",
+            "source_notice_id": "n-harbor",
+            "metric": "task_completion",
+            "status": "active",
+            "tags": ["repository"],
+            "trial": None,
+            "scope": "global",
+        }],
+        created_at="2026-08-05T01:00:00+00:00",
+    )
+    snapshot.save(snapshot_path)
+    client = RecordingHarborClient()
+    monkeypatch.setattr(harbor_agent, "LiteLLMClient", lambda **kwargs: client)
+    monkeypatch.setattr(
+        harbor_agent, "build_harness",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("built live Harness")),
+    )
+    monkeypatch.setattr(
+        harbor_agent.PandaTracer, "from_env", classmethod(lambda cls: cls.disabled()),
+    )
+    logs_dir = tmp_path / "task-a__trial" / "agent"
+    logs_dir.mkdir(parents=True)
+    agent = harbor_agent.PandaBenchAgent(
+        logs_dir,
+        arm="harness",
+        seed=1,
+        model_key="mock",
+        phase="eval",
+        frozen_eval=True,
+        frozen_rules_path=str(snapshot_path),
+        harness_root=str(tmp_path / "live-root"),
+        max_turns=3,
+    )
+    context = SimpleNamespace()
+    environment = SimpleNamespace(exec=None)
+
+    await agent.run("complete the task", environment, context)
+
+    assert agent._harness is None
+    assert "Inspect the repository before editing" in client.messages[1][-1]["content"]
+    assert set(client.tool_names[0]) == {
+        "bash", "harness_rules_read", "harness_rules_search",
+        "harness_rules_list", "harness_rule_status",
+    }
+    assert all("harness_rule_add" not in tools for tools in client.tool_names)
+    assert client.flushes == 1
+    assert context.metadata["harness"]["mode"] == "frozen_eval"
+    assert context.metadata["harness"]["ruleset_hash"] == snapshot.sha256
+    assert context.metadata["harness"]["scores"] == {}
