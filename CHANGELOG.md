@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A package-owned `ManagedRepairAgent` with a bounded, provider-neutral tool
+  loop over PandaProbe's official LiteLLM wrapper. Repair model, timeout, turn,
+  output-token, temperature, tracing, and domain-policy settings are available
+  through `HarnessConfig` and `HARNESS_REPAIR_*` environment variables.
+  Managed repair defaults `repair_reasoning_effort="none"` so current OpenAI
+  reasoning models can use function tools through the wrapped chat-completions
+  path; the parameter is forwarded only when LiteLLM reports model support.
+  The default six-turn bound accommodates providers that emit one workspace
+  tool call per model round without adding provider-specific orchestration.
+- Structured `RepairAssignment`, `RepairResult`, `RepairStatus`, and
+  `RepairUsage` values. `SettleResult.repair` reports repair success, explicit
+  duplicate/no-proposal resolution, timeout, or failure without failing the
+  developer task.
+- `TaskToolset`, the only tool surface intended for developer task agents. It
+  exposes read, search, list, and status operations over learned rules.
+
 ### Removed
+
+- **BREAKING:** the task-agent self-administration architecture. Task agents no
+  longer receive mailbox, trace inspection, notice acknowledgement, rule write
+  or retirement, validation, or regression capabilities.
+- **BREAKING:** public `HarnessToolset`, `Harness.toolset`, and the
+  `pandaprobe-harness-agent` administrative companion CLI. Use
+  `Harness.task_tools` for optional read-only rule retrieval.
+- **BREAKING:** `Harness.shell`; task agents no longer receive a Harness-owned
+  administrative shell. Independent restricted-shell/operator types remain
+  available for non-task integrations.
+- **BREAKING:** `pandaprobe_harness.agent_tools.OP_SCHEMAS`,
+  `build_toolset_from_env`, and `main`. They belonged to the removed combined
+  administrative toolset/companion. The task schema is now
+  `TASK_OP_SCHEMAS`; repair schemas and dispatch stay package-internal.
+- **BREAKING:** the no-argument `Harness.system_context()` /
+  `PandaHarnessHook.startup_context()` and two-argument
+  `compose_system_preamble(rules, mailbox)` signatures. All now require a task
+  session ID; task context may also take a task hint.
 
 - **BREAKING:** the session-composite trigger and its ablation configuration.
   The trace-level three-tier trigger is now the only evaluation path. Version
@@ -33,6 +69,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default trace trigger in 0.7.0.
 
 ### Changed
+
+- `Harness.create()` now requires an explicit repair model unless
+  `observe_only=True`; no potentially billable default is selected.
+- Mutating `Harness` construction requires `rule_validation=True`, so managed
+  repair cannot bypass candidate validation. Low-level stores still load
+  legacy active rules.
+- `Harness.settle()` now covers evaluation, notice persistence, and one
+  single-flight managed repair attempt. Candidate replay validation remains
+  detached so non-reentrant task environments are not deadlocked.
+- Task context directly includes bounded, session-relevant active/candidate
+  guidance and never includes a mailbox banner or repair instructions.
+- Repair model calls use distinct `repair-<task-session>-<notice-id>` SDK
+  sessions, preventing repair traces from entering exact task-session scoring.
+- Optional repair tracing now exports one `pandaprobe` trace per assignment,
+  with a `harness` CHAIN parent, repeated `repair-agent` and `tools` AGENT
+  rounds, wrapper-owned LLM children, and TOOL children for restricted
+  workspace calls.
+- Persisted 0.8 rules, notices, eval cases, journals, and history remain
+  readable; runtime compatibility with the self-managed API is intentionally
+  not retained.
 
 - Score history now persists only trace series and trajectory-gate state.
   Existing 0.7 workspaces that contain EWMA state remain readable; obsolete
