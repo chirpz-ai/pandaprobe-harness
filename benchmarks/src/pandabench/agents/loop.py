@@ -3,10 +3,10 @@
 The two study arms run *identical* code here; they differ only by whether a
 :class:`HarnessWiring` is passed. Arm A (``wiring=None``) is a plain
 call-model / run-tools / repeat loop. Arm B additionally prepends the harness
-preamble each turn and exposes the harness's self-diagnostic tools alongside
-the benchmark's tools. Session lifecycle (``on_turn_end`` / ``refresh`` /
-``drain_validation``) is owned by the *runner*, not this loop, so the loop stays
-a pure agent stepper (see ``runners/base.py``).
+preamble each turn and exposes only read-only learned-rule tools alongside the
+benchmark's tools. The runner owns final settlement and phase validation; the
+loop settles continuing turns so package-owned repair can update next-turn
+guidance in-session.
 """
 
 from __future__ import annotations
@@ -124,9 +124,9 @@ async def run_agent_loop(
             )
 
         # The per-turn barrier: block until the harness has evaluated this turn and
-        # posted any notice, so the next iteration's preamble and rule set already
-        # reflect it. This is what makes healing take effect *within* a session
-        # rather than after it.
+        # completed package-owned repair, so the next iteration's preamble and
+        # rule set already reflect any provisional guidance. This is what makes
+        # healing take effect *within* a session rather than after it.
         #
         # Only when another turn will actually follow. At the cap the next
         # iteration returns immediately, so this turn is the trial's last and the
