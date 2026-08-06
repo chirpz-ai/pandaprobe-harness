@@ -1,7 +1,7 @@
 """Native tool registration for function-calling frameworks (optional extras).
 
 Each helper turns the toolset's uniform specs into the shape a framework
-expects. Imports are guarded so the core stays dependency-free;
+expects. Framework imports are guarded so integrations stay optional;
 ``as_anthropic_tools`` needs no guard because Anthropic tool specs are plain
 dicts dispatched by the caller.
 """
@@ -12,8 +12,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from .spec import ToolSpec
-from .toolset import HarnessToolset
+from .spec import ToolDispatcher, ToolSpec
 
 __all__ = [
     "as_anthropic_tools",
@@ -23,7 +22,7 @@ __all__ = [
 
 
 def as_anthropic_tools(
-    toolset: HarnessToolset,
+    toolset: ToolDispatcher,
 ) -> tuple[list[dict[str, Any]], Callable[[str, Mapping[str, Any]], Awaitable[dict[str, Any]]]]:
     """Anthropic-style tool dicts plus an async dispatcher.
 
@@ -38,7 +37,7 @@ def as_anthropic_tools(
     return specs, toolset.call
 
 
-def as_langchain_tools(toolset: HarnessToolset) -> list[Any]:
+def as_langchain_tools(toolset: ToolDispatcher) -> list[Any]:
     """LangChain ``StructuredTool``s (requires a ``langchain``-family extra)."""
 
     try:
@@ -63,7 +62,7 @@ def as_langchain_tools(toolset: HarnessToolset) -> list[Any]:
     return [_make(spec) for spec in toolset.specs()]
 
 
-def as_openai_function_tools(toolset: HarnessToolset) -> list[Any]:
+def as_openai_function_tools(toolset: ToolDispatcher) -> list[Any]:
     """OpenAI Agents SDK ``FunctionTool``s (requires the ``openai-agents`` extra)."""
 
     try:
