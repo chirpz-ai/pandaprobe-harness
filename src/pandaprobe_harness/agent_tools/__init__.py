@@ -1,20 +1,18 @@
-"""The agent-facing harness toolset (native tools + companion CLI)."""
+"""Capability-separated task and managed-repair tools."""
 
 from __future__ import annotations
 
-from .companion import build_toolset_from_env, main
 from .native import as_anthropic_tools, as_langchain_tools, as_openai_function_tools
-from .spec import ToolHandler, ToolSpec
-from .toolset import OP_SCHEMAS, HarnessToolset
+from .spec import ToolDispatcher, ToolHandler, ToolSpec
+from .toolset import TASK_OP_SCHEMAS, TaskToolset
 
 __all__ = [
-    "OP_SCHEMAS",
-    "HarnessToolset",
+    "TASK_OP_SCHEMAS",
+    "TaskToolset",
+    "ToolDispatcher",
     "ToolHandler",
     "ToolSpec",
     "as_anthropic_tools",
     "as_langchain_tools",
     "as_openai_function_tools",
-    "build_toolset_from_env",
-    "main",
 ]
