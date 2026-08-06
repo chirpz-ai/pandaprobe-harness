@@ -19,7 +19,7 @@ from typing import Any
 
 from ..providers.litellm_client import ChatClient, ProviderError, ToolCall, Usage
 from ..providers.models import ResolvedModel
-from .harness_wiring import HarnessWiring
+from .harness_wiring import AgentWiring
 
 logger = logging.getLogger("pandabench.loop")
 
@@ -51,7 +51,7 @@ async def run_agent_loop(
     tool_executor: ToolExecutor,
     initial_messages: Sequence[dict[str, Any]],
     max_turns: int,
-    wiring: HarnessWiring | None = None,
+    wiring: AgentWiring | None = None,
     max_tokens: int | None = None,
 ) -> LoopResult:
     """Drive one task-trial to completion (final answer, cap, or error).
@@ -133,12 +133,12 @@ async def run_agent_loop(
         # runner settles it — settling here too would fire a second evaluation for
         # the same turn, which finds no new traces and so reports none of the tier
         # scores the runner then records as telemetry.
-        if wiring is not None and turns < max_turns:
+        if wiring is not None and wiring.settles_turns and turns < max_turns:
             await wiring.settle_turn(turns)
 
 
 async def _dispatch(
-    tool_call: ToolCall, tool_executor: ToolExecutor, wiring: HarnessWiring | None
+    tool_call: ToolCall, tool_executor: ToolExecutor, wiring: AgentWiring | None
 ) -> Any:
     """Route one tool call to the harness (``harness_*``) or the benchmark."""
 
