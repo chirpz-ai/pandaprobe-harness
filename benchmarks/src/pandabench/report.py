@@ -259,12 +259,13 @@ def _write_report_md(
         "- **Nondeterminism.** The study does not send `temperature` to Claude, so "
         "trial-to-trial variance comes from natural model nondeterminism; no "
         "sampler seed is forced.",
-        "- **Preamble confound.** The arm-B harness preamble + 14 tools cost "
-        "context/tokens during learning; frozen eval exposes only four read-only "
-        "rule tools (see cost/overhead), which can still depress arm B "
+        "- **Preamble confound.** The arm-B harness preamble plus four read-only "
+        "rule tools cost context/tokens during learning and frozen eval (see "
+        "cost/overhead), which can still depress arm B "
         "on long tasks independent of rule quality.",
         "- **Frozen eval.** Arm-B learning runs the complete evaluation and repair "
-        "loop. Eval uses one hashed, read-only learning ruleset and runs no "
+        "loop with repair owned by the installed harness package. Eval uses one "
+        "hashed, read-only learning ruleset and runs no "
         "PandaProbe trace evaluation, notices, rule mutation, validation, or replay; "
         "benchmark-native grading remains enabled.",
         "- **Checkpoints.** Checkpoint 1 (metric<->failure calibration) and "
