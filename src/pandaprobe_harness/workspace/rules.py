@@ -1,32 +1,30 @@
-"""Structured self-heal rules with provenance, lifecycle, dedup, cap, and effectiveness.
+"""Structured learned rules with provenance, lifecycle, dedup, and validation.
 
 Rules live as an append-only JSONL store at ``<harness_root>/rules.jsonl``
 (the latest record per rule id wins, so retiring a rule appends an updated
-record rather than rewriting the file). Everything the agent reads is a *rendered
-artifact* of that store, laid out as an agent skill::
+record rather than rewriting the file). Read-only task guidance is rendered
+from that store as an agent skill::
 
     harness_rules.md    the SKILL ROOT — protocol, tool list, and a generated
                         References index. Contains NO rule text.
     rules/global.md     whole-trajectory rules, always in force
     rules/scoped.md     step-level rules; the catch-all default
-    rules/<topic>.md    created by the agent when a topic is worth splitting out
+    rules/<topic>.md    scoped guidance selected by managed repair
 
-The split matters: the root stays small and stable enough to be the agent's entry
-point, while rule *content* is pulled on demand rather than pushed into the system
-prompt. ``scope`` is free-form and agent-owned — the harness only ever supplies a
-coarse default (``global`` for a trajectory fire, ``scoped`` for a step-level
-breach) and the agent may re-file anything.
+The split keeps the task-agent context bounded while preserving on-demand rule
+access. ``scope`` is selected by managed repair, with a coarse default of
+``global`` for trajectory findings and ``scoped`` for step-level breaches.
 
 Retrieval stays **per rule** over ``rules.jsonl`` (see
-:meth:`RulesStore.relevant`), not per file, so how the agent chooses to organize
-its files can never degrade which rules get selected.
+:meth:`RulesStore.relevant`), not per file, so workspace organization cannot
+degrade which rules get selected.
 
 Lifecycle (evidence before trust)::
 
     candidate ──(validated: metric improved)──▶ active
         │
         └────────(invalidated: no improvement / regressed)──▶ retired
-    active ──(agent or regression run retires it)──▶ retired
+    active ──(managed repair or regression run retires it)──▶ retired
 
 When ``config.rule_validation`` is on, :meth:`RulesStore.add` records a
 **candidate**: it is rendered (clearly labeled as provisional, so it is in
@@ -35,7 +33,7 @@ force and therefore measurable) but only a validator verdict promotes it to
 v0.5 behavior).
 
 This addresses rule rot: duplicate rules are collapsed on normalized text, a
-live-rule cap forces agent-driven compaction (retire before add), and
+live-rule cap forces explicit compaction (retire before add), and
 :meth:`RulesStore.effectiveness` gives the reflection cycle before/after
 notice counts per rule from the journal.
 
@@ -94,7 +92,7 @@ RuleStatus = Literal["candidate", "active", "retired"]
 
 #: Tier-1 (trajectory) rules: whole-trajectory lessons, always eligible.
 GLOBAL_SCOPE = "global"
-#: Tier-2/3 (step-level) rules: the general catch-all the agent may split later.
+#: Tier-2/3 (step-level) rules: the general catch-all repair may split later.
 SCOPED_SCOPE = "scoped"
 #: A scope becomes a filename, so it must be exactly one safe path component.
 _SAFE_SCOPE = re.compile(r"\A[a-z0-9][a-z0-9._-]{0,47}\Z")
@@ -102,9 +100,9 @@ _SCOPE_SEPARATORS = re.compile(r"[^a-z0-9._-]+")
 
 
 def normalize_scope(value: str | None) -> str:
-    """Slugify an agent-supplied scope into one safe path component.
+    """Slugify a repair-supplied scope into one safe path component.
 
-    Scope is deliberately free-form — the agent invents its own organization —
+    Scope is deliberately free-form — managed repair can organize guidance —
     but it is also used as a filename, so it is slugified and bounded here rather
     than trusted. Empty means the documented default (``global``); anything that
     cannot be slugified at all falls back to the ``scoped`` catch-all, so a rule
@@ -120,7 +118,7 @@ def normalize_scope(value: str | None) -> str:
 
 #: Journal `notice` events scanned to estimate a candidate's pre-trial baseline.
 _BASELINE_WINDOW = 200
-#: Bounds applied to rule tags (both derived and agent-supplied).
+#: Bounds applied to rule tags (both derived and repair-supplied).
 _TAG_MAX_COUNT = 16
 _TAG_MAX_LEN = 48
 
@@ -311,8 +309,8 @@ class Rule:
     status: RuleStatus = "active"
     tags: tuple[str, ...] = ()
     trial: TrialState | None = None
-    #: Which ``rules/<scope>.md`` file this rule lives in. Free-form and
-    #: agent-owned; ``global`` rules are always eligible for retrieval.
+    #: Which ``rules/<scope>.md`` file this rule lives in. ``global`` rules are
+    #: always eligible for retrieval.
     scope: str = GLOBAL_SCOPE
 
     @staticmethod
@@ -372,6 +370,12 @@ class RulesStore:
         self._journal = journal
         self._lock = threading.Lock()
 
+    @property
+    def config(self) -> HarnessConfig:
+        """Read-only rendering configuration."""
+
+        return self._config
+
     # -- reads ------------------------------------------------------------------
 
     def all(self) -> list[Rule]:
@@ -421,7 +425,7 @@ class RulesStore:
         """Distinct scopes with at least one live rule, in reading order.
 
         ``global`` first (always in force), then the ``scoped`` catch-all, then
-        any agent-created topic files alphabetically.
+        any managed-repair topic files alphabetically.
         """
 
         return list(self._grouped())
@@ -471,8 +475,8 @@ class RulesStore:
         With ``rule_validation`` on, the rule enters as a **candidate** (with
         its pre-trial baseline captured from the journal); otherwise it is
         ``active`` immediately. Raises ``RulesCapError`` at the live-rule cap
-        — the agent must retire a rule first (agent-driven compaction, no
-        silent eviction).
+        — managed repair must retire a rule first (explicit compaction, no silent
+        eviction).
 
         ``scope`` picks the ``rules/<scope>.md`` file the rule is written to. Any
         label is allowed and a new one simply creates a file; the caller normally
@@ -666,10 +670,9 @@ class RulesStore:
     def render_root(self) -> str:
         """The **skill root**: the packaged instructions plus a References directory.
 
-        Deliberately carries **no rule text**. The root is the agent's stable
+        Deliberately carries **no rule text**. The root is a stable read-only
         entry point — protocol, tool list, and a generated index of the rule files
-        that exist — and rule content is pulled on demand from ``rules/*.md``. The
-        agent owns that subtree; nothing from it is force-injected.
+        that exist — and rule content can be pulled on demand from ``rules/*.md``.
         """
 
         return self._root_from(self._grouped())
@@ -689,12 +692,12 @@ class RulesStore:
     def _reference_lines(groups: Mapping[str, Sequence[Rule]]) -> list[str]:
         if not groups:
             return [
-                "_No rules recorded yet. When a notice teaches you something, record "
-                "it with `harness_rule_add`._"
+                "_No learned rules are available yet. PandaProbe managed repair "
+                "will add guidance after actionable failures._"
             ]
         lines = [
-            "Read a file with `harness_rules_read` before acting. "
-            "`rules/global.md` is always in force — start there.",
+            "Rule bodies are also available through the read-only "
+            "`harness_rules_read` tool when deeper inspection is useful.",
             "",
         ]
         for scope, rules in groups.items():
@@ -707,7 +710,7 @@ class RulesStore:
         return lines
 
     def render_scope(self, scope: str, *, query: str | None = None) -> str:
-        """One agent-facing rule file: the active rules of ``scope``, then candidates.
+        """One read-only rule file: active rules of ``scope``, then candidates.
 
         Candidates always render in full under a clearly-labeled provisional
         heading — they must be in force to be measurable, but every reader can see
@@ -780,8 +783,8 @@ class RulesStore:
 
         This is the *replay* context — what a candidate rule is validated against,
         and what a regression run replays with — so it must include candidates and
-        every scope. It is not what the agent's system prompt receives; that is
-        :meth:`render_root` alone.
+        every scope. It is not the bounded task-agent context rendered by
+        ``hook.context``.
         """
 
         groups = self._grouped()
@@ -825,8 +828,8 @@ class RulesStore:
         for scope, rules in groups.items():
             atomic_write_text(cfg.rules_scope_file(scope), self._scope_from(scope, rules))
         # A scope whose every rule was retired keeps its file, rewritten empty, so
-        # the agent sees "no rules here" rather than stale ones. Files are only
-        # ever emptied, never unlinked: the agent may have referenced the path.
+        # readers see "no rules here" rather than stale ones. Files are only
+        # ever emptied, never unlinked because a prior context may reference one.
         if not cfg.rules_dir.is_dir():
             return
         for path in sorted(cfg.rules_dir.glob("*.md")):
@@ -841,7 +844,7 @@ class RulesStore:
     def read_scope(self, scope: str) -> str:
         """The on-disk text of one ``rules/<scope>.md``, rendering it if absent.
 
-        The agent's read path. Falling back to a live render (rather than an
+        The read-only tool path. Falling back to a live render (rather than an
         error) means a scope named in the References is always readable, even if
         the file has not been written yet.
         """
@@ -866,8 +869,8 @@ class RulesStore:
         """Per-rule notice counts before/after the rule was added.
 
         Computed from the journal's ``notice`` events for the rule's metric
-        (all notices when the rule has no metric). Raw counts — the agent's
-        reflection cycle interprets them.
+        (all notices when the rule has no metric). Raw counts support operator
+        review and managed-repair decisions.
         """
 
         if self._journal is None:
