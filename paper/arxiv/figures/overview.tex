@@ -1,4 +1,4 @@
-% Figure 1: PandaProbe Harness architecture and self-heal loop.
+% Figure 1: PandaProbe Harness architecture and managed-repair loop.
 
 \begin{tikzpicture}[
     font=\small,
@@ -14,20 +14,20 @@
 ]
 
 % --- Agent side (left) ---
-\node[agent] (agent) {\textbf{LLM agent loop}\\[2pt]\footnotesize policy $\pi$\\[2pt]
+\node[agent] (agent) {\textbf{Developer task agent}\\[2pt]\footnotesize policy $\pi$\\[2pt]
                       \footnotesize context $c(R,q)$};
 
 % --- Four stages of the loop (right), arranged in a cycle ---
 \node[stage, right=26mm of agent, yshift=15mm] (detect)  {\textbf{Detect}\\[1pt]\scriptsize $E$ scores\\[-1pt]\scriptsize session $s$};
 \node[stage, right=8mm of detect]              (notice)  {\textbf{Notice}\\[1pt]\scriptsize post to\\[-1pt]\scriptsize mailbox};
 \node[stage, below=14mm of notice]             (validate){\textbf{Validate}\\[1pt]\scriptsize gate rule\\[-1pt]\scriptsize (evidence)};
-\node[stage, below=14mm of detect]             (heal)    {\textbf{Heal}\\[1pt]\scriptsize agent writes\\[-1pt]\scriptsize a rule};
+\node[stage, below=14mm of detect]             (heal)    {\textbf{Managed repair}\\[1pt]\scriptsize package agent\\[-1pt]\scriptsize proposes rule};
 
 % cyclic arrows Detect -> Notice -> Heal -> Validate -> Detect
 \draw[->, thick] (detect) -- (notice);
-\draw[->, thick] (notice) -- (validate);
-\draw[->, thick] (validate) -- (heal);
-\draw[->, thick] (heal) -- (detect);
+\draw[->, thick] (notice) -- (heal);
+\draw[->, thick] (heal) -- (validate);
+\draw[->, thick] (validate) -- (detect);
 
 % --- Workspace substrate (bottom) ---
 \node[store, below=20mm of heal, xshift=-4mm] (mailbox) {mailbox};
@@ -48,20 +48,20 @@
 \draw[->] (act.east) to[out=0,in=0] node[lbl,right]{regress} (ret.east);
 \node[lbl, above=1pt of act] {Evidence gate};
 
-% --- Pull-model boundary (dashed vertical line between agent and harness) ---
+% --- Capability boundary (dashed vertical line between task and harness) ---
 \coordinate (btop) at ($(agent.north east)!0.5!(detect.north west) + (0,10mm)$);
 \coordinate (bbot) at (btop |- ws.south);
 \draw[dashed, gray] (btop) -- (bbot)
-      node[midway, sloped, above, font=\scriptsize\bfseries, gray] {pull-model boundary};
+      node[midway, sloped, above, font=\scriptsize\bfseries, gray] {capability boundary};
 
-% agent PULLS from workspace (arrow FROM workspace TO agent, labelled "pull")
-\draw[->, dashed] (ws.west) to[out=180,in=270] node[lbl,below left]{agent pulls\\notices \& rules} (agent.south);
+% task agent receives only read-only guidance from the workspace
+\draw[->, dashed] (ws.west) to[out=180,in=270] node[lbl,below left]{bounded guidance\\+ read-only rules} (agent.south);
 % the loop's stages read/write the workspace (harness side only)
 \draw[->, dotted] (notice.south) to[out=270,in=90] (mailbox.north);
 \draw[->, dotted] (heal.south)   to[out=270,in=90] (rules.north);
 \draw[->, dotted] (validate.south) to[out=270,in=90] (evalset.north);
 
 % Detect reads the agent's session (the only arrow crossing toward the harness)
-\draw[->] (agent.north) to[out=90,in=180] node[lbl,above]{session $s$} (detect.west);
+\draw[->] (agent.north) to[out=90,in=180] node[lbl,above]{task trace $s$} (detect.west);
 
 \end{tikzpicture}
