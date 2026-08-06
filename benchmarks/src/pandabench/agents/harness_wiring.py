@@ -1,11 +1,10 @@
-"""Arm-B wiring: the only thing that differs between the two arms.
+"""Arm-B task-agent wiring for package-owned managed repair.
 
 An arm-B trial passes a :class:`HarnessWiring` into the shared loop; arm A
-passes ``None``. The wiring supplies (1) the per-turn system preamble (the skill
-root plus any pending-notice banner, or a fixed override during replay), (2) the
-harness tools as OpenAI function-tool JSON, (3) a dispatcher for ``harness_*``
-tool calls, (4) the replayable ``end_state`` that turns a breaching session into
-an eval case, and (5) the **per-turn barrier**.
+passes ``None``. The wiring supplies the session-aware learned-guidance preamble,
+read-only task tools, replay metadata, and the per-turn settlement barrier. The
+package-owned repair agent receives notices and administrative capabilities;
+the benchmark task agent never does.
 
 The barrier is what makes healing in-session. v1 hooked the harness once per
 task-trial, so a session's trajectory was scored exactly once and the trend
@@ -38,10 +37,6 @@ class AgentWiring(Protocol):
 
     def harness_tools(self) -> list[dict[str, Any]]: ...
 
-    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]: ...
-
-    def live_rule_scopes(self) -> tuple[str, ...]: ...
-
     def is_harness_tool(self, name: str) -> bool: ...
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]: ...
@@ -53,7 +48,7 @@ def specs_to_openai(specs: Any) -> list[dict[str, Any]]:
     """Convert harness ``ToolSpec`` objects to OpenAI function-tool JSON.
 
     We roll our own instead of ``as_openai_function_tools`` so the study needs
-    no ``[openai-agents]`` extra; dispatch goes through ``harness.toolset.call``.
+    no ``[openai-agents]`` extra; dispatch goes through ``harness.task_tools``.
     """
 
     tools: list[dict[str, Any]] = []
@@ -83,7 +78,7 @@ class HarnessWiring:
         capture: bool,
         replay_descriptor: dict[str, Any],
         preamble_override: str | None = None,
-        session_id: str | None = None,
+        session_id: str,
         flush: Callable[[], None] | None = None,
         settle_each_turn: bool = True,
     ) -> None:
@@ -97,9 +92,9 @@ class HarnessWiring:
         self._flush = flush
         # A replay must not recurse into the barrier: it re-runs a task purely to
         # be scored, and hooking its turns would spawn evals inside an eval.
-        self._settle_each_turn = settle_each_turn and session_id is not None
+        self._settle_each_turn = settle_each_turn
         # Cache the tool JSON once; the spec set is stable for a harness.
-        self._tools = specs_to_openai(harness.toolset.specs())
+        self._tools = specs_to_openai(harness.task_tools.specs())
         self.turns_settled = 0
         # The most recent (turn_index, result), so settling a turn twice returns
         # the first answer instead of re-evaluating. See settle_turn.
@@ -116,48 +111,29 @@ class HarnessWiring:
 
         During replay we inject the harness-supplied rules string verbatim (the
         candidate under evaluation is already rendered into it); otherwise we
-        recompute ``system_context`` so the References index and the pending-notice
-        banner reflect whatever the last turn's barrier just produced.
+        recompute ``system_context`` for this task session so a candidate written
+        by managed repair after the preceding turn is immediately visible.
         """
 
         if self.preamble_override is not None:
             return self.preamble_override
-        return self.harness.system_context()
+        return self.harness.system_context(
+            self.session_id,
+            task_hint=f"{self.benchmark} {self.task_id}",
+        )
 
     def harness_tools(self) -> list[dict[str, Any]]:
         return self._tools
 
-    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]:
-        """Return pending notice ids, preferring the caller's current session.
-
-        Framework adapters normally let the model discover notices through
-        ``harness_mailbox_list``.  tau2 additionally needs a host-side readiness
-        check because its synchronous agent API separates workspace maintenance
-        from the domain action that is returned to the orchestrator.  This method
-        exposes identifiers only; the model must still read and resolve each
-        notice through the normal harness tools.
-        """
-
-        pending = self.harness.mailbox.pending()
-        if session_id is None:
-            return tuple(notice.id for notice in pending)
-        current = [notice.id for notice in pending if notice.session_id == session_id]
-        other = [notice.id for notice in pending if notice.session_id != session_id]
-        return tuple((*current, *other))
-
-    def live_rule_scopes(self) -> tuple[str, ...]:
-        """Scopes containing active or provisional rules, in stable order."""
-
-        rules = (*self.harness.rules.active(), *self.harness.rules.candidates())
-        return tuple(sorted({rule.scope for rule in rules}))
-
     def is_harness_tool(self, name: str) -> bool:
+        # Capability enforcement lives in TaskToolset.call, so hallucinated
+        # administrative names are routed there and rejected safely.
         return name.startswith("harness_")
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Route a ``harness_*`` tool call to the harness toolset."""
+        """Route a ``harness_*`` call through the task capability boundary."""
 
-        return await self.harness.toolset.call(name, args)
+        return await self.harness.task_tools.call(name, args)
 
     async def settle_turn(self, turn_index: int) -> SettleResult | None:
         """End one turn and wait for the harness to finish diagnosing it.
@@ -182,7 +158,7 @@ class HarnessWiring:
         — a harness hiccup must degrade the study's telemetry, not fail the trial.
         """
 
-        if not self._settle_each_turn or self.session_id is None:
+        if not self._settle_each_turn:
             return None
         if self._settled is not None and self._settled[0] == turn_index:
             return self._settled[1]
