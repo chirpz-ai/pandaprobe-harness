@@ -1,10 +1,8 @@
-"""The diagnostic mailbox — the pull-model replacement for alert injection.
+"""The diagnostic mailbox used by the package-owned repair agent.
 
-The hook *posts* structured ``DiagnosticNotice``s to ``<harness_root>/mailbox/
-pending/``; the agent *pulls* them through its harness toolset, analyzes the
-flagged traces, records a mitigation rule, and *acknowledges* each notice
-(moving it to ``processed/``). ``status.json`` is a cheap always-current
-summary the system-context banner reads without scanning the directory.
+The hook posts structured notices to ``mailbox/pending``. Managed repair reads
+and resolves them through this atomic store; the developer's task agent has no
+mailbox capability.
 
 All methods are synchronous blocking I/O; async callers wrap them in
 ``asyncio.to_thread``. A ``threading.Lock`` guards post/acknowledge/status
@@ -42,7 +40,7 @@ _SEVERITY_RANK: dict[str, int] = {
 
 # Notice ids become filenames, so they must be a single safe path component.
 # Anything with a separator, "..", or other funny business is rejected before
-# it can escape the mailbox directory (the agent supplies ids to read/ack).
+# it can escape the mailbox directory (managed repair supplies ids to read/ack).
 _SAFE_NOTICE_ID = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
 
@@ -114,9 +112,15 @@ class Resolution:
     acked_at: str
     rule_id: str | None = None
     note: str | None = None
+    kind: Literal["candidate", "duplicate", "no_proposal", "legacy"] = "legacy"
 
     def to_json(self) -> dict[str, Any]:
-        return {"acked_at": self.acked_at, "rule_id": self.rule_id, "note": self.note}
+        return {
+            "acked_at": self.acked_at,
+            "rule_id": self.rule_id,
+            "note": self.note,
+            "kind": self.kind,
+        }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Resolution:
@@ -124,12 +128,17 @@ class Resolution:
             acked_at=str(data.get("acked_at", "")),
             rule_id=str(data["rule_id"]) if data.get("rule_id") is not None else None,
             note=str(data["note"]) if data.get("note") is not None else None,
+            kind=(
+                data["kind"]
+                if data.get("kind") in {"candidate", "duplicate", "no_proposal", "legacy"}
+                else "legacy"
+            ),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticNotice:
-    """A single self-diagnostic finding awaiting the agent's attention."""
+    """A diagnostic finding awaiting package-owned managed repair."""
 
     id: str
     created_at: str
@@ -145,7 +154,7 @@ class DiagnosticNotice:
     #: Coarse, tier-derived hint for where a mitigation rule belongs:
     #: ``"global"`` for a Tier-1 trajectory fire, ``"scoped"`` for a surgical
     #: Tier-2/3 breach. It is only the default for ``harness_rule_add`` — the
-    #: agent may file the rule under any scope it prefers.
+    #: repair agent may file the rule under any scope it prefers.
     scope_hint: str = "global"
     status: Literal["pending", "acknowledged"] = "pending"
     resolution: Resolution | None = None
@@ -258,7 +267,7 @@ class Mailbox:
             )
             self._refresh_status()
 
-    # -- consuming side (the agent) --------------------------------------------
+    # -- managed-repair side ----------------------------------------------------
 
     def pending(self) -> list[DiagnosticNotice]:
         """All pending notices, oldest first."""
@@ -286,7 +295,12 @@ class Mailbox:
         return None
 
     def acknowledge(
-        self, notice_id: str, *, rule_id: str | None = None, note: str | None = None
+        self,
+        notice_id: str,
+        *,
+        rule_id: str | None = None,
+        note: str | None = None,
+        kind: Literal["candidate", "duplicate", "no_proposal", "legacy"] = "legacy",
     ) -> DiagnosticNotice:
         """Move a pending notice to ``processed/`` with its resolution.
 
@@ -304,7 +318,9 @@ class Mailbox:
             acknowledged = replace(
                 notice,
                 status="acknowledged",
-                resolution=Resolution(acked_at=_now_iso(), rule_id=rule_id, note=note),
+                resolution=Resolution(
+                    acked_at=_now_iso(), rule_id=rule_id, note=note, kind=kind
+                ),
             )
             atomic_write_json(
                 self._config.mailbox_processed_dir / f"{notice_id}.json",
