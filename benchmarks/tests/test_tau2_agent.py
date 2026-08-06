@@ -22,6 +22,8 @@ from pandabench.adapters.tau2_agent import (
     _EMPTY_TURN_CONTENT,
     PandaBenchTau2Agent,
 )
+from pandabench.agents.frozen_wiring import FrozenEvalWiring
+from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import (
     ChatResult,
     MockClient,
@@ -113,6 +115,10 @@ class StubWiring:
         self.pending = list(pending or [])
         self.notice_after_settle = notice_after_settle
         self.live_scopes = live_scopes
+
+    @property
+    def settles_turns(self) -> bool:
+        return True
 
     def system_preamble(self) -> str:
         return "harness preamble"
@@ -392,3 +398,40 @@ def test_settle_once_per_completed_turn_with_increasing_indices(retail, mock_mod
     agent.generate_next_message(UserMessage(role="user", content="second"), state)
 
     assert wiring.settled == [1, 2]
+
+
+def test_frozen_eval_injects_learning_rules_without_repair_or_settlement(
+    retail, mock_model
+):
+    class NoSettleFrozenWiring(FrozenEvalWiring):
+        async def settle_turn(self, turn_index: int) -> None:
+            raise AssertionError(f"frozen tau2 eval settled turn {turn_index}")
+
+    snapshot = FrozenRulesSnapshot.create(
+        [{
+            "id": "r-tau2",
+            "created_at": "2026-08-05T00:00:00+00:00",
+            "rule": "Verify the reservation owner before cancellation.",
+            "rationale": "Learned from a training failure.",
+            "source_notice_id": "n-tau2",
+            "metric": "tool_correctness",
+            "status": "active",
+            "tags": ["reservation", "cancel"],
+            "trial": None,
+            "scope": "global",
+        }],
+        created_at="2026-08-05T01:00:00+00:00",
+    )
+    wiring = NoSettleFrozenWiring(snapshot)
+    client = RecordingMockClient(scripted=[_result(content="I can help with that.")])
+    agent = _agent(retail, mock_model, client, wiring)  # type: ignore[arg-type]
+
+    assistant, _ = agent.generate_next_message(
+        UserMessage(role="user", content="cancel my reservation"), agent.get_init_state()
+    )
+
+    assert assistant.content == "I can help with that."
+    assert len(client.calls) == 1  # no isolated notice-repair model phase
+    assert wiring.pending_notice_ids() == ()
+    assert all(not name.startswith("harness_") for name in client.tool_batches[0])
+    assert "Verify the reservation owner" in client.message_batches[0][0]["content"]
