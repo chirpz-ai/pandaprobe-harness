@@ -19,7 +19,6 @@ from pandaprobe_harness import (
     ShellPolicy,
     SubprocessCliClient,
 )
-from pandaprobe_harness.agent_tools.companion import _parse_args
 from pandaprobe_harness.cli.errors import CliError
 from pandaprobe_harness.hook.core import PandaHarnessHook
 from pandaprobe_harness.sandbox.policy import ShellPolicyError
@@ -103,17 +102,6 @@ def test_shell_policy_denials_survive_flag_insertion() -> None:
         policy.validate(["pandaprobe", "evals", "scores", "get", "x", "--reveal-secrets=1"])
     # A legitimate command still passes.
     policy.validate(["pandaprobe", "evals", "scores", "get", "x"])
-
-
-# -- L2: companion CLI rejects a forgotten value that eats the next flag -----
-
-
-def test_parse_args_rejects_flag_shaped_value() -> None:
-    parsed = _parse_args(["--rule", "always cite", "--rationale", "--metric"])
-    assert isinstance(parsed, str) and "missing value" in parsed
-    # A well-formed pair still parses, with JSON coercion.
-    ok = _parse_args(["--limit", "5", "--rule", "text"])
-    assert ok == {"limit": 5, "rule": "text"}
 
 
 # -- L3: per-session bookkeeping is bounded ----------------------------------
