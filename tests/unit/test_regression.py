@@ -72,7 +72,7 @@ async def test_improved_case(
     assert result.replay_session_id == "s-replay-1"
     assert result.deltas is not None
     assert result.deltas["task_completion"] == pytest.approx(0.62)
-    assert contexts and "Harness Rules" in contexts[0]
+    assert contexts and "Learned Guidance" in contexts[0]
 
     (event,) = journal.recent(types=("regression",))
     assert event["improved"] == 1 and event["clean"] is True
