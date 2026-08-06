@@ -97,7 +97,7 @@ class HarnessConfig:
 
     # Bounded await-barrier drained at the start of the next turn.
     drain_timeout_s: float = 15.0
-    # The per-turn self-heal barrier (``settle``) runs on its own, deliberately
+    # The per-turn evaluation/repair barrier (``settle``) runs on its own,
     # generous budget: it must actually wait for the turn's evaluation to land,
     # where ``drain_timeout_s`` is only a best-effort join.
     barrier_timeout_s: float = 180.0
@@ -129,7 +129,7 @@ class HarnessConfig:
     thresholds: dict[str, float] = field(default_factory=dict)
     concurrent_eval: bool = True  # retained for back-compat; one run now covers all metrics
 
-    # -- noticing (the pull-model mailbox) ------------------------------------
+    # -- diagnostic noticing --------------------------------------------------
     # Suppress re-posting an identical notice signature for this many turns.
     # 0 means "suppress until the condition recovers".
     alert_cooldown_turns: int = 0
@@ -153,16 +153,35 @@ class HarnessConfig:
     # cost proxy: each launch is one platform eval run.
     max_evals_per_run: int = 0
 
-    # -- self-heal rules -------------------------------------------------------
-    # Cap on concurrently-live structured rules (agent must retire to add).
+    # -- learned rules ---------------------------------------------------------
+    # Cap on concurrently-live structured rules.
     max_active_rules: int = 50
     # Length cap applied when sanitizing eval-derived free text.
     sanitize_max_len: int = 2000
 
+    # -- PandaProbe-owned managed repair --------------------------------------
+    # No billable model is selected implicitly. Harness.create() requires this
+    # value unless observe_only is enabled.
+    repair_model: str | None = None
+    repair_timeout_s: float = 60.0
+    # Six permits providers that emit one tool call per round to complete the
+    # read -> inspect -> search -> add -> acknowledge lifecycle.
+    repair_max_turns: int = 6
+    repair_max_tokens: int = 4096
+    repair_temperature: float | None = None
+    # Model-specific LiteLLM reasoning mode. Current OpenAI reasoning models
+    # require "none" when function tools use the chat-completions endpoint.
+    repair_reasoning_effort: str | None = "none"
+    trace_repair_agent: bool = False
+    # Bounded host policy supplied to evaluator/repair diagnosis. It never
+    # changes the repair prompt or capability set.
+    domain_policy: str | None = None
+
     # -- rule validation (evidence before trust) -------------------------------
     # New rules start as candidates and are promoted to active only after a
-    # validator (replay or forward trial) shows they help. False restores the
-    # v0.5 behavior: rules enter `active` the moment they are written.
+    # validator (replay or forward trial) shows they help. Managed Harness
+    # construction requires this; False remains only for low-level persisted
+    # store migration and operator tooling.
     rule_validation: bool = True
     # Forward trial: distinct sessions to observe before a verdict.
     rule_trial_min_sessions: int = 5
@@ -251,10 +270,10 @@ class HarnessConfig:
         return tuple(dict.fromkeys((*self.tier_metrics(1), *self.tier_metrics(2))))
 
     def rules_scope_file(self, scope: str) -> Path:
-        """Path of the agent-facing rule file for ``scope``.
+        """Path of the read-only rule artifact for ``scope``.
 
-        ``scope`` is agent-supplied and becomes a filename, so callers must pass
-        a value already normalized by ``workspace.rules.normalize_scope``.
+        ``scope`` may be supplied by managed repair and becomes a filename, so
+        callers must pass a value normalized by ``workspace.rules.normalize_scope``.
         """
 
         return self.rules_dir / f"{scope}.md"
@@ -295,6 +314,20 @@ class HarnessConfig:
             "max_evals_per_run": _env_int("HARNESS_MAX_EVALS_PER_RUN", 0),
             "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 50),
             "sanitize_max_len": _env_int("HARNESS_SANITIZE_MAX_LEN", 2000),
+            "repair_model": os.environ.get("HARNESS_REPAIR_MODEL") or None,
+            "repair_timeout_s": _env_float("HARNESS_REPAIR_TIMEOUT_S", 60.0),
+            "repair_max_turns": _env_int("HARNESS_REPAIR_MAX_TURNS", 6),
+            "repair_max_tokens": _env_int("HARNESS_REPAIR_MAX_TOKENS", 4096),
+            "repair_temperature": (
+                float(os.environ["HARNESS_REPAIR_TEMPERATURE"])
+                if os.environ.get("HARNESS_REPAIR_TEMPERATURE")
+                else None
+            ),
+            "repair_reasoning_effort": (
+                os.environ.get("HARNESS_REPAIR_REASONING_EFFORT") or "none"
+            ),
+            "trace_repair_agent": _env_bool("HARNESS_TRACE_REPAIR_AGENT", False),
+            "domain_policy": os.environ.get("HARNESS_DOMAIN_POLICY") or None,
             "rule_validation": _env_bool("HARNESS_RULE_VALIDATION", True),
             "rule_trial_min_sessions": _env_int("HARNESS_RULE_TRIAL_MIN_SESSIONS", 5),
             "rule_promote_margin": _env_float("HARNESS_RULE_PROMOTE_MARGIN", 0.05),
