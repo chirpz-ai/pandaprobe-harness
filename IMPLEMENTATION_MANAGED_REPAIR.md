@@ -1,0 +1,54 @@
+# Managed repair architecture note
+
+This breaking root-package change separates the developer-owned task agent from
+PandaProbe-owned workspace administration.
+
+## API and role boundary
+
+- `Harness.task_tools` exposes only rule read, search, list, and status.
+- `Harness.system_context(session_id, task_hint=...)` renders bounded live
+  guidance for that task session; it never renders a mailbox or repair prompt.
+- `Harness.settle(session_id)` waits for task evaluation and one package-owned
+  repair attempt, then returns a structured repair result without failing the
+  developer task.
+- `HarnessConfig` owns repair-model, budget, tracing, and domain-policy
+  settings. A mutating harness requires an explicit repair model.
+- `ManagedRepairAgent` owns the repair prompt and bounded tool loop. A narrow
+  completion transport invokes LiteLLM only through PandaProbe's official
+  wrapper; tests replace that transport, not the orchestration.
+- `repair_reasoning_effort` defaults to `"none"` and is forwarded only when
+  LiteLLM's model registry reports support. This keeps current OpenAI reasoning models
+  compatible with function tools on the wrapped chat-completions path; all
+  provider identifiers still use the same transport and orchestration.
+
+Task dispatch rejects every administrative operation. A repair-scoped
+dispatcher can read its assigned notice and evidence, inspect existing rules,
+add candidates, retire where the lifecycle permits, and resolve the notice. It
+cannot call domain tools or promote candidates. Existing workspace stores and
+the validator remain the only persistence and promotion authorities.
+
+## Per-turn sequence
+
+1. The host runs and traces its own task-agent turn.
+2. The host flushes tracing and calls `on_turn_end` with task/end-state data.
+3. The existing exact-session evaluator and trajectory gate persist a notice.
+4. `settle` single-flights that notice to the managed repair agent under
+   `repair-<task-session>-<notice-id>`.
+5. Repair either writes a provisional candidate and acknowledges the notice,
+   or records an explicit duplicate/no-proposal resolution.
+6. `settle` returns the cached repair outcome; timeouts and failures leave the
+   task successful and the notice recoverable.
+7. Before the next host turn, `system_context` re-reads the workspace and
+   includes the new current-session candidate. Replay validation remains
+   detached and may later promote or retire it.
+
+Repair work never calls the task hook. Repair model calls run in a clean async
+context, use a distinct SDK session, and are therefore excluded from exact
+task-session trace discovery and trajectory history.
+
+When repair tracing is enabled, the assignment exports a single trace named
+`pandaprobe`. A `harness` CHAIN span owns alternating `repair-agent` and `tools`
+AGENT spans. PandaProbe's LiteLLM wrapper contributes each nested LLM span,
+while the package-owned loop contributes one TOOL child for each restricted
+workspace call. With tracing disabled, the same SDK context is non-exporting
+so the wrapper cannot create an accidental standalone trace.
