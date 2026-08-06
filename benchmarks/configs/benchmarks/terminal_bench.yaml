@@ -5,6 +5,10 @@
 dataset: terminal-bench-sample@2.0
 max_turns: 100
 learning_fraction: 0.35
+domain_policy: >-
+  The task agent is authorized to use the provided sandbox bash tool to inspect and
+  modify only the Terminal-Bench task environment. Judge completion against the
+  task instruction and native verifier contract.
 # Stratified ~30-task subset recommended for the study; select via harbor
 # --include-task-name globs recorded here once chosen.
 # include_tasks: []
