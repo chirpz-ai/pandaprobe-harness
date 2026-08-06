@@ -32,6 +32,7 @@ async def test_eight_sessions_bounded_concurrency_and_deduped_notices(
         # each session's single notice reaches the mailbox (dedup is under test).
         circuit_breaker_max_notices=0,
         gate_window=1,
+        repair_model="test/fake-repair",
     )
     cli = FakeCliClient(
         latency_s=0.01,
