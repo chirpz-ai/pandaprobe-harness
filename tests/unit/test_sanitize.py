@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pandaprobe_harness.workspace.sanitize import sanitize_text
+from pandaprobe_harness.workspace.sanitize import is_sensitive_key, sanitize_text
 
 
 def test_ansi_csi_sequences_stripped() -> None:
@@ -46,3 +46,14 @@ def test_truncation_appends_suffix_and_respects_max_len() -> None:
 def test_none_and_empty_return_empty_string() -> None:
     assert sanitize_text(None) == ""
     assert sanitize_text("") == ""
+
+
+@pytest.mark.parametrize(
+    "key", ["api_key", "authToken", "refresh-token", "dbPassword", "Authorization"]
+)
+def test_sensitive_mapping_keys_are_recognized(key: str) -> None:
+    assert is_sensitive_key(key)
+
+
+def test_ordinary_mapping_key_is_not_sensitive() -> None:
+    assert not is_sensitive_key("task_description")
