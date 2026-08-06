@@ -1,4 +1,4 @@
-"""The per-turn self-heal barrier."""
+"""The per-turn evaluation and managed-repair barrier."""
 
 from __future__ import annotations
 
@@ -42,7 +42,8 @@ def _cfg(tmp_path: Path, **kw: object) -> HarnessConfig:
         eval_retry_attempts=1,
         eval_retry_backoff_s=0.0,
         gate_window=2,
-        **{"rule_validation": False, **kw},  # type: ignore[arg-type]
+        repair_model="test/fake-repair",
+        **{"rule_validation": True, **kw},  # type: ignore[arg-type]
     )
 
 
@@ -142,9 +143,8 @@ async def test_settle_does_not_wait_for_the_validation_replay_round(
     cli.script_trajectory("s", "task_completion", [0.2, 0.2, 0.2])
     cfg = _cfg(tmp_path, rule_validation=True, capture_eval_cases=True)
     harness = Harness.create(cfg, cli=cli, replay=replay)
-    await harness.toolset.call(
-        "harness_rule_add", {"rule": "check first", "rationale": "why",
-                             "metric": "tool_correctness"}
+    harness.rules.add(
+        "check first", "why", metric="tool_correctness"
     )
 
     harness.on_turn_end(
@@ -154,7 +154,8 @@ async def test_settle_does_not_wait_for_the_validation_replay_round(
     result = await asyncio.wait_for(harness.settle("s"), timeout=5.0)
 
     assert result.report is not None
-    assert len(harness.mailbox.pending()) == 1  # the diagnosis did land
+    assert harness.mailbox.pending() == []  # managed repair resolved the diagnosis
+    assert result.repair is not None
 
     release.set()
     await harness.drain_validation()
@@ -198,7 +199,8 @@ async def test_turn_scope_can_settle(tmp_path: Path) -> None:
         pass
 
     # No refresh call needed: the scope itself waited for the cycle.
-    assert len(harness.mailbox.pending()) == 1
+    assert harness.mailbox.pending() == []
+    assert len(harness.journal.recent(types=("repair_no_proposal",))) == 1
 
 
 async def test_turn_scope_does_not_settle_by_default(tmp_path: Path) -> None:
@@ -213,6 +215,7 @@ async def test_turn_scope_does_not_settle_by_default(tmp_path: Path) -> None:
         pass
 
     assert harness.mailbox.pending() == []  # returned without waiting
-    # The same turn, settled explicitly, does produce the notice.
+    # Explicit settlement evaluates and lets managed repair resolve the notice.
     await harness.settle("s")
-    assert len(harness.mailbox.pending()) == 1
+    assert harness.mailbox.pending() == []
+    assert len(harness.journal.recent(types=("repair_no_proposal",))) == 1
