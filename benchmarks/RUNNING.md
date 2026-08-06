@@ -20,6 +20,9 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 ## 1. One-time setup
 
 ```bash
+cd ..
+uv build --wheel                 # build the unreleased managed-repair candidate
+cd benchmarks
 cp .env.example .env          # fill in credentials
 make setup                    # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # re-check tools + creds + a 1-token ping
@@ -31,6 +34,20 @@ uv run pandabench-run --preflight   # re-check tools + creds + a 1-token ping
 export PANDABENCH_APPWORLD_PYTHON=$HOME/.pandabench/awenv/bin/python
 export APPWORLD_ROOT=$HOME/.pandabench/appworld
 ```
+
+The benchmark's exact `pandaprobe-harness==0.8.0` requirement is temporarily
+resolved from that wheel by `[tool.uv.sources]`, not from `../src` and not from
+PyPI. Confirm with `uv pip show pandaprobe-harness`; the location metadata should
+name `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl`. Rebuild and sync after
+any root-package change. Once the new architecture is released, delete the source
+override and update the exact dependency pin.
+
+Harness learning uses package-owned managed repair. By default PandaBench reuses
+the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
+which current OpenAI reasoning models require when using function tools through
+the PandaProbe-wrapped LiteLLM chat-completions API. Choose another current
+LiteLLM model deliberately when needed. The task agent sees learned guidance and
+four read-only rule tools only.
 
 
 
