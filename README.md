@@ -1,119 +1,164 @@
 # PandaProbe Harness
 
-**Self-healing for AI agents.** The harness wraps any
-[PandaProbe](https://github.com/chirpz-ai/pandaprobe)-instrumented agent in an
-operational envelope that evaluates every turn, alerts the agent when quality
-degrades, and lets it diagnose its own failures and write — and *prove* — its
-own operating rules. Fully automatic, no human in the healing loop.
+PandaProbe Harness evaluates any developer-owned, PandaProbe-instrumented task
+agent and maintains a shared learned-guidance workspace with a separate,
+package-owned repair agent.
 
 [![PyPI](https://img.shields.io/pypi/v/pandaprobe-harness)](https://pypi.org/project/pandaprobe-harness/)
 [![CI](https://github.com/chirpz-ai/pandaprobe-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/chirpz-ai/pandaprobe-harness/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://pypi.org/project/pandaprobe-harness/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-📚 **[Documentation](https://docs.pandaprobe.com/harness/get-started/quickstart)** ·
-📦 **[PyPI](https://pypi.org/project/pandaprobe-harness/)** ·
-💬 **[Discussions](https://github.com/chirpz-ai/pandaprobe-harness/discussions)**
+## Ownership model
 
-## How it works
+The developer owns the task agent, model, framework, prompts, domain tools,
+execution loop, and environment. PandaProbe owns task instrumentation and
+evaluation, trajectory detection, diagnostic notices, the managed repair-agent
+loop, workspace administration, validation, and read-only rule delivery.
 
-1. **Evaluate** — after each turn, the harness scores newly completed traces
-   through a three-tier ladder and watches their task trajectory for stalls or
-   regressions.
-2. **Notice** — trajectory failures and step-level breaches post a structured *diagnostic
-   notice* to a workspace mailbox. Nothing is ever injected into the agent's
-   conversation.
-3. **Heal** — guided by a standing protocol in its system prompt, the agent
-   pulls the notice, inspects its own flagged traces, and records a mitigation
-   rule.
-4. **Validate** — the rule enters as a *candidate*: the harness replays the
-   captured failure (or watches the next live sessions) and promotes it only
-   when it demonstrably helps. Validated rules re-enter the prompt on every
-   future run; a replayable eval-set guards old wins against regressions.
+Task and repair activity are isolated:
 
-The core has **zero runtime dependencies** and reaches the platform exclusively
-through the `pandaprobe` CLI.
+```text
+developer task agent → task trace → evaluation/gate → notice
+                                                ↓
+                                  PandaProbe managed repair
+                                                ↓
+                                      candidate guidance
+                                                ↓
+developer task agent ← read-only next-turn context ← shared workspace
+```
+
+The task agent never reads notices, inspects diagnostic traces, acknowledges
+notices, writes or retires rules, or controls validation. Its optional harness
+tools are exactly `harness_rules_read`, `harness_rules_search`,
+`harness_rules_list`, and `harness_rule_status`.
 
 ## Installation
 
 ```bash
 pip install pandaprobe-harness
-# framework adapters are optional extras:
-pip install "pandaprobe-harness[langgraph]"     # [langchain] [deepagents] [crewai]
-                                                # [claude-agent-sdk] [openai-agents] [all]
 ```
 
-You'll also need the [`pandaprobe` CLI](https://docs.pandaprobe.com/introduction/cli)
-installed and authenticated, and an agent traced with the
-[PandaProbe SDK](https://docs.pandaprobe.com/tracing/get-started/quickstart).
+Managed repair uses PandaProbe's official LiteLLM wrapper. The same normalized
+path accepts LiteLLM identifiers for OpenAI, Anthropic API, Anthropic on
+Bedrock, and Gemini on Vertex AI:
 
-## Quickstart
+```text
+openai/...
+anthropic/...
+bedrock/anthropic....
+vertex_ai/...
+```
+
+No potentially billable model is selected by default. Configure one explicitly
+with `repair_model=` or `HARNESS_REPAIR_MODEL`. Provider credentials and cloud
+settings follow LiteLLM conventions.
+
+## Generic task-loop integration
 
 ```python
-from pandaprobe_harness import Harness
+from pandaprobe_harness import Harness, HarnessConfig
 from pandaprobe_harness.agent_tools.native import as_anthropic_tools
 
-harness = Harness.create()                              # provisions the workspace
-
-system_prompt = harness.system_context() + MY_PROMPT    # protocol + references + banner
-specs, dispatch = as_anthropic_tools(harness.toolset)   # the self-diagnostic tools
-tools = my_tools + specs
+harness = Harness.create(
+    HarnessConfig(
+        repair_model="openai/gpt-...",
+        repair_timeout_s=60,
+        repair_max_turns=6,
+        repair_max_tokens=4096,
+        repair_temperature=None,
+        repair_reasoning_effort="none",  # current OpenAI reasoning models + tools
+        trace_repair_agent=False,
+        domain_policy="Describe authorized domain behavior here.",
+    )
+)
 
 async def one_turn(session_id: str, user_input: str) -> str:
-    # `settle=True` waits for this turn's evaluation and any notice before
-    # returning, so a rule learned now is in force for the next turn.
-    async with harness.turn(session_id, settle=True):
-        return await my_agent_step(system_prompt, tools, user_input)
+    context = harness.system_context(session_id, task_hint=user_input)
+    rule_specs, rule_dispatch = as_anthropic_tools(harness.task_tools)
+
+    # You still construct and run your own agent with your own domain tools.
+    answer = await my_agent_step(
+        system_prompt=context + MY_PROMPT,
+        tools=[*my_domain_tools, *rule_specs],
+        tool_dispatch=rule_dispatch,
+        user_input=user_input,
+    )
+
+    # Flush/export task tracing first, then register the completed task turn.
+    harness.on_turn_end(
+        {"session_id": session_id, "turn_index": next_index(), "end_state": end_state()}
+    )
+    settlement = await harness.settle(session_id)
+    return answer
 ```
 
-The system context carries the protocol, the tool list, and an index of the
-agent's rule files — never the rule bodies. The agent pulls those on demand with
-`harness_rules_read`, so the workspace stays its own.
+The host must settle before starting the next task turn when same-session repair
+is desired. Settlement waits for task evaluation, notice persistence, and one
+bounded managed repair attempt. It does not synchronously wait for domain replay
+validation, so a candidate may appear provisionally on the next turn and be
+promoted or retired later.
 
-Using a framework? `Harness.for_langgraph()`, `for_langchain()`,
-`for_deepagents()`, `for_crewai()`, `for_claude_agent_sdk()`, and
-`for_openai_agents()` wire turn detection for you.
+`settlement.repair` exposes status, repair/task session IDs, notice ID, model
+turns, tool calls, candidate IDs, normalized token/cost usage when available,
+and error category. Repair failure or timeout never fails the developer task.
 
-➡ Full guides, concepts, and the configuration reference live in the
-**[documentation](https://docs.pandaprobe.com/harness/get-started/quickstart)**.
+Framework turn detectors remain available through `Harness.for_langgraph()`,
+`for_langchain()`, `for_deepagents()`, `for_crewai()`,
+`for_claude_agent_sdk()`, and `for_openai_agents()`.
 
-## Try it offline
+## Configuration
 
-The `examples/` directory ships fully-offline, credential-free demos:
+Managed repair fields and environment equivalents are:
+
+| Field | Environment |
+| --- | --- |
+| `repair_model` | `HARNESS_REPAIR_MODEL` |
+| `repair_timeout_s` | `HARNESS_REPAIR_TIMEOUT_S` |
+| `repair_max_turns` | `HARNESS_REPAIR_MAX_TURNS` |
+| `repair_max_tokens` | `HARNESS_REPAIR_MAX_TOKENS` |
+| `repair_temperature` | `HARNESS_REPAIR_TEMPERATURE` |
+| `repair_reasoning_effort` | `HARNESS_REPAIR_REASONING_EFFORT` |
+| `trace_repair_agent` | `HARNESS_TRACE_REPAIR_AGENT` |
+| `domain_policy` | `HARNESS_DOMAIN_POLICY` |
+
+`observe_only=True` remains non-mutating and does not require a repair model.
+Managed repair requires `rule_validation=True`, so repair-authored guidance can
+never skip the candidate lifecycle. Task tracing is unchanged when repair
+tracing is disabled. When enabled, the
+PandaProbe SDK records repair completions under
+`repair-<task-session>-<notice-id>` with repair-role metadata; exact-session
+task trace discovery excludes them.
+
+Each enabled repair run exports one trace named `pandaprobe`. Its `harness`
+CHAIN span contains repeated `repair-agent` and `tools` AGENT spans; each
+`repair-agent` contains the official wrapper's `litellm-chat` LLM span, and
+each `tools` span contains one TOOL child per restricted workspace operation.
+No second tool-only trace is created.
+
+## Offline examples and operator tools
 
 ```bash
-make example                                        # the pull loop, end to end
-uv run python examples/misc/closed_loop_self_heal.py  # candidate → validate → promote → regression
-uv run python examples/misc/calibration_demo.py       # threshold calibration
+uv run python examples/misc/offline_self_heal.py
+uv run python examples/misc/closed_loop_self_heal.py
+uv run python examples/misc/calibration_demo.py
 ```
 
-## Operator CLIs
-
-| Command | Purpose |
-| --- | --- |
-| `pandaprobe-harness-agent` | The agent-facing toolset for sandboxed shells. |
-| `pandaprobe-harness-eval` | Replay the eval-set against the current rules — the regression guard. |
-| `pandaprobe-harness-calibrate` | Measure and tune the breach thresholds, with or without labels. |
-
-## Benchmarks
-
-An A/B study measuring the harness's effect on agent reliability across
-AppWorld, Terminal-Bench (via Harbor), and τ²-bench lives in
-[`benchmarks/`](benchmarks/) — a self-contained uv project that installs the
-released harness from PyPI. Run it from the repo root with `make bench-setup`,
-`make bench-smoke`, and `make bench-report` (see
-[`benchmarks/README.md`](benchmarks/README.md)).
+The examples use deterministic completion fakes and require no credentials.
+Operator-only CLIs remain `pandaprobe-harness-eval` for regression replay and
+`pandaprobe-harness-calibrate` for threshold calibration. The former
+task-administration companion CLI has been removed.
 
 ## Development
 
 ```bash
-make install         # uv sync
-make test            # full offline suite — no network, no real CLI
-make lint typecheck  # ruff + mypy --strict
+uv run pytest -q
+uv run ruff check .
+uv run mypy
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the project invariants and PR
-process, and [CHANGELOG.md](CHANGELOG.md) for release history.
+See [CHANGELOG.md](CHANGELOG.md) for migration notes and
+[CONTRIBUTING.md](CONTRIBUTING.md) for project invariants.
 
 ## License
 
