@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import tomllib
+from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.harness_glue import build_harness_config
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
+BENCH_ROOT = CONFIGS.parent
 
 
 def _rules() -> list[dict[str, object]]:
@@ -64,11 +67,41 @@ def test_benchmark_gate_window_defaults_and_installed_package_default(tmp_path: 
 
     cfg = build_harness_config(
         harness_root=tmp_path / "harness", phase="learning", study=study,
-        benchmark="appworld", noval=False,
+        benchmark="appworld", repair_model="mock/mock",
     )
     assert cfg.gate_window == 10
+    assert cfg.repair_model == "mock/mock"
+    assert cfg.repair_reasoning_effort == "none"
+    assert cfg.rule_validation is True
+    assert cfg.trace_repair_agent is True
     # The benchmark override must not leak into the exact-pinned released package.
     assert HarnessConfig().gate_window == 5
+
+
+def test_benchmark_installs_candidate_from_local_built_wheel() -> None:
+    project = tomllib.loads((BENCH_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    source = project["tool"]["uv"]["sources"]["pandaprobe-harness"]["path"]
+    assert source == "../dist/pandaprobe_harness-0.8.0-py3-none-any.whl"
+
+    direct_url = json.loads(distribution("pandaprobe-harness").read_text("direct_url.json") or "{}")
+    assert direct_url["url"].endswith("/dist/pandaprobe_harness-0.8.0-py3-none-any.whl")
+
+
+def test_study_can_select_a_dedicated_repair_model(tmp_path: Path) -> None:
+    path = tmp_path / "study.yaml"
+    path.write_text(
+        "harness:\n  repair_model: anthropic/test-repair\n",
+        encoding="utf-8",
+    )
+    study = load_study(path)
+    cfg = build_harness_config(
+        harness_root=tmp_path / "harness",
+        phase="learning",
+        study=study,
+        benchmark="appworld",
+        repair_model="openai/task-model",
+    )
+    assert cfg.repair_model == "anthropic/test-repair"
 
 
 def test_study_gate_window_can_be_explicitly_overridden(tmp_path: Path) -> None:
@@ -78,7 +111,7 @@ def test_study_gate_window_can_be_explicitly_overridden(tmp_path: Path) -> None:
     assert study.harness.gate_window == 17
     cfg = build_harness_config(
         harness_root=tmp_path / "harness", phase="learning", study=study,
-        benchmark="appworld", noval=False,
+        benchmark="appworld", repair_model="mock/mock",
     )
     assert cfg.gate_window == 17
 
