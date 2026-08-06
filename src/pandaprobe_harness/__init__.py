@@ -1,4 +1,4 @@
-"""PandaProbe Harness — autonomous, pull-based self-healing for LLM agents.
+"""PandaProbe Harness — task evaluation with package-owned managed repair.
 
 Public API::
 
@@ -6,11 +6,8 @@ Public API::
         Harness,
         HarnessConfig,
         PandaHarnessHook,
-        HarnessToolset,
-        Mailbox,
-        Journal,
-        RulesStore,
-        RestrictedShellTool,
+        TaskToolset,
+        RepairResult,
         SubprocessCliClient,
     )
 """
@@ -20,8 +17,8 @@ from __future__ import annotations
 from ._version import __version__
 from .adapters.protocol import FrameworkAdapter
 from .adapters.raw_loop import RawLoopAdapter
-from .agent_tools.spec import ToolSpec
-from .agent_tools.toolset import HarnessToolset
+from .agent_tools.spec import ToolDispatcher, ToolSpec
+from .agent_tools.toolset import TaskToolset
 from .calibration import (
     CalibrationReport,
     LabeledStats,
@@ -45,6 +42,8 @@ from .hook.core import PandaHarnessHook, SettleResult
 from .hook.tiers import TierRunner, VerifierFn
 from .hook.turn import TurnContext, parse_turn_payload
 from .monitors.client import MonitorClient, MonitorResponse
+from .repair.agent import ManagedRepairAgent
+from .repair.models import RepairAssignment, RepairResult, RepairStatus, RepairUsage
 from .sandbox.policy import ShellPolicy
 from .sandbox.shell import RestrictedShellTool, ShellResult
 from .validation.regression import CaseResult, RegressionReport, run_regression
@@ -57,13 +56,7 @@ from .validation.validator import (
 )
 from .workspace.evalset import CaseKind, EvalCase, EvalSet, ReplayFn
 from .workspace.journal import Journal
-from .workspace.mailbox import (
-    DiagnosticNotice,
-    Mailbox,
-    MailboxStatus,
-    NoticeMetric,
-    Resolution,
-)
+from .workspace.mailbox import DiagnosticNotice, Mailbox, MailboxStatus, NoticeMetric, Resolution
 from .workspace.rules import (
     Rule,
     RulesCapError,
@@ -91,7 +84,6 @@ __all__ = [
     "Harness",
     "HarnessConfig",
     "HarnessFilesystem",
-    "HarnessToolset",
     "HistorySource",
     "Journal",
     "LabeledStats",
@@ -103,12 +95,17 @@ __all__ = [
     "MetricScore",
     "MonitorClient",
     "MonitorResponse",
+    "ManagedRepairAgent",
     "NoticeMetric",
     "PandaHarnessHook",
     "RawLoopAdapter",
     "RegressionReport",
     "ReplayFn",
     "ReplayValidator",
+    "RepairAssignment",
+    "RepairResult",
+    "RepairStatus",
+    "RepairUsage",
     "Resolution",
     "RestrictedShellTool",
     "Rule",
@@ -123,6 +120,8 @@ __all__ = [
     "SubprocessCliClient",
     "ThresholdPoint",
     "TierRunner",
+    "TaskToolset",
+    "ToolDispatcher",
     "ToolSpec",
     "TraceLocator",
     "TraceRef",
