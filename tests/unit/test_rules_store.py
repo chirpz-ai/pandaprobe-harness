@@ -78,7 +78,9 @@ def test_retire_excludes_rule_and_latest_record_wins(
     assert "Prefer reads before writes" not in scope_file
     assert "_No learned rules yet._" in scope_file
     # With nothing live, the root's References says so.
-    assert "No rules recorded yet" in config.rules_file.read_text(encoding="utf-8")
+    assert "No learned rules are available yet" in config.rules_file.read_text(
+        encoding="utf-8"
+    )
 
     # Retirement is an appended record; the latest record per id wins.
     lines = config.rules_store_file.read_text(encoding="utf-8").splitlines()
