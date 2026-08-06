@@ -33,10 +33,10 @@ class HarnessKnobs:
     poll_max_attempts: int = 200
     # Settle barrier: after the learning phase (and before archiving) wait for
     # outstanding turn evals + candidate-rule validation to drain, so the eval
-    # phase starts with a promoted, settled ruleset. Bounded; breaks early.
+    # phase snapshots a settled boundary ruleset. Bounded; breaks early.
     settle_timeout_s: float = 1080.0
     settle_poll_s: float = 10.0
-    gate_window: int = 5
+    gate_window: int = 10
     enable_tier3: bool = False
     # The per-turn self-heal barrier's budget. Must exceed the time for one turn's
     # trace evals to land (poll_interval_s * poll_max_attempts bounds that), or the
@@ -118,7 +118,7 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
         poll_interval_s=float(harness_raw.get("poll_interval_s", 5.0)),
         poll_max_attempts=int(harness_raw.get("poll_max_attempts", 200)),
         settle_timeout_s=float(harness_raw.get("settle_timeout_s", 1080.0)),
-        gate_window=int(harness_raw.get("gate_window", 5)),
+        gate_window=int(harness_raw.get("gate_window", 10)),
         enable_tier3=bool(harness_raw.get("enable_tier3", False)),
         barrier_timeout_s=float(harness_raw.get("barrier_timeout_s", 1080.0)),
         outcome_threshold=float(harness_raw.get("outcome_threshold", 0.9)),
