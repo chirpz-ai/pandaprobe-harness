@@ -38,12 +38,22 @@ class HarnessKnobs:
     settle_poll_s: float = 10.0
     gate_window: int = 10
     enable_tier3: bool = False
-    # The per-turn self-heal barrier's budget. Must exceed the time for one turn's
+    # The per-turn evaluation + managed-repair barrier's budget. Must exceed one turn's
     # trace evals to land (poll_interval_s * poll_max_attempts bounds that), or the
     # barrier gives up before the diagnosis arrives and healing goes back to being
     # after-the-fact.
     barrier_timeout_s: float = 1080.0
     outcome_threshold: float = 0.9
+    # Managed repair is package-owned. ``None`` means the benchmark explicitly
+    # reuses the resolved task-model identifier; a value selects a dedicated
+    # LiteLLM model through the same PandaProbe wrapper path.
+    repair_model: str | None = None
+    repair_timeout_s: float = 60.0
+    repair_max_turns: int = 6
+    repair_max_tokens: int = 4096
+    repair_temperature: float | None = None
+    repair_reasoning_effort: str | None = None
+    trace_repair_agent: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +133,25 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
         barrier_timeout_s=float(harness_raw.get("barrier_timeout_s", 1080.0)),
         outcome_threshold=float(harness_raw.get("outcome_threshold", 0.9)),
         settle_poll_s=float(harness_raw.get("settle_poll_s", 10.0)),
+        repair_model=(
+            str(harness_raw["repair_model"])
+            if harness_raw.get("repair_model") is not None
+            else None
+        ),
+        repair_timeout_s=float(harness_raw.get("repair_timeout_s", 60.0)),
+        repair_max_turns=int(harness_raw.get("repair_max_turns", 6)),
+        repair_max_tokens=int(harness_raw.get("repair_max_tokens", 4096)),
+        repair_temperature=(
+            float(harness_raw["repair_temperature"])
+            if harness_raw.get("repair_temperature") is not None
+            else None
+        ),
+        repair_reasoning_effort=(
+            str(harness_raw["repair_reasoning_effort"])
+            if harness_raw.get("repair_reasoning_effort") is not None
+            else None
+        ),
+        trace_repair_agent=bool(harness_raw.get("trace_repair_agent", True)),
     )
 
     benchmarks: dict[str, BenchmarkConfig] = {}
