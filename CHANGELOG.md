@@ -23,7 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duplicate/no-proposal resolution, timeout, or failure without failing the
   developer task.
 - `TaskToolset`, the only tool surface intended for developer task agents. It
-  exposes read, search, list, and status operations over learned rules.
+  exposes bounded live-only read, search, compact-index list, and status
+  operations over learned rules. Dispatch rejects every administrative call.
+- A generated, atomic task-facing `harness_guide.md` with SKILL-style frontmatter, stable
+  read-only usage instructions, a live-scope index with bounded persisted
+  descriptions and active/provisional counts, plus host-provided
+  `RuleScopeHint` metadata for topical repair assignments.
+- Bounded repair episodes that coalesce related same-turn notices, permit at
+  most one candidate, and record duplicate/already-covered/no-proposal outcomes
+  and scope/novelty telemetry.
+- `scoped` as the default for new granular guidance; `global` is an explicit
+  choice reserved for universal rules, while custom scope names remain free-form
+  apart from filename-safety normalization.
 
 ### Removed
 
@@ -78,9 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Harness.settle()` now covers evaluation, notice persistence, and one
   single-flight managed repair attempt. Candidate replay validation remains
   detached so non-reentrant task environments are not deadlocked.
-- Task context directly includes bounded, session-relevant active/candidate
-  guidance and never includes a mailbox banner or repair instructions.
-- Repair model calls use distinct `repair-<task-session>-<notice-id>` SDK
+- Task context contains only a stable capability note. It includes no rule body
+  or expanded index, and the harness performs no automatic list/read/search;
+  active and provisional guidance is available only when the task agent chooses
+  one of its read-only tools.
+- Repair model calls use distinct `repair-<task-session>-<episode-id>` SDK
   sessions, preventing repair traces from entering exact task-session scoring.
 - Optional repair tracing now exports one `pandaprobe` trace per assignment,
   with a `harness` CHAIN parent, repeated `repair-agent` and `tools` AGENT
