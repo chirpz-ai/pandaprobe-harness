@@ -29,6 +29,8 @@ import os
 import time
 from typing import Any
 
+from pandaprobe_harness import RuleScopeHint
+
 from ..agents.harness_wiring import AgentWiring
 from ..providers.litellm_client import ChatClient, Usage
 from ..providers.models import ModelRegistry, ResolvedModel, load_registry
@@ -40,6 +42,11 @@ logger = logging.getLogger("pandabench.tau2")
 __all__ = ["Tau2Runner", "build_tau2_runner"]
 
 _SUPPORTED_DOMAINS = ("airline", "retail", "telecom")
+_DOMAIN_SCOPE_DESCRIPTIONS = {
+    "airline": "Airline booking, reservation, passenger, and flight-change workflows.",
+    "retail": "Retail order, return, exchange, refund, and account workflows.",
+    "telecom": "Telecom account, service, device, billing, and plan workflows.",
+}
 
 _CONFIGS_HINT = (
     "tau2's data tree is not shipped. Clone it and export TAU2_DATA_DIR:\n"
@@ -72,6 +79,7 @@ class Tau2Runner(SingleTaskRunner):
         self._outcomes: dict[str, float] = {}
         self._models: ModelRegistry | None = None
         self._domain = "retail"
+        self._workflow_hints: dict[str, tuple[RuleScopeHint, ...]] = {}
         self.configure_dataset(domain)
 
     def _registry(self) -> ModelRegistry:
@@ -94,6 +102,7 @@ class Tau2Runner(SingleTaskRunner):
             # Task ids overlap across domains, so cached verifier outcomes cannot
             # survive a domain switch on a reused runner instance.
             self._outcomes.clear()
+            self._workflow_hints.clear()
         self._domain = domain
 
     def list_tasks(self, dataset: str) -> list[str]:
@@ -101,7 +110,38 @@ class Tau2Runner(SingleTaskRunner):
         _require_tau2()
         from tau2.run import load_tasks
 
-        return [str(task.id) for task in load_tasks(self._domain)]
+        tasks = load_tasks(self._domain)
+        for task in tasks:
+            workflow = _safe_task_workflow(task)
+            if workflow is not None:
+                self._workflow_hints[str(task.id)] = (
+                    RuleScopeHint(
+                        key=self._domain,
+                        description=_DOMAIN_SCOPE_DESCRIPTIONS[self._domain],
+                        applicability="topical",
+                        recommended=True,
+                    ),
+                    RuleScopeHint(
+                        key=workflow,
+                        description=f"{workflow.replace('-', ' ').title()} workflows.",
+                        applicability="task",
+                        recommended=False,
+                    ),
+                )
+        return [str(task.id) for task in tasks]
+
+    def rule_scope_hints(self, task_id: str) -> tuple[RuleScopeHint, ...]:
+        return self._workflow_hints.get(
+            task_id,
+            (
+                RuleScopeHint(
+                    key=self._domain,
+                    description=_DOMAIN_SCOPE_DESCRIPTIONS[self._domain],
+                    applicability="topical",
+                    recommended=True,
+                ),
+            ),
+        )
 
     def outcome_for(self, task_id: str, session_id: str) -> float | None:
         """tau2's own reward for ``session_id``, if this process has graded it.
@@ -122,14 +162,13 @@ class Tau2Runner(SingleTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: AgentWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome:
         start = time.monotonic()
         try:
             _require_tau2()
             pieces = self._build(
                 task_id=task_id, session_id=session_id, model=model, client=client,
-                max_turns=max_turns, wiring=wiring, preamble=preamble,
+                max_turns=max_turns, wiring=wiring,
             )
         except Exception as exc:  # noqa: BLE001 - setup failure is a trial error
             logger.warning("tau2 setup failed for %s: %s", task_id, exc)
@@ -174,7 +213,6 @@ class Tau2Runner(SingleTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: AgentWiring | None,
-        preamble: str | None,
     ) -> tuple[Any, Any]:
         from tau2.orchestrator.orchestrator import Orchestrator
         from tau2.registry import registry
@@ -193,10 +231,6 @@ class Tau2Runner(SingleTaskRunner):
 
         environment = registry.get_env_constructor(self._domain)()
         policy = environment.get_policy()
-        if preamble is not None:
-            # Replay path: the harness-rendered rules are injected verbatim and
-            # there is no live wiring.
-            policy = preamble + "\n\n" + policy
 
         agent = PandaBenchTau2Agent(
             environment.get_tools(),
@@ -278,6 +312,19 @@ def _agent_turns(simulation: Any) -> int:
 
     messages = getattr(simulation, "messages", None) or []
     return sum(1 for m in messages if isinstance(m, AssistantMessage))
+
+
+def _safe_task_workflow(task: Any) -> str | None:
+    """Read only explicit bounded tau2 workflow/category metadata when present."""
+
+    metadata = getattr(task, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("workflow", "category", "task_family"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:48]
+    return None
 
 
 def _agent_usage(simulation: Any) -> Usage:
