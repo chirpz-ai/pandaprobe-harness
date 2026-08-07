@@ -12,8 +12,9 @@ allowed-tools:
 
 PandaProbe keeps learned rules in scoped reference files. This guide is the
 task-facing directory: it explains the read-only tools and points to live scopes,
-but never contains rule bodies. Rules are optional and are never automatically
-inserted into the task prompt or read before a task turn.
+but never contains rule bodies. PandaProbe does not automatically insert rule
+contents into the task prompt, and reads nothing before a task turn — you decide
+whether and when to inspect them.
 
 ## Workflow
 
@@ -24,11 +25,12 @@ inserted into the task prompt or read before a task turn.
 4. Use `harness_rule_status` to distinguish an active rule from a provisional rule.
 
 Use only scope identifiers listed under References, never paths. Scope names are
-not a fixed catalog. `scoped` is the default for granular rules; `global` is
-reserved for broadly universal rules; and any other listed name is a custom
-task-relevant scope chosen by the host or repair agent. Custom names do not
-require category prefixes or a prescribed naming format. The tools reject absolute
-paths, `..`, administrative resources, and mutations.
+not a fixed catalog. `global` holds broadly reusable rules and is the default; any
+other listed name is a meaningful context — an application, workflow, or domain —
+chosen for rules that belong to it; `scoped` holds specific rules for which no
+better name could be determined. Custom names do not require category prefixes or
+a prescribed naming format. The tools reject absolute paths, `..`, administrative
+resources, and mutations.
 
 ## Lifecycle
 
