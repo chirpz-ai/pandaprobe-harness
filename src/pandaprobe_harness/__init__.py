@@ -40,7 +40,7 @@ from .harness import Harness
 from .hook.context import compose_system_preamble
 from .hook.core import PandaHarnessHook, SettleResult
 from .hook.tiers import TierRunner, VerifierFn
-from .hook.turn import TurnContext, parse_turn_payload
+from .hook.turn import RuleScopeHint, TurnContext, parse_turn_payload
 from .monitors.client import MonitorClient, MonitorResponse
 from .repair.agent import ManagedRepairAgent
 from .repair.models import RepairAssignment, RepairResult, RepairStatus, RepairUsage
@@ -54,7 +54,7 @@ from .validation.validator import (
     ValidationEngine,
     ValidationVerdict,
 )
-from .workspace.evalset import CaseKind, EvalCase, EvalSet, ReplayFn
+from .workspace.evalset import CaseKind, EvalCase, EvalSet, ReplayContext, ReplayFn
 from .workspace.journal import Journal
 from .workspace.mailbox import DiagnosticNotice, Mailbox, MailboxStatus, NoticeMetric, Resolution
 from .workspace.rules import (
@@ -101,6 +101,7 @@ __all__ = [
     "RawLoopAdapter",
     "RegressionReport",
     "ReplayFn",
+    "ReplayContext",
     "ReplayValidator",
     "RepairAssignment",
     "RepairResult",
@@ -109,6 +110,7 @@ __all__ = [
     "Resolution",
     "RestrictedShellTool",
     "Rule",
+    "RuleScopeHint",
     "RuleStatus",
     "RuleValidator",
     "RulesCapError",
