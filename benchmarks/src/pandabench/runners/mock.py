@@ -54,12 +54,9 @@ class MockTaskRunner(SingleTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: AgentWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome:
         start = time.monotonic()
         system_prompt = f"[mock:{self.name}] complete the task and reply when done."
-        if preamble is not None:
-            system_prompt = preamble + "\n\n" + system_prompt
 
         async def executor(name: str, args: dict[str, Any]) -> Any:
             return {"ok": True}
