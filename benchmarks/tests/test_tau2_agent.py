@@ -191,7 +191,6 @@ async def test_runner_selects_tasks_and_environment_for_every_domain(
         client=MockClient(),
         max_turns=10,
         wiring=None,
-        preamble=None,
     )
 
     assert len(task_ids) == task_count
@@ -276,7 +275,7 @@ def test_settle_once_per_completed_turn_with_increasing_indices(retail, mock_mod
     assert wiring.settled == [1, 2]
 
 
-def test_frozen_eval_injects_learning_rules_without_repair_or_settlement(
+def test_frozen_eval_exposes_on_demand_rules_without_repair_or_settlement(
     retail, mock_model
 ):
     class NoSettleFrozenWiring(FrozenEvalWiring):
@@ -308,5 +307,10 @@ def test_frozen_eval_injects_learning_rules_without_repair_or_settlement(
 
     assert assistant.content == "I can help with that."
     assert len(client.calls) == 1  # no task-agent notice-repair model phase
-    assert all(not name.startswith("harness_") for name in client.tool_batches[0])
-    assert "Verify the reservation owner" in client.message_batches[0][0]["content"]
+    assert {
+        "harness_rules_list",
+        "harness_rules_read",
+        "harness_rules_search",
+        "harness_rule_status",
+    }.issubset(set(client.tool_batches[0]))
+    assert "Verify the reservation owner" not in client.message_batches[0][0]["content"]
