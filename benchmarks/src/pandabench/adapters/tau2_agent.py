@@ -8,7 +8,8 @@ own ``generate()``, keeping the user simulator on tau2's stock path so its model
 stays fixed and independent across arms.
 
 Harness wiring keeps the developer-owned tau2 agent on domain work. The task
-model sees bounded read-only learned guidance and only tau2 domain tools. After
+model sees a stable capability note plus optional read-only rule tools alongside
+tau2 domain tools. After
 each completed turn this adapter drives the per-turn barrier; evaluation and
 notice handling then invoke the package-owned managed repair agent, whose calls
 use a distinct repair session and never enter tau2's transcript.
@@ -28,6 +29,7 @@ import**. See IMPLEMENTATION_NOTES.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 # tau2 is an optional dependency; nothing in the core suite imports this module,
@@ -68,7 +70,6 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
         self._loop = loop
         self._turns = 0
         self._seed: int | None = None
-        self._rule_context = ""
 
     def set_seed(self, seed: int) -> None:
         """Record tau2's per-trial seed.
@@ -90,8 +91,6 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
         else:
             state.messages.append(message)
 
-        if self._wiring is not None and not self._wiring.settles_turns:
-            self._await(self._refresh_frozen_rule_context())
         assistant = _to_tau2_assistant(self._decide_domain(state))
         state.messages.append(assistant)
 
@@ -123,17 +122,14 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
     def _system_prompt(self) -> str:
         policy = str(self.domain_policy)
         if self._wiring is not None:
-            parts = [self._wiring.system_preamble()]
-            if self._rule_context:
-                parts.append("Frozen learned guidance:\n" + self._rule_context)
-            parts.extend(
+            return "\n\n".join(
                 (
+                    self._wiring.system_preamble(),
                     "PandaProbe owns workspace repair. Focus only on the tau2 "
-                    "domain task and use only the domain tools below.",
+                    "domain task. Learned guidance is optional and read-only.",
                     policy,
                 )
             )
-            return "\n\n".join(parts)
         return policy
 
     def _decide_domain(self, state: Any) -> Any:
@@ -145,35 +141,47 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
         convo = to_litellm_messages(state.system_messages + state.messages)
         # Drop any system messages already in convo; we prepend our own.
         convo = [m for m in convo if m.get("role") != "system"]
-        return self._await(
-            self._client.chat(
+        return self._await(self._chat_with_rule_tools(base + convo))
+
+    async def _chat_with_rule_tools(self, messages: list[dict[str, Any]]) -> Any:
+        """Let tau2 agents choose read-only rule tools before a domain action."""
+
+        tools = list(self._domain_tool_schemas)
+        if self._wiring is not None:
+            tools.extend(self._wiring.harness_tools())
+        for _ in range(8):
+            result = await self._client.chat(
                 model=self._model,
-                messages=base + convo,
-                tools=self._domain_tool_schemas,
+                messages=messages,
+                tools=tools,
                 session_id=self._session_id,
                 max_tokens=self._max_tokens,
             )
-        )
-
-    async def _refresh_frozen_rule_context(self) -> None:
-        """Embed frozen rules because tau2 exposes only domain tools to its agent."""
-
-        assert self._wiring is not None
-        rules: list[dict[str, Any]] = []
-        for status in ("active", "candidate"):
-            result = await self._wiring.dispatch("harness_rules_list", {"status": status})
-            if result.get("ok") and isinstance(result.get("rules"), list):
-                rules.extend(rule for rule in result["rules"] if isinstance(rule, dict))
-        seen: set[str] = set()
-        lines: list[str] = []
-        for rule in rules:
-            rule_id = str(rule.get("id") or "")
-            if not rule_id or rule_id in seen:
-                continue
-            seen.add(rule_id)
-            status = str(rule.get("status") or "candidate")
-            lines.append(f"- [{status} {rule_id}] {rule.get('rule', '')}")
-        self._rule_context = "\n".join(lines)
+            harness_calls = [
+                call
+                for call in result.tool_calls
+                if self._wiring is not None and self._wiring.is_harness_tool(call.name)
+            ]
+            if not harness_calls:
+                return result
+            messages.append(result.assistant_message)
+            for call in result.tool_calls:
+                if self._wiring is not None and self._wiring.is_harness_tool(call.name):
+                    payload = await self._wiring.dispatch(call.name, call.arguments)
+                else:
+                    payload = {
+                        "ok": False,
+                        "error": "choose rule inspection or a domain action, not both",
+                    }
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "name": call.name,
+                        "content": json.dumps(payload, sort_keys=True, default=str),
+                    }
+                )
+        return result
 
 
 #: Emitted when a turn produced neither text nor a domain tool call — tau2's
