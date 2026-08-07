@@ -15,7 +15,7 @@ The wiring, in order:
    (``specs``) plus an async ``dispatch(name, args)`` — every ``tool_use``
    block naming a harness tool is routed through ``dispatch``. Below, the
    specs are registered as in-process MCP tools whose handlers ARE that route.
-3. ``harness.system_context(session_id)`` supplies bounded learned guidance.
+3. ``harness.system_context(session_id)`` supplies a stable capability note.
 
 For the fully offline, credential-free version of this loop, see
 ``examples/misc/offline_self_heal.py``.
