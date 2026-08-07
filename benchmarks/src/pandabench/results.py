@@ -61,6 +61,10 @@ class HarnessTelemetry:
     repair_episodes: int = 0
     resolution_counts: dict[str, int] = field(default_factory=dict)
     rules_by_scope: dict[str, dict[str, int]] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    """Validation activity so far: rounds, promotions, retirements, and why
+    candidates are still pending. Status counts alone cannot distinguish "no
+    verdict yet" from "never validated"."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -190,7 +194,7 @@ _ARCHIVE_ENTRIES = (
     "rules.jsonl",
     "scope_metadata.json",
     "journal.jsonl",
-    "harness_guide.md",
+    "rules.md",
     "rules",  # the agent-facing rule files (global.md, scoped.md, topics)
     "evalset",
     "mailbox",
@@ -306,7 +310,64 @@ def collect_harness_telemetry(
         repair_episodes=len(episode_ids),
         resolution_counts=resolution_counts,
         rules_by_scope=rules_by_scope,
+        validation=_validation_summary(harness),
     )
+
+
+def _validation_summary(harness: Any) -> dict[str, Any]:
+    """Bounded validation activity read back from the journal.
+
+    Rule status counts say what the lifecycle currently holds; they cannot say
+    whether validation ever ran. Without this, a candidate stuck at
+    ``replay_attempts=0`` with an empty verdict is indistinguishable between
+    "never attempted" and "attempted, never conclusive".
+    """
+
+    summary: dict[str, Any] = {
+        "rounds": 0,
+        "promoted": 0,
+        "retired": 0,
+        "replays": 0,
+        "candidate_not_exercised": 0,
+        "env_wait_timeouts": 0,
+        "budget_exhausted_rounds": 0,
+        "pending_reasons": {},
+    }
+    try:
+        events = harness.journal.recent(
+            limit=10_000,
+            types=(
+                "validation_round_finished",
+                "validation_replay_case",
+                "validation_verdict",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry only
+        logger.debug("telemetry: validation read failed: %s", exc)
+        return summary
+
+    pending: dict[str, int] = {}
+    for event in events:
+        kind = event.get("type")
+        if kind == "validation_round_finished":
+            summary["rounds"] += 1
+            summary["promoted"] += int(event.get("promoted") or 0)
+            summary["retired"] += int(event.get("retired") or 0)
+            if event.get("budget_exhausted"):
+                summary["budget_exhausted_rounds"] += 1
+        elif kind == "validation_replay_case":
+            summary["replays"] += 1
+            outcome = str(event.get("outcome") or "")
+            if outcome == "candidate_not_exercised":
+                summary["candidate_not_exercised"] += 1
+            elif outcome == "env_wait_timeout":
+                summary["env_wait_timeouts"] += 1
+        elif kind == "validation_verdict":
+            reason = event.get("pending_reason")
+            if reason:
+                pending[str(reason)] = pending.get(str(reason), 0) + 1
+    summary["pending_reasons"] = pending
+    return summary
 
 
 def frozen_harness_telemetry(snapshot: Any, session_id: str) -> HarnessTelemetry:
