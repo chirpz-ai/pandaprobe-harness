@@ -34,12 +34,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from ..agent_tools.spec import ToolDispatcher
 from ..config import HarnessConfig
 from ._io import atomic_write_json, load_json
 from .journal import Journal
 from .sanitize import sanitize_text
 
-__all__ = ["CaseKind", "EvalCase", "EvalSet", "ReplayFn"]
+__all__ = ["CaseKind", "EvalCase", "EvalSet", "ReplayContext", "ReplayFn"]
 
 logger = logging.getLogger("pandaprobe_harness.workspace")
 
@@ -134,11 +135,34 @@ class EvalCase:
         )
 
 
-#: The replay seam: given a case and the system-context string to run under,
-#: re-run the agent on the case's input and return the NEW session id the run
-#: produced (the harness then scores that session via the evaluator). Lives
-#: here so ``validation/`` can import it without a cycle.
-ReplayFn = Callable[[EvalCase, str], Awaitable[str]]
+class ReplayContext(str):
+    """Capability-only replay preamble plus on-demand read tools.
+
+    This remains a ``str`` subclass so existing replay callbacks stay callable,
+    but the string never contains rule bodies or an expanded index. Updated hosts
+    can attach ``task_tools`` and let the replayed task agent discover guidance
+    through the same read-only boundary as a live task turn.
+    """
+
+    task_tools: ToolDispatcher
+    candidate_rule_id: str | None
+
+    def __new__(
+        cls,
+        system_context: str,
+        *,
+        task_tools: ToolDispatcher,
+        candidate_rule_id: str | None = None,
+    ) -> ReplayContext:
+        value = str.__new__(cls, system_context)
+        value.task_tools = task_tools
+        value.candidate_rule_id = candidate_rule_id
+        return value
+
+
+#: Re-run an eval case with a capability-only context and return the NEW
+#: scoreable session id. The callback may attach ``context.task_tools``.
+ReplayFn = Callable[[EvalCase, ReplayContext], Awaitable[str]]
 
 
 class EvalSet:
