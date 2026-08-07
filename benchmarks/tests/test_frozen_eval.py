@@ -165,7 +165,11 @@ async def test_frozen_wiring_is_read_only_and_keeps_live_rules_retrievable() -> 
     wiring = FrozenEvalWiring(snapshot)
 
     preamble = wiring.system_preamble().lower()
-    assert "optional frozen learned guidance" in preamble
+    assert "frozen learned rules are available" in preamble
+    assert "does not automatically insert rule contents" in preamble
+    # Product terminology: rules are not "optional guidance".
+    assert "optional" not in preamble
+    assert "guidance" not in preamble
     assert "rules/global.md" not in preamble
     assert "Read the order" not in preamble
     assert "mailbox" not in preamble
