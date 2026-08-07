@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pandaprobe_harness import (
     HarnessConfig,
@@ -49,8 +50,13 @@ def _validator(
     evalset = EvalSet(cfg, journal=journal)
     evalset.provision()
 
-    async def replay(case: EvalCase, context: str) -> str:
-        del case, context
+    async def replay(case: EvalCase, context: Any) -> str:
+        del case
+        # Read the candidate under test, as a real replayed agent would. A replay
+        # that never looks cannot yield a conclusive verdict, so these tests have
+        # to exercise it to reach promote/retire at all.
+        if context.candidate_rule_id is not None:
+            await context.task_tools.call("harness_rules_read", {})
         return replay_session
 
     return (
