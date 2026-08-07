@@ -21,7 +21,7 @@ landed, any notice is posted, and managed repair has completed or timed out.
 Candidate validation stays detached so replay cannot deadlock a task-owned
 environment.
 
-``startup_context()`` returns bounded read-only learned guidance.
+``startup_context()`` returns only a stable read-only capability note.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ from ..workspace.rules import GLOBAL_SCOPE, SCOPED_SCOPE, RulesStore
 from ..workspace.sanitize import sanitize_text
 from .context import compose_system_preamble
 from .tiers import TierRunner, VerifierFn
-from .turn import TurnContext, parse_turn_payload
+from .turn import RuleScopeHint, TurnContext, parse_turn_payload
 
 if TYPE_CHECKING:
     from ..filesystem.layout import HarnessFilesystem
@@ -140,6 +140,7 @@ class PandaHarnessHook:
         #: case needs. Facade turns send `end_state={}`, so this stays empty
         #: there (attach inputs explicitly via the eval-set instead).
         self._replay_inputs: dict[str, Any] = {}
+        self._scope_hints: dict[tuple[str, int], tuple[RuleScopeHint, ...]] = {}
 
         # Candidate-rule validation (evidence before trust). Imported lazily to
         # avoid a hard cycle at module import time (same as HarnessFilesystem).
@@ -231,7 +232,7 @@ class PandaHarnessHook:
         )
 
     def startup_context(self, session_id: str, *, task_hint: str | None = None) -> str:
-        """Bounded read-only learned guidance for one task session."""
+        """Stable capability-only preamble for one task session."""
 
         return compose_system_preamble(
             self._rules, self._mailbox, session_id, task_hint=task_hint
@@ -253,6 +254,14 @@ class PandaHarnessHook:
 
         if self._repair is not None:
             self._repair.remember_turn(ctx)
+
+        if ctx.rule_scope_hints:
+            self._scope_hints[(ctx.session_id, ctx.turn_index)] = ctx.rule_scope_hints
+            for hint in ctx.rule_scope_hints:
+                try:
+                    self._rules.register_scope_metadata(hint.key, hint.description)
+                except Exception:  # noqa: BLE001 - metadata must not break a task
+                    logger.debug("failed to persist rule scope metadata", exc_info=True)
 
         # Remember the turn payload so a breach can be captured as a
         # *replayable* eval case. Stashed only for admitted turns: only
@@ -333,6 +342,9 @@ class PandaHarnessHook:
         self._last_eval_at.pop(oldest, None)
         self._notice_state.pop(oldest, None)
         self._replay_inputs.pop(oldest, None)
+        self._scope_hints = {
+            key: value for key, value in self._scope_hints.items() if key[0] != oldest
+        }
         # The locator's seen-set is bounded on its own, but evict in step so a
         # long-lived process does not retain trace ids for forgotten sessions.
         self._locator.forget(oldest)
@@ -720,6 +732,22 @@ class PandaHarnessHook:
             )
             for score in alerting
         )
+        scope_hint = self._scope_hint(report)
+        host_hints = self._scope_hints.get((report.session_id, report.turn_index), ())
+        recommended = next(
+            (
+                hint
+                for hint in host_hints
+                if hint.recommended and hint.key not in {GLOBAL_SCOPE, SCOPED_SCOPE}
+            ),
+            next((hint for hint in host_hints if hint.recommended), None),
+        )
+        recommended_scope = recommended.key if recommended is not None else scope_hint
+        applicability = (
+            recommended.applicability
+            if recommended is not None
+            else ("global" if scope_hint == GLOBAL_SCOPE else "task")
+        )
         return DiagnosticNotice(
             id=notice_id or DiagnosticNotice.new_id(),
             created_at=_utcnow_iso(),
@@ -732,23 +760,23 @@ class PandaHarnessHook:
             dump_path=dump_path,
             summary=sanitize_text(summary or self._summarize(report), max_len=max_len),
             signatures=tuple(sorted(self._signatures(report))),
-            scope_hint=self._scope_hint(report),
+            scope_hint=scope_hint,
+            scope_hints=tuple(hint.to_json() for hint in host_hints),
+            recommended_scope=recommended_scope,
+            applicability_hint=applicability,
         )
 
     @staticmethod
     def _scope_hint(report: EvalReport) -> str:
-        """Coarse, deterministic scope for a mitigation rule.
+        """Use granular ``scoped`` guidance unless a host/repair explicitly refines it.
 
-        The only mechanical scope decision the harness makes: a surgical Tier-2/3
-        breach is about a specific step, so it is ``scoped``; anything else (a
-        Tier-1 trajectory fire or verifier outcome) is a whole-trajectory
-        concern, so it is ``global``. Managed repair may choose a finer scope.
+        Evaluation tier says where a failure was detected, not whether its lesson
+        is universally applicable. Managed repair alone may explicitly choose
+        ``global`` after diagnosing a genuinely cross-domain lesson.
         """
 
-        for score in report.alerting_scores:
-            if score.tier in (2, 3):
-                return SCOPED_SCOPE
-        return GLOBAL_SCOPE
+        del report
+        return SCOPED_SCOPE
 
     def _summarize(self, report: EvalReport) -> str:
         parts: list[str] = []
