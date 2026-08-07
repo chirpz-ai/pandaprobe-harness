@@ -35,7 +35,9 @@ async def main() -> None:
         )
         task_agent = DeveloperTaskAgent()
 
-        first = await task_agent.run_turn(harness.system_context(session_id, task_hint="payment"))
+        first = await task_agent.run_turn(
+            harness.system_context(session_id, task_hint="payment"), harness.task_tools
+        )
         for _ in range(2):
             cli.script_trace(
                 session_id,
@@ -48,11 +50,12 @@ async def main() -> None:
             {"session_id": session_id, "turn_index": 1, "end_state": first}
         )
         settlement = await harness.settle(session_id)
-        assert settlement.repair is not None and settlement.repair.status == "completed"
+        assert settlement.repair is not None
+        assert settlement.repair.status == "candidate_added"
 
         second_context = harness.system_context(session_id, task_hint="payment")
-        second = await task_agent.run_turn(second_context)
-        assert GUIDANCE in second_context
+        second = await task_agent.run_turn(second_context, harness.task_tools)
+        assert GUIDANCE not in second_context
         assert second["action"] == "check_status_then_charge"
         assert task_agent.actions == ["charge_twice", "check_status_then_charge"]
 
