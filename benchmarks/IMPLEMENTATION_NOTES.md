@@ -52,9 +52,10 @@ building. Read alongside `RUNNING.md`.
    diagnostic, acknowledgement, and rule-mutation capabilities remain private to the
    package repair agent. Its preamble is capability-only: neither live nor frozen
    wiring inserts rules or an expanded index, and neither performs an automatic
-   rule lookup. `harness_rules_list` returns the canonical task-facing `harness_guide.md`
-   guide plus generated scope references. The runner performs an idempotent final-turn settle and the
-   learning boundary drains outstanding validation. tau2
+   rule lookup. `harness_rules_list` returns the canonical task-facing
+   `rules.md` plus generated scope references. The runner performs an
+   idempotent final-turn settle, and the learning boundary waits for outstanding
+   evaluations AND validation before freezing the ruleset. tau2
    crosses its synchronous worker-thread boundary with `run_coroutine_threadsafe`;
    Terminal-Bench performs the same learning barrier inside Harbor's custom agent.
 
@@ -88,19 +89,35 @@ building. Read alongside `RUNNING.md`.
    and resolution telemetry. Repair tracing remains under the distinct
    `repair-<task-session>-<episode>` identity owned by the package.
 
-9. **Scope hints come from benchmark metadata, not classification.** AppWorld
-   matches safe application names already exposed by its task/API descriptions;
-   tau2 supplies the selected airline/retail/telecom domain and optional workflow
-   metadata; Terminal-Bench passes safe Harbor category/task-family/workflow
-   metadata when available. These hints travel on `TurnContext` into notices and
-   repair assignments. A precise hint wins over `appworld`, `tau2`, or
-   `terminal_bench`; `global` remains an explicit cross-domain applicability.
+9. **Scope is a repair-model decision; benchmarks only supply context.** Managed
+   repair picks the scope from the failure evidence inside the repair call it already
+   makes — no classification model, and no benchmark application mapping in the root
+   package. `global` is the default for broadly reusable rules, a contextual name is
+   preferred when the rule belongs to that context, and `scoped` is the fallback.
+   AppWorld passes the task instruction plus safe application names from its task/API
+   descriptions; tau2 passes its airline/retail/telecom domain plus the user
+   scenario; Terminal-Bench passes the Harbor task statement plus safe
+   category/task-family metadata. These travel on `TurnContext` (as
+   `rule_scope_hints` and `task_summary`) into notices and repair assignments. A
+   benchmark's own name — `appworld`, `tau2`, `terminal_bench` — is rejected as a
+   scope, since it says where the agent ran rather than what failed.
 
-10. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
+10. **Validation reaches every candidate, and the boundary waits for it.** Replay is
+   the strong path and sees only the candidate under test, so a delta is attributable
+   to it; a replay that never read the candidate yields no conclusive verdict.
+   `validation_round_budget_s` bounds replay work per round and remaining candidates
+   fall back to the forward trial, which is what lets a promotable candidate actually
+   be promoted instead of accruing observations forever.
+   `replay_env_wait_timeout_s` plus `ReplayRuleWiring.mark_environment_ready()` keep
+   time queueing behind AppWorld's single-world lock out of the replay execution
+   budget. `records.jsonl` carries per-trial validation counts and pending reasons,
+   and `learning_outcome` distinguishes "no rules" from "N candidates undecided".
+
+11. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
    separate later pass, because the vertical slice's acceptance gate is
    run → records → report end-to-end.
 
-11. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
+12. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
    the deterministic pipeline gate. Real per-benchmark smokes are separate targets
    that need each harness provisioned + live creds (see below). This matches the
    brief's `--dry-run` requirement and gives a dependency-free acceptance check.
@@ -216,7 +233,7 @@ paid live-model smokes for tau2 and Terminal-Bench.
   `result.json` supplied `{"reward": ...}` dictionaries, turns ranged 5–15, and all
   four sessions have 2–14 trace samples. The journal shows `trend`/`stall` escalation
   and Tier-2 breaches; both global and scoped provisional rule files are populated and
-  indexed from `harness_guide.md`. The two-task-per-phase smoke did not supply the three
+  indexed from the generated guide. The two-task-per-phase smoke did not supply the three
   subsequent live sessions required for a forward-only candidate to promote or retire,
   which is the documented Terminal-Bench validation deviation.
 - **AppWorld real integration**: `AppWorldServer` + `HttpAppWorldEnv` + `AppWorldRunner`
