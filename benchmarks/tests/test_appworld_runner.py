@@ -3,21 +3,24 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from pandabench.agents.frozen_wiring import FrozenEvalWiring
+from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
-from pandabench.runners.appworld import AppWorldRunner, _experiment_name
+from pandabench.runners.appworld import AppWorldRunner, _app_scope_hints, _experiment_name
 from pandabench.runners.appworld_env import (
     AppWorldServer,
     EvalResult,
     HttpAppWorldEnv,
     TaskInfo,
 )
-from pandabench.runners.tau2 import Tau2Runner
+from pandabench.runners.tau2 import Tau2Runner, _safe_task_workflow
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -54,6 +57,26 @@ def _verdict(passes: int, tests: int = 4) -> EvalResult:
     return EvalResult(passes == tests, tests, passes, 1, {})
 
 
+class RecordingToolsClient(MockClient):
+    def __init__(self, *, scripted: list[ChatResult]) -> None:
+        super().__init__(scripted=scripted)
+        self.tool_names: list[list[str]] = []
+        self.message_batches: list[list[dict[str, Any]]] = []
+
+    async def chat(self, **kwargs: Any) -> ChatResult:
+        self.tool_names.append([
+            str((schema.get("function") or {}).get("name", ""))
+            for schema in kwargs.get("tools") or []
+        ])
+        self.message_batches.append(list(kwargs["messages"]))
+        return await super().chat(**kwargs)
+
+
+class NoSettleFrozenWiring(FrozenEvalWiring):
+    async def settle_turn(self, turn_index: int) -> None:
+        raise AssertionError(f"frozen AppWorld eval settled turn {turn_index}")
+
+
 async def test_appworld_outcomes_and_experiments_are_session_scoped() -> None:
     env = SequenceAppWorldEnv([_verdict(1), _verdict(4), _verdict(3)])
     runner = AppWorldRunner(env)
@@ -83,6 +106,68 @@ async def test_appworld_outcomes_and_experiments_are_session_scoped() -> None:
     assert _experiment_name("unsafe name!", "session-a").startswith("unsafe-name-")
 
 
+async def test_appworld_frozen_eval_reads_rules_and_only_runs_native_grading() -> None:
+    env = SequenceAppWorldEnv([_verdict(4)])
+    runner = AppWorldRunner(env)
+    model = load_registry(CONFIGS / "models.yaml").resolve("mock")
+    snapshot = FrozenRulesSnapshot.create(
+        [{
+            "id": "r-learned",
+            "created_at": "2026-08-05T00:00:00+00:00",
+            "rule": "Read the order before refunding it.",
+            "rationale": "Learned from the training split.",
+            "source_notice_id": "n-1",
+            "metric": "task_completion",
+            "status": "active",
+            "tags": ["order", "refund"],
+            "trial": None,
+            "scope": "global",
+        }],
+        created_at="2026-08-05T01:00:00+00:00",
+    )
+    wiring = NoSettleFrozenWiring(snapshot)
+    client = RecordingToolsClient(
+        scripted=[
+            ChatResult(
+                assistant_message={
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{
+                        "id": "read-1", "type": "function",
+                        "function": {
+                            "name": "harness_rules_read",
+                            "arguments": '{"scope":"global"}',
+                        },
+                    }],
+                },
+                tool_calls=[ToolCall("read-1", "harness_rules_read", {"scope": "global"})],
+                usage=Usage(), finish_reason="tool_calls", resolved_model="mock",
+            ),
+            ChatResult(
+                assistant_message={"role": "assistant", "content": "done"},
+                tool_calls=[], usage=Usage(), finish_reason="stop", resolved_model="mock",
+            ),
+        ]
+    )
+
+    before = snapshot.to_dict()
+    outcome = await runner.run_once(
+        task_id="same-task", session_id="frozen-session", model=model,
+        client=client, max_turns=3, wiring=wiring,
+    )
+
+    assert outcome.passed is True
+    assert outcome.native_metrics["pass_ratio"] == 1.0
+    assert runner.outcome_for("same-task", "frozen-session") == 1.0
+    assert "Read the order before refunding" in client.message_batches[1][-1]["content"]
+    assert set(client.tool_names[0]) == {
+        "execute", "harness_rules_read", "harness_rules_search",
+        "harness_rules_list", "harness_rule_status",
+    }
+    assert all("harness_rule_add" not in tools for tools in client.tool_names)
+    assert wiring.pending_notice_ids() == ()
+    assert snapshot.to_dict() == before
+
+
 def test_tau2_outcomes_are_session_scoped() -> None:
     runner = Tau2Runner()
     runner._outcomes.update({"session-a": 0.25, "session-b": 1.0, "replay-session": 0.75})
@@ -91,6 +176,24 @@ def test_tau2_outcomes_are_session_scoped() -> None:
     assert runner.outcome_for("same-task", "session-b") == 1.0
     assert runner.outcome_for("same-task", "replay-session") == 0.75
     assert runner.outcome_for("same-task", "unknown") is None
+
+
+def test_appworld_and_tau2_expose_semantic_scope_hints_without_task_ids() -> None:
+    app_hints = _app_scope_hints(
+        "Send a Venmo reminder, then update my Spotify playlist.",
+        "- spotify: search, create_playlist\n- venmo: send_reminder\n- supervisor: show",
+    )
+    assert [hint.key for hint in app_hints] == ["venmo", "spotify"]
+    assert app_hints[0].recommended is True
+    assert all("workflows" in hint.description.casefold() for hint in app_hints)
+
+    tau = Tau2Runner(domain="airline")
+    domain_hint = tau.rule_scope_hints("opaque-task-id")
+    assert domain_hint[0].key == "airline"
+    assert domain_hint[0].recommended is True
+    assert _safe_task_workflow(
+        SimpleNamespace(metadata={"workflow": "change-flight"})
+    ) == "change-flight"
 
 
 def test_http_500_logs_bounded_response_body(caplog: pytest.LogCaptureFixture) -> None:

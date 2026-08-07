@@ -5,4 +5,4 @@ Bumping ``__version__`` on ``main`` triggers the release workflow
 published to GitHub Releases, and uploaded to PyPI.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"

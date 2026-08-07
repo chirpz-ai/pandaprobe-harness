@@ -14,8 +14,16 @@ def test_provision_creates_tree_and_rules(config: HarnessConfig) -> None:
     root = fs.read_rules()
     # The seeded root is the skill root: protocol + a References section, and no
     # rule bodies (those live under rules/).
-    assert "## References" in root
+    assert root.startswith("---\nname: pandaprobe-learned-rules")
+    assert "allowed-tools:" in root
+    assert "## Workflow" in root
     assert "harness_rules_read" in root
+    assert "## Lifecycle" in root
+    assert "## References" in root
+    assert "Custom names do not" in root
+    assert "spotify" not in root.casefold()
+    assert "venmo" not in root.casefold()
+    assert "No learned rules" in root
 
 
 def test_provision_idempotent_does_not_clobber(config: HarnessConfig) -> None:

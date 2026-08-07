@@ -1,10 +1,9 @@
 """The append-only diagnostic journal — the harness's cross-run memory.
 
-Every notable event (notice posted, notice acknowledged, rule added/retired,
-reflection run, health transition, recovery) is one JSON line in
-``<harness_root>/journal.jsonl``. The agent mines it through
-``harness_journal``/``harness_reflect`` to spot recurring failure patterns
-across runs ("boosting on past mistakes") and to judge rule effectiveness.
+Every notable event (notice posted/resolved, repair lifecycle, rule
+added/retired, validation, health transition, recovery) is one JSON line in
+``<harness_root>/journal.jsonl``. It supports package orchestration, validation,
+telemetry, and operator review; it is not exposed to the task agent.
 
 All methods are synchronous blocking I/O; async callers wrap them in
 ``asyncio.to_thread``.

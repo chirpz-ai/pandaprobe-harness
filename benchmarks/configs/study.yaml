@@ -2,7 +2,7 @@
 # Study design — arms, seeds, trials, splits, thresholds, harness knobs.
 # See IMPLEMENTATION_NOTES.md. Nothing study-relevant is hardcoded.
 # =============================================================================
-arms: [baseline, harness]     # B' (harness-noval) is flag-gated, not in the default matrix
+arms: [baseline, harness]     # managed repair always uses the candidate-validation lifecycle
 seeds: [1, 2, 3]              # >=3 seeds; each shuffles task order (counterbalances learning)
 k: 4                          # trials per eval task (pass@1 = first trial; pass^k = all k)
 
@@ -15,6 +15,16 @@ harness:
   rule_regress_margin: 0.05
   replay_timeout_s: 180
   replay_max_turns: 15
+  # AppWorld holds ONE world behind a lock shared by live trials and background
+  # replays, so a replay can queue for minutes. This grace covers reaching the
+  # starting line; replay_timeout_s then bounds the run. Without the split, the
+  # wait consumes the run budget and the replay is recorded as inconclusive
+  # evidence about a candidate that never executed.
+  replay_env_wait_timeout_s: 900
+  # Replay work allowed in one validation round. Past it, remaining candidates
+  # still get a verdict — the cheap forward-trial one — instead of waiting for a
+  # sequential replay slot. Candidates accrue faster than replays decide them.
+  validation_round_budget_s: 600
   regression_sample: 0        # 0 = replay the whole eval-set
   # Background eval poll budget = poll_interval_s * poll_max_attempts. AppWorld/tau2
   # trace evals are LLM-judged and can take 6-12 min, so keep this
@@ -23,16 +33,26 @@ harness:
   poll_max_attempts: 200      # -> ~1000s (17 min) background poll budget
   # Settle barrier between the learning and eval phases (and before archiving): wait
   # for outstanding turn evals + candidate-rule validation to drain so the eval
-  # phase runs with a promoted, settled ruleset. Bounded; breaks early when drained.
+  # phase snapshots a settled boundary ruleset. Bounded; breaks early when drained.
   settle_timeout_s: 1080      # max seconds to wait for evals + validation to drain
   settle_poll_s: 10           # seconds between drain checks
-  gate_window: 5              # traces without progress before a STALL fires
+  gate_window: 10             # ten non-improving evaluated trace updates before Tier-1 STALL
   enable_tier3: false         # opt-in: each judge metric re-reads the whole trace
-  # The per-turn self-heal barrier. Must exceed one turn's eval latency (see the
+  # The per-turn evaluation + managed-repair barrier. Must exceed one turn's eval latency
   # poll budget above) or the agent outruns its own diagnosis, which is exactly
   # what made v1's healing after-the-fact.
   barrier_timeout_s: 1080
   outcome_threshold: 0.9      # AppWorld pass-ratio floor for the outcome verifier
+  # Managed repair is owned by pandaprobe-harness. Null explicitly reuses each
+  # run's resolved task-model identifier. Current OpenAI reasoning models require
+  # reasoning_effort=none for function tools on the SDK's chat-completions path.
+  repair_model: null
+  repair_reasoning_effort: "none"
+  repair_timeout_s: 60
+  repair_max_turns: 6          # supports providers that emit one repair tool per round
+  repair_max_tokens: 4096
+  repair_temperature: null
+  trace_repair_agent: true
 
 # Absolute breach thresholds per benchmark. Same value for ALL arms/seeds of a
 # benchmark. These are the pre-calibration defaults; Checkpoint 1 tunes them per

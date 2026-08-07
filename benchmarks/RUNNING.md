@@ -20,6 +20,9 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 ## 1. One-time setup
 
 ```bash
+cd ..
+uv build --wheel                 # build the unreleased managed-repair candidate
+cd benchmarks
 cp .env.example .env          # fill in credentials
 make setup                    # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # re-check tools + creds + a 1-token ping
@@ -31,6 +34,36 @@ uv run pandabench-run --preflight   # re-check tools + creds + a 1-token ping
 export PANDABENCH_APPWORLD_PYTHON=$HOME/.pandabench/awenv/bin/python
 export APPWORLD_ROOT=$HOME/.pandabench/appworld
 ```
+
+The benchmark's exact `pandaprobe-harness==0.8.0` requirement is temporarily
+resolved from that wheel by `[tool.uv.sources]`, not from `../src` and not from
+PyPI. Confirm with `uv pip show pandaprobe-harness`; the location metadata should
+name `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl`. Rebuild and sync after
+any root-package change. Once the new architecture is released, delete the source
+override and update the exact dependency pin.
+
+Harness learning uses package-owned managed repair. By default PandaBench reuses
+the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
+which current OpenAI reasoning models require when using function tools through
+the PandaProbe-wrapped LiteLLM chat-completions API. Choose another current
+LiteLLM model deliberately when needed. The task agent sees only a stable
+capability note and four read-only rule tools. Rule bodies and the expanded scope
+index are never force-injected; list/read/search/status happen only if the task
+model chooses them. Listing returns the canonical `rules.md` and generated
+scope references.
+
+Managed repair chooses each rule's scope from the failure evidence, inside the
+repair call it already makes: `global` for broadly reusable rules, a contextual name
+(application, workflow, domain) when the rule belongs to that context, `scoped` when
+no meaningful name can be determined. Benchmarks pass the task statement and safe
+metadata as context; they do not name the file.
+
+Validation promotes or retires candidates — repair cannot. `validation_round_budget_s`
+bounds replay work per round and the remaining candidates get the cheap forward-trial
+verdict, and `replay_env_wait_timeout_s` keeps time spent queueing for AppWorld's
+single world out of the replay execution budget. The learning boundary now waits for
+validation to settle (within `settle_timeout_s`) before freezing the ruleset, and
+logs a warning if it could not.
 
 
 

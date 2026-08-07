@@ -67,7 +67,7 @@ class ShellPolicy:
     """Allow-list-based policy for sandboxed command execution."""
 
     allowed_binaries: frozenset[str] = frozenset(
-        {"pandaprobe", "pandaprobe-harness-agent", "cat", "ls", "jq"}
+        {"pandaprobe", "cat", "ls", "jq"}
     )
     allow_pipes: bool = False
     workdir: Path = field(default_factory=lambda: Path("/harness"))
@@ -87,7 +87,6 @@ class ShellPolicy:
     env_passthrough: dict[str, frozenset[str]] = field(
         default_factory=lambda: {
             "pandaprobe": _PANDAPROBE_AUTH_VARS,
-            "pandaprobe-harness-agent": _PANDAPROBE_AUTH_VARS,
         }
     )
 

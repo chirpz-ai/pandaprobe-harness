@@ -8,11 +8,50 @@ prompts, and task sets — the only difference is harness wiring:
 | Arm | Description |
 |---|---|
 | `baseline` | Plain tool-calling loop; no harness. |
-| `harness` | Full self-heal loop: preamble injection, self-diagnosis tools, per-turn settle barrier, eval-case capture, and supported rule validation. |
+| `harness` | Learning evaluates the developer-owned task agent and uses the package-owned managed repair agent. Eval uses one hashed, read-only snapshot of the learning rules and keeps native benchmark grading active without trace evaluation or repair. |
 
-Self-contained uv project that installs the **released** harness from PyPI (never
-`../src`). See `RUNNING.md` for the study workflow and `IMPLEMENTATION_NOTES.md`
-for engineering decisions, benchmark deviations, and verification status.
+The benchmark override is `gate_window: 10`: a Tier-1 STALL needs ten
+consecutive non-improving evaluated trace updates during learning. REGRESSION
+behavior is unchanged. At the phase boundary, PandaBench drains the bounded
+learning settlement, writes `frozen-rules.json`, and reuses that exact hash for
+every harness-arm eval trial. Eval tracing may remain enabled for later
+inspection, but no PandaProbe trace listing, scoring, notices, rule mutation,
+validation, replay, or settle barrier runs.
+
+In both learning and frozen eval, PandaBench attaches only a short stable
+capability preamble and four read-only tools: `harness_rules_list`,
+`harness_rules_read`, `harness_rules_search`, and `harness_rule_status`. It does
+not put rule bodies or the expanded index in the prompt and performs no rule
+lookup before the task model chooses one. After a learning turn, related notices
+form one repair episode; managed repair may add at most one provisional
+candidate, and the next turn can discover it on demand.
+`harness_rules_list` returns the canonical task-facing `rules.md`: SKILL-style
+frontmatter and a stable pull workflow followed by generated scope references.
+
+Managed repair chooses each rule's scope from the failure evidence, as part of the
+repair call it already makes — no extra model round, and no benchmark-specific
+application mapping in the root package. `global` is the default for broadly
+reusable rules; a contextual name (application, workflow, domain) is preferred when
+the rule belongs to that context; `scoped` is the fallback when no meaningful name
+can be determined.
+
+The benchmarks feed that decision deterministic context, never a naming rule:
+AppWorld passes the task instruction plus application names from its safe API/task
+metadata; tau2 passes its domain plus the user scenario; Terminal-Bench passes the
+Harbor task statement plus category/task-family metadata when present. A benchmark's
+own label for itself is rejected as a scope.
+
+Validation, never repair, promotes or retires a candidate. Replay is the strong
+path and sees only the candidate under test; a bounded per-round replay budget
+falls back to the cheap forward trial so every candidate reaches a verdict rather
+than sitting undecided. The learning/eval boundary waits for validation to settle
+before freezing the ruleset, and `records.jsonl` carries per-trial validation
+counts (rounds, promotions, retirements, replays, and pending reasons).
+
+Self-contained uv project currently locked to the locally built root wheel via
+`[tool.uv.sources]`. This validates the distributable managed-repair candidate
+without an editable import or a premature release. After publication, remove the
+source override and update the exact version pin. See `RUNNING.md` for the workflow.
 
 ## Prerequisites
 
@@ -25,10 +64,12 @@ for engineering decisions, benchmark deviations, and verification status.
   needs `PANDAPROBE_API_KEY`.
 - Docker running (Terminal-Bench only). Harbor is installed with this project.
 - AppWorld isolated env (`make setup` provisions it; ~183 MB data).
+- A current root wheel at `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl`.
 
 ## Setup
 
 ```bash
+cd .. && uv build --wheel && cd benchmarks
 cp .env.example .env      # fill in credentials
 make setup                # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
@@ -36,6 +77,12 @@ uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
 
 `make setup` prints two env vars to export for real AppWorld runs
 (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`) — add them to `.env`.
+
+During learning, the benchmark reuses the run's resolved task model for managed
+repair unless `harness.repair_model` selects another current model.
+`repair_reasoning_effort: "none"` keeps current OpenAI reasoning models on the
+tool-capable chat-completions path wrapped by PandaProbe. Repair is reported
+separately in harness telemetry.
 
 ## Running
 
@@ -69,7 +116,8 @@ and task-trials already in `records.jsonl` are skipped.
 results/runs/<run_id>/
   manifest.json     # resolved config, versions, git SHA, env fingerprint, learning_outcome
   records.jsonl     # one row per task-trial (schema in results.py::TrialRecord)
-  harness/          # arm B: archived HARNESS_ROOT (rules.jsonl, journal, evalset, mailbox)
+  frozen-rules.json # arm B: immutable learning-boundary rules + stable SHA-256
+  harness/          # arm B: archived HARNESS_ROOT (index, scopes, JSONL, journal, mailbox)
   raw/              # benchmark-native artifacts
 results/summary/    # committed, regenerated by `make report`
   all_records.csv   headline.csv   harness_telemetry.csv   report.md   learning_curve.png
@@ -85,10 +133,10 @@ nondeterminism, preamble token overhead).
 ```
 src/pandabench/
   providers/   models.py (registry) · litellm_client.py (the one LLM path) · tracing.py
-  agents/      loop.py (shared loop) · harness_wiring.py (arm-B wiring)
+  agents/      loop.py (shared loop) · harness_wiring.py (live learning) · frozen_wiring.py
   runners/     base.py · appworld.py + appworld_env.py · terminal_bench.py · tau2.py · mock.py
   adapters/    harbor_agent.py · tau2_agent.py
-  harness_glue.py  results.py  metrics.py  report.py  checkpoints.py  cli.py  config.py
+  frozen_rules.py  harness_glue.py  results.py  metrics.py  report.py  checkpoints.py  cli.py
 configs/       models.yaml · study.yaml · benchmarks/*.yaml
 scripts/       labels_from_records.py · setup_appworld.sh
 ```

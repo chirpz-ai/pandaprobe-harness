@@ -2,10 +2,11 @@
 
 from .context import compose_system_preamble
 from .core import PandaHarnessHook
-from .turn import TurnContext, parse_turn_payload
+from .turn import RuleScopeHint, TurnContext, parse_turn_payload
 
 __all__ = [
     "PandaHarnessHook",
+    "RuleScopeHint",
     "TurnContext",
     "compose_system_preamble",
     "parse_turn_payload",

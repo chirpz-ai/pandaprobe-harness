@@ -40,6 +40,7 @@ def test_add_returns_rule_appends_jsonl_and_renders_its_scope_file(
     root = config.rules_file.read_text(encoding="utf-8")
     assert "rules/payments.md" in root
     assert REFERENCES_MARKER in root
+    assert "harness_rules_read" in root
     assert "Never retry a failed charge blindly" not in root
 
 
@@ -74,11 +75,14 @@ def test_retire_excludes_rule_and_latest_record_wins(
 
     assert rules.active() == []
     # The scope file is rewritten empty rather than left holding a retired rule.
-    scope_file = config.rules_scope_file("global").read_text(encoding="utf-8")
+    scope_file = config.rules_scope_file(rule.scope).read_text(encoding="utf-8")
     assert "Prefer reads before writes" not in scope_file
     assert "_No learned rules yet._" in scope_file
-    # With nothing live, the root's References says so.
-    assert "No rules recorded yet" in config.rules_file.read_text(encoding="utf-8")
+    # With nothing live, the root's References says so — in the same words the
+    # packaged template uses, so a seeded and a regenerated guide read alike.
+    assert "No learned rules are available yet" in config.rules_file.read_text(
+        encoding="utf-8"
+    )
 
     # Retirement is an appended record; the latest record per id wins.
     lines = config.rules_store_file.read_text(encoding="utf-8").splitlines()

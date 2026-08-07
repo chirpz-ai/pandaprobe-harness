@@ -7,7 +7,8 @@ loop + harness verbatim — the bash tool is just ``environment.exec``.
 
 Per-run config arrives via Harbor's ``--agent-kwarg`` (typed) and ``--agent-env``:
   --ak arm=harness --ak seed=1 --ak model_key=claude-sonnet-5 \
-  --ak backend=bedrock --ak capture=true --ak harness_root=/abs/path --ak noval=false \
+  --ak backend=bedrock --ak phase=learning --ak frozen_eval=false \
+  --ak capture=true --ak harness_root=/abs/path \
   --ak session_namespace=<runner-uuid>
 The harness workspace (``harness_root``) is shared across attempts of a
 (model x arm x seed) run so learning accumulates; run Harbor with ``-n 1`` for
@@ -27,9 +28,12 @@ from typing import Any
 # Harbor is only importable inside Harbor's own environment at run time; the rest
 # of the pandabench suite never imports this module, so a top-level import is safe.
 from harbor.agents.base import BaseAgent
+from pandaprobe_harness import RuleScopeHint
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.frozen_wiring import FrozenEvalWiring
+from ..agents.harness_wiring import AgentWiring, HarnessWiring
 from ..agents.loop import run_agent_loop
+from ..frozen_rules import FrozenRulesSnapshot
 from ..harness_glue import (
     build_harness,
     build_harness_config,
@@ -39,7 +43,7 @@ from ..harness_glue import (
 from ..providers.litellm_client import LiteLLMClient
 from ..providers.models import load_registry
 from ..providers.tracing import PandaTracer
-from ..results import collect_harness_telemetry
+from ..results import collect_harness_telemetry, frozen_harness_telemetry
 
 logger = logging.getLogger("pandabench.harbor")
 
@@ -81,9 +85,11 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         model_key: str | None = None,
         backend: str | None = None,
         capture: bool = False,
+        phase: str | None = None,
+        frozen_eval: bool = False,
+        frozen_rules_path: str | None = None,
         harness_root: str | None = None,
         max_turns: int = 100,
-        noval: bool = False,
         session_namespace: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -92,7 +98,12 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._seed = seed
         self._capture = capture
         self._max_turns = max_turns
-        self._phase = "learning" if capture else "eval"
+        self._phase = phase or ("learning" if capture else "eval")
+        self._frozen_eval = frozen_eval
+        if self._phase not in ("learning", "eval"):
+            raise ValueError(f"unsupported benchmark phase {self._phase!r}")
+        if arm == "harness" and self._phase == "eval" and not frozen_eval:
+            raise ValueError("harness eval must explicitly enable frozen_eval")
         self._session_namespace = session_namespace or new_session_namespace()
         # Harbor trial directories are <task[:32]>__<shortuuid>. Its BaseAgent
         # receives <trial>/agent as logs_dir, so the parent carries the task key.
@@ -105,12 +116,17 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         tracer = PandaTracer.from_env() if arm == "harness" else PandaTracer.disabled()
         self._client = LiteLLMClient(tracer=tracer)
         self._harness = None
-        if arm == "harness" and harness_root:
+        self._frozen_snapshot: FrozenRulesSnapshot | None = None
+        if arm == "harness" and frozen_eval:
+            if not frozen_rules_path:
+                raise ValueError("frozen eval requires frozen_rules_path")
+            self._frozen_snapshot = FrozenRulesSnapshot.load(Path(frozen_rules_path))
+        elif arm == "harness" and harness_root:
             # Traces + eval runs both use the ambient PANDAPROBE_PROJECT_NAME
             # (from .env / --agent-env) — we never override it.
             cfg = build_harness_config(
                 harness_root=Path(harness_root), phase=self._phase, study=_load_study(),
-                benchmark="terminal_bench", noval=noval,
+                benchmark="terminal_bench", repair_model=self._model.litellm_model,
             )
             self._harness = build_harness(cfg=cfg)
 
@@ -141,8 +157,9 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
                 "return_code": getattr(result, "return_code", None),
             }
 
-        wiring: HarnessWiring | None = None
+        wiring: AgentWiring | None = None
         if self._harness is not None:
+            scope_hints = _terminal_scope_hints(context)
             descriptor = {"benchmark": "terminal_bench", "task_id": self._task_id,
                           "arm": self._arm, "model_key": self._model.key, "seed": self._seed}
             wiring = HarnessWiring(
@@ -151,7 +168,13 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
                 # The loop settles each turn through this wiring; see
                 # HarnessWiring.settle_turn for why per-turn rather than per-trial.
                 session_id=session_id, flush=self._client.flush,
+                rule_scope_hints=scope_hints,
+                # Harbor passes the task statement straight to the agent, so it
+                # is the natural summary; the harness sanitizes and bounds it.
+                task_summary=instruction,
             )
+        elif self._frozen_snapshot is not None:
+            wiring = FrozenEvalWiring(self._frozen_snapshot)
 
         result = await run_agent_loop(
             client=self._client, model=self._model, session_id=session_id,
@@ -166,7 +189,17 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             settled = await wiring.settle_turn(max(result.turns, 1))
             report = settled.report if settled is not None else None
             telemetry = collect_harness_telemetry(
-                self._harness, session_id, report
+                self._harness,
+                session_id,
+                report,
+                repair=settled.repair if settled is not None else None,
+            ).to_dict()
+        elif self._frozen_snapshot is not None:
+            # Preserve eval traces for later inspection without listing or
+            # scoring them during the benchmark run.
+            self._client.flush()
+            telemetry = frozen_harness_telemetry(
+                self._frozen_snapshot, session_id
             ).to_dict()
 
         # Report usage/cost back to Harbor (best-effort; fields are optional).
@@ -191,3 +224,27 @@ def _load_study() -> Any:
     from ..config import load_study
 
     return load_study(_CONFIGS / "study.yaml")
+
+
+def _terminal_scope_hints(context: Any) -> tuple[RuleScopeHint, ...]:
+    """Use explicit Harbor category/task-family metadata when the task provides it."""
+
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return ()
+    for key in ("category", "task_family", "task-family", "workflow"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            label = value.strip()[:48]
+            return (
+                RuleScopeHint(
+                    key=label,
+                    description=(
+                        f"{label.replace('_', ' ').replace('-', ' ').title()} "
+                        "terminal workflows."
+                    ),
+                    applicability="topical",
+                    recommended=True,
+                ),
+            )
+    return ()

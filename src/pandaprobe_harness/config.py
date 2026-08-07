@@ -80,6 +80,7 @@ class HarnessConfig:
     mailbox_status_file: Path = field(init=False)
     journal_file: Path = field(init=False)
     rules_store_file: Path = field(init=False)
+    scope_metadata_file: Path = field(init=False)
     evalset_dir: Path = field(init=False)
 
     # CLI invocation.
@@ -97,7 +98,7 @@ class HarnessConfig:
 
     # Bounded await-barrier drained at the start of the next turn.
     drain_timeout_s: float = 15.0
-    # The per-turn self-heal barrier (``settle``) runs on its own, deliberately
+    # The per-turn evaluation/repair barrier (``settle``) runs on its own,
     # generous budget: it must actually wait for the turn's evaluation to land,
     # where ``drain_timeout_s`` is only a best-effort join.
     barrier_timeout_s: float = 180.0
@@ -127,9 +128,8 @@ class HarnessConfig:
     # -- metrics & thresholds -------------------------------------------------
     # Per-metric absolute thresholds (overrides the scalar defaults below).
     thresholds: dict[str, float] = field(default_factory=dict)
-    concurrent_eval: bool = True  # retained for back-compat; one run now covers all metrics
 
-    # -- noticing (the pull-model mailbox) ------------------------------------
+    # -- diagnostic noticing --------------------------------------------------
     # Suppress re-posting an identical notice signature for this many turns.
     # 0 means "suppress until the condition recovers".
     alert_cooldown_turns: int = 0
@@ -153,16 +153,37 @@ class HarnessConfig:
     # cost proxy: each launch is one platform eval run.
     max_evals_per_run: int = 0
 
-    # -- self-heal rules -------------------------------------------------------
-    # Cap on concurrently-live structured rules (agent must retire to add).
-    max_active_rules: int = 50
+    # -- learned rules ---------------------------------------------------------
+    # Cap on concurrently-live structured rules.
+    # Optional operator safety bound. Zero means unlimited; novelty suppression,
+    # not an arbitrary global count, controls managed-repair proliferation.
+    max_active_rules: int = 0
     # Length cap applied when sanitizing eval-derived free text.
     sanitize_max_len: int = 2000
 
+    # -- PandaProbe-owned managed repair --------------------------------------
+    # No billable model is selected implicitly. Harness.create() requires this
+    # value unless observe_only is enabled.
+    repair_model: str | None = None
+    repair_timeout_s: float = 60.0
+    # Six permits providers that emit one tool call per round to complete the
+    # read -> inspect -> search -> add -> acknowledge lifecycle.
+    repair_max_turns: int = 6
+    repair_max_tokens: int = 4096
+    repair_temperature: float | None = None
+    # Model-specific LiteLLM reasoning mode. Current OpenAI reasoning models
+    # require "none" when function tools use the chat-completions endpoint.
+    repair_reasoning_effort: str | None = "none"
+    trace_repair_agent: bool = False
+    # Bounded host policy supplied to evaluator/repair diagnosis. It never
+    # changes the repair prompt or capability set.
+    domain_policy: str | None = None
+
     # -- rule validation (evidence before trust) -------------------------------
     # New rules start as candidates and are promoted to active only after a
-    # validator (replay or forward trial) shows they help. False restores the
-    # v0.5 behavior: rules enter `active` the moment they are written.
+    # validator (replay or forward trial) shows they help. Managed Harness
+    # construction requires this; False exists only for direct RulesStore use in
+    # operator tooling and tests, where the lifecycle is not the subject.
     rule_validation: bool = True
     # Forward trial: distinct sessions to observe before a verdict.
     rule_trial_min_sessions: int = 5
@@ -174,6 +195,18 @@ class HarnessConfig:
     # Hard bound on one developer replay invocation; a hung replay degrades to
     # an inconclusive case instead of wedging validation/regression forever.
     replay_timeout_s: float = 300.0
+    # Extra grace for a replay that must first acquire a shared environment (a
+    # world, a container, a device). A host signals via
+    # ``ReplayContext.mark_execution_started()`` and the execution budget above
+    # then starts fresh, so queueing behind a live task cannot consume the whole
+    # budget and report an inconclusive replay that never ran. Zero preserves the
+    # single-budget behavior for hosts that do not signal.
+    replay_env_wait_timeout_s: float = 0.0
+    # Wall-clock bound on the replay work in ONE candidate-validation round.
+    # Candidates past the bound still get a verdict, from the cheap forward
+    # trial, rather than waiting for a replay slot that may never come. Zero is
+    # unlimited: every candidate is offered replay however long the round takes.
+    validation_round_budget_s: float = 0.0
 
     # -- regression eval-set ---------------------------------------------------
     # Capture breaching sessions as replayable eval cases (opt-in: stores
@@ -184,11 +217,12 @@ class HarnessConfig:
     # Cases replayed per regression run (0 = all).
     regression_sample: int = 0
 
-    # -- rule retrieval (relevance over volume) --------------------------------
-    # Inject only global rules + the top-k rules relevant to the current
-    # situation instead of every active rule. False restores v0.5 rendering.
+    # -- query-narrowed rendering (never automatic prompt injection) -----------
+    # When a caller renders a scope WITH a query, keep only the top-k relevant
+    # active rules. Off renders every active rule. Neither setting affects the
+    # task-facing read/search/list tools, which never preselect on the agent's
+    # behalf, and neither causes a rule to enter a prompt on its own.
     rule_retrieval: bool = True
-    # How many tagged rules the retrieval keeps in the system context.
     rules_context_topk: int = 8
 
     # -- robustness ------------------------------------------------------------
@@ -200,7 +234,8 @@ class HarnessConfig:
         # object.__setattr__ is required to populate fields on a frozen dataclass.
         object.__setattr__(self, "harness_root", root)
         object.__setattr__(self, "traces_dir", root / "traces")
-        object.__setattr__(self, "rules_file", root / "harness_rules.md")
+        # Sits beside rules.jsonl and rules/, which is what it indexes.
+        object.__setattr__(self, "rules_file", root / "rules.md")
         object.__setattr__(self, "rules_dir", root / "rules")
         object.__setattr__(self, "latest_eval_file", root / "traces" / "latest_eval.json")
         object.__setattr__(self, "state_dir", root / "state")
@@ -211,6 +246,7 @@ class HarnessConfig:
         object.__setattr__(self, "mailbox_status_file", root / "mailbox" / "status.json")
         object.__setattr__(self, "journal_file", root / "journal.jsonl")
         object.__setattr__(self, "rules_store_file", root / "rules.jsonl")
+        object.__setattr__(self, "scope_metadata_file", root / "scope_metadata.json")
         object.__setattr__(self, "evalset_dir", root / "evalset")
 
     # -- helpers --------------------------------------------------------------
@@ -251,10 +287,10 @@ class HarnessConfig:
         return tuple(dict.fromkeys((*self.tier_metrics(1), *self.tier_metrics(2))))
 
     def rules_scope_file(self, scope: str) -> Path:
-        """Path of the agent-facing rule file for ``scope``.
+        """Path of the read-only rule artifact for ``scope``.
 
-        ``scope`` is agent-supplied and becomes a filename, so callers must pass
-        a value already normalized by ``workspace.rules.normalize_scope``.
+        ``scope`` may be supplied by managed repair and becomes a filename, so
+        callers must pass a value normalized by ``workspace.rules.normalize_scope``.
         """
 
         return self.rules_dir / f"{scope}.md"
@@ -281,7 +317,6 @@ class HarnessConfig:
             "barrier_timeout_s": _env_float("HARNESS_BARRIER_TIMEOUT_S", 180.0),
             "gate_window": _env_int("HARNESS_GATE_WINDOW", 5),
             "enable_tier3": _env_bool("HARNESS_ENABLE_TIER3", False),
-            "concurrent_eval": _env_bool("HARNESS_CONCURRENT_EVAL", True),
             "alert_cooldown_turns": _env_int("HARNESS_ALERT_COOLDOWN_TURNS", 0),
             "enrich_flagged_traces": _env_bool("HARNESS_ENRICH_FLAGGED_TRACES", False),
             "observe_only": _env_bool("HARNESS_OBSERVE_ONLY", False),
@@ -293,13 +328,33 @@ class HarnessConfig:
             ),
             "max_concurrent_evals": _env_int("HARNESS_MAX_CONCURRENT_EVALS", 4),
             "max_evals_per_run": _env_int("HARNESS_MAX_EVALS_PER_RUN", 0),
-            "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 50),
+            "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 0),
             "sanitize_max_len": _env_int("HARNESS_SANITIZE_MAX_LEN", 2000),
+            "repair_model": os.environ.get("HARNESS_REPAIR_MODEL") or None,
+            "repair_timeout_s": _env_float("HARNESS_REPAIR_TIMEOUT_S", 60.0),
+            "repair_max_turns": _env_int("HARNESS_REPAIR_MAX_TURNS", 6),
+            "repair_max_tokens": _env_int("HARNESS_REPAIR_MAX_TOKENS", 4096),
+            "repair_temperature": (
+                float(os.environ["HARNESS_REPAIR_TEMPERATURE"])
+                if os.environ.get("HARNESS_REPAIR_TEMPERATURE")
+                else None
+            ),
+            "repair_reasoning_effort": (
+                os.environ.get("HARNESS_REPAIR_REASONING_EFFORT") or "none"
+            ),
+            "trace_repair_agent": _env_bool("HARNESS_TRACE_REPAIR_AGENT", False),
+            "domain_policy": os.environ.get("HARNESS_DOMAIN_POLICY") or None,
             "rule_validation": _env_bool("HARNESS_RULE_VALIDATION", True),
             "rule_trial_min_sessions": _env_int("HARNESS_RULE_TRIAL_MIN_SESSIONS", 5),
             "rule_promote_margin": _env_float("HARNESS_RULE_PROMOTE_MARGIN", 0.05),
             "rule_regress_margin": _env_float("HARNESS_RULE_REGRESS_MARGIN", 0.05),
             "replay_timeout_s": _env_float("HARNESS_REPLAY_TIMEOUT_S", 300.0),
+            "replay_env_wait_timeout_s": _env_float(
+                "HARNESS_REPLAY_ENV_WAIT_TIMEOUT_S", 0.0
+            ),
+            "validation_round_budget_s": _env_float(
+                "HARNESS_VALIDATION_ROUND_BUDGET_S", 0.0
+            ),
             "capture_eval_cases": _env_bool("HARNESS_CAPTURE_EVAL_CASES", False),
             "eval_case_max": _env_int("HARNESS_EVAL_CASE_MAX", 200),
             "regression_sample": _env_int("HARNESS_REGRESSION_SAMPLE", 0),

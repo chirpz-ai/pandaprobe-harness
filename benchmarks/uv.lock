@@ -2006,7 +2006,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandaprobe", specifier = ">=0.5" },
-    { name = "pandaprobe-harness", specifier = "==0.8.0" },
+    { name = "pandaprobe-harness", path = "../dist/pandaprobe_harness-0.8.0-py3-none-any.whl" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -2039,14 +2039,57 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/5b/95b2d92eb391a573c45268c806a77b9b62a068968968baf3ccd84ec118ed/pandaprobe-0.5.0-py3-none-any.whl", hash = "sha256:9fc2cb71d919a9475c8946b099a32a6c943085108cbd72ef26444855983f04d8", size = 106245, upload_time = "2026-07-12T05:19:16.358Z" },
 ]
 
+[package.optional-dependencies]
+litellm = [
+    { name = "litellm" },
+]
+
 [[package]]
 name = "pandaprobe-harness"
 version = "0.8.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/da/a1/3ee1f220884f1f94a82dbf9e6f5f0590c7c896529b26e79efcaa3942976d/pandaprobe_harness-0.8.0.tar.gz", hash = "sha256:8e488850b23b426858e9a1a28685c0518eff03d5bd375eeab850e3f5c92e456a", size = 976895, upload_time = "2026-08-04T05:10:36.55Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/26/b405a6417aa2386f8f772f8239d15111246cfcb6a1e8f91d8e37e8167bb3/pandaprobe_harness-0.8.0-py3-none-any.whl", hash = "sha256:85063205db222f3b249390d7f8e3630c99892392666193e71d2800d2ff8e6e88", size = 128706, upload_time = "2026-08-04T05:10:35.063Z" },
+source = { path = "../dist/pandaprobe_harness-0.8.0-py3-none-any.whl" }
+dependencies = [
+    { name = "boto3" },
+    { name = "litellm", extra = ["google"] },
+    { name = "pandaprobe", extra = ["litellm"] },
 ]
+wheels = [
+    { filename = "pandaprobe_harness-0.8.0-py3-none-any.whl", hash = "sha256:e999439c141744bcfb34255dcc9b059c8bf6cb56c23a102052e6204aaf2887eb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.43.1,<2.0" },
+    { name = "claude-agent-sdk", marker = "extra == 'all'", specifier = ">=0.1.0" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.1.0" },
+    { name = "crewai", marker = "extra == 'all'", specifier = ">=0.100" },
+    { name = "crewai", marker = "extra == 'crewai'", specifier = ">=0.100" },
+    { name = "deepagents", marker = "extra == 'all'", specifier = ">=0.6.1" },
+    { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.6.1" },
+    { name = "langchain", marker = "extra == 'all'", specifier = ">=1.0.0" },
+    { name = "langchain", marker = "extra == 'langchain'", specifier = ">=1.0.0" },
+    { name = "langchain-core", marker = "extra == 'all'", specifier = ">=0.3.0" },
+    { name = "langchain-core", marker = "extra == 'deepagents'", specifier = ">=0.3.0" },
+    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3.0" },
+    { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=0.3" },
+    { name = "langgraph", marker = "extra == 'all'", specifier = ">=0.2" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.2" },
+    { name = "litellm", extras = ["google"], specifier = ">=1.55" },
+    { name = "openai-agents", marker = "extra == 'all'", specifier = ">=0.13.0" },
+    { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.13.0" },
+    { name = "pandaprobe", marker = "extra == 'all'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'crewai'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'deepagents'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'langchain'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'langgraph'", specifier = ">=0.4" },
+    { name = "pandaprobe", marker = "extra == 'openai-agents'", specifier = ">=0.4" },
+    { name = "pandaprobe", extras = ["litellm"], specifier = ">=0.5.0" },
+    { name = "wrapt", marker = "extra == 'all'", specifier = ">=1.14.0" },
+    { name = "wrapt", marker = "extra == 'claude-agent-sdk'", specifier = ">=1.14.0" },
+    { name = "wrapt", marker = "extra == 'crewai'", specifier = ">=1.14" },
+]
+provides-extras = ["all", "claude-agent-sdk", "crewai", "deepagents", "langchain", "langgraph", "openai-agents"]
 
 [[package]]
 name = "pandas"

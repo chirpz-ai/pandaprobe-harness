@@ -3,10 +3,10 @@
 The two study arms run *identical* code here; they differ only by whether a
 :class:`HarnessWiring` is passed. Arm A (``wiring=None``) is a plain
 call-model / run-tools / repeat loop. Arm B additionally prepends the harness
-preamble each turn and exposes the harness's self-diagnostic tools alongside
-the benchmark's tools. Session lifecycle (``on_turn_end`` / ``refresh`` /
-``drain_validation``) is owned by the *runner*, not this loop, so the loop stays
-a pure agent stepper (see ``runners/base.py``).
+preamble each turn and exposes only read-only learned-rule tools alongside the
+benchmark's tools. The runner owns final settlement and phase validation; the
+loop settles continuing turns so package-owned repair can update next-turn
+on-demand discovery in-session.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any
 
 from ..providers.litellm_client import ChatClient, ProviderError, ToolCall, Usage
 from ..providers.models import ResolvedModel
-from .harness_wiring import HarnessWiring
+from .harness_wiring import AgentWiring
 
 logger = logging.getLogger("pandabench.loop")
 
@@ -51,7 +51,7 @@ async def run_agent_loop(
     tool_executor: ToolExecutor,
     initial_messages: Sequence[dict[str, Any]],
     max_turns: int,
-    wiring: HarnessWiring | None = None,
+    wiring: AgentWiring | None = None,
     max_tokens: int | None = None,
 ) -> LoopResult:
     """Drive one task-trial to completion (final answer, cap, or error).
@@ -124,21 +124,21 @@ async def run_agent_loop(
             )
 
         # The per-turn barrier: block until the harness has evaluated this turn and
-        # posted any notice, so the next iteration's preamble and rule set already
-        # reflect it. This is what makes healing take effect *within* a session
-        # rather than after it.
+        # completed package-owned repair, so the next iteration's read-only rule
+        # tools already reflect any provisional guidance. This is what makes
+        # healing take effect *within* a session rather than after it.
         #
         # Only when another turn will actually follow. At the cap the next
         # iteration returns immediately, so this turn is the trial's last and the
         # runner settles it — settling here too would fire a second evaluation for
         # the same turn, which finds no new traces and so reports none of the tier
         # scores the runner then records as telemetry.
-        if wiring is not None and turns < max_turns:
+        if wiring is not None and wiring.settles_turns and turns < max_turns:
             await wiring.settle_turn(turns)
 
 
 async def _dispatch(
-    tool_call: ToolCall, tool_executor: ToolExecutor, wiring: HarnessWiring | None
+    tool_call: ToolCall, tool_executor: ToolExecutor, wiring: AgentWiring | None
 ) -> Any:
     """Route one tool call to the harness (``harness_*``) or the benchmark."""
 

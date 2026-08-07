@@ -29,6 +29,7 @@ __all__ = [
     "TrialRecord",
     "archive_workspace",
     "collect_harness_telemetry",
+    "frozen_harness_telemetry",
     "resume_key",
 ]
 
@@ -49,10 +50,21 @@ class HarnessTelemetry:
     rules_candidate: int
     rules_retired: int
     notices: int
+    mode: str = "live"
+    ruleset_hash: str | None = None
     scores: dict[str, float] = field(default_factory=dict)
     """Every resolved metric of the turn, by name."""
     gate_breached: bool = False
     """The trajectory gate fired (a stall or a regression) on this turn."""
+    repair: dict[str, Any] | None = None
+    """Package-owned managed-repair outcome returned by settlement, when any."""
+    repair_episodes: int = 0
+    resolution_counts: dict[str, int] = field(default_factory=dict)
+    rules_by_scope: dict[str, dict[str, int]] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
+    """Validation activity so far: rounds, promotions, retirements, and why
+    candidates are still pending. Status counts alone cannot distinguish "no
+    verdict yet" from "never validated"."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -180,8 +192,9 @@ class RecordWriter:
 # atomic-write temp files (*.tmp) are skipped.
 _ARCHIVE_ENTRIES = (
     "rules.jsonl",
+    "scope_metadata.json",
     "journal.jsonl",
-    "harness_rules.md",
+    "rules.md",
     "rules",  # the agent-facing rule files (global.md, scoped.md, topics)
     "evalset",
     "mailbox",
@@ -211,7 +224,11 @@ def archive_workspace(harness_root: Path, dest: Path) -> None:
 
 
 def collect_harness_telemetry(
-    harness: Any, session_id: str, report: Any | None
+    harness: Any,
+    session_id: str,
+    report: Any | None,
+    *,
+    repair: Any | None = None,
 ) -> HarnessTelemetry:
     """Best-effort harness state for a session (never raises — telemetry only)."""
 
@@ -233,16 +250,52 @@ def collect_harness_telemetry(
             logger.debug("telemetry: report parse failed: %s", exc)
 
     active = candidate = retired = 0
+    rules_by_scope: dict[str, dict[str, int]] = {}
     try:
         for rule in harness.rules.all():
             status = getattr(rule, "status", "")
             active += status == "active"
             candidate += status == "candidate"
             retired += status == "retired"
+            scope = str(getattr(rule, "scope", "global") or "global")
+            counts = rules_by_scope.setdefault(
+                scope, {"active": 0, "candidate": 0, "retired": 0}
+            )
+            if status in counts:
+                counts[status] += 1
     except Exception as exc:  # noqa: BLE001
         logger.debug("telemetry: rules read failed: %s", exc)
 
     notices = _count_session_notices(harness, session_id)
+    repair_payload: dict[str, Any] | None = None
+    if repair is not None:
+        try:
+            raw = repair.to_json()
+            if isinstance(raw, dict):
+                repair_payload = dict(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telemetry: repair result parse failed: %s", exc)
+
+    episode_ids: set[str] = set()
+    resolution_counts: dict[str, int] = {}
+    try:
+        for event in harness.journal.recent(
+            limit=10_000,
+            types=(
+                "repair_completed", "repair_duplicate", "repair_already_covered",
+                "repair_no_proposal", "repair_unactionable", "repair_failed",
+                "repair_timed_out",
+            ),
+        ):
+            if event.get("task_session_id") != session_id:
+                continue
+            episode_id = str(event.get("repair_episode_id") or event.get("notice_id") or "")
+            if episode_id:
+                episode_ids.add(episode_id)
+            resolution = str(event.get("resolution_kind") or event.get("status") or "unknown")
+            resolution_counts[resolution] = resolution_counts.get(resolution, 0) + 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("telemetry: repair episode read failed: %s", exc)
 
     return HarnessTelemetry(
         session_id=session_id,
@@ -253,7 +306,97 @@ def collect_harness_telemetry(
         notices=notices,
         scores=scores,
         gate_breached=gate_breached,
+        repair=repair_payload,
+        repair_episodes=len(episode_ids),
+        resolution_counts=resolution_counts,
+        rules_by_scope=rules_by_scope,
+        validation=_validation_summary(harness),
     )
+
+
+def _validation_summary(harness: Any) -> dict[str, Any]:
+    """Bounded validation activity read back from the journal.
+
+    Rule status counts say what the lifecycle currently holds; they cannot say
+    whether validation ever ran. Without this, a candidate stuck at
+    ``replay_attempts=0`` with an empty verdict is indistinguishable between
+    "never attempted" and "attempted, never conclusive".
+    """
+
+    summary: dict[str, Any] = {
+        "rounds": 0,
+        "promoted": 0,
+        "retired": 0,
+        "replays": 0,
+        "candidate_not_exercised": 0,
+        "env_wait_timeouts": 0,
+        "budget_exhausted_rounds": 0,
+        "pending_reasons": {},
+    }
+    try:
+        events = harness.journal.recent(
+            limit=10_000,
+            types=(
+                "validation_round_finished",
+                "validation_replay_case",
+                "validation_verdict",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry only
+        logger.debug("telemetry: validation read failed: %s", exc)
+        return summary
+
+    pending: dict[str, int] = {}
+    for event in events:
+        kind = event.get("type")
+        if kind == "validation_round_finished":
+            summary["rounds"] += 1
+            summary["promoted"] += int(event.get("promoted") or 0)
+            summary["retired"] += int(event.get("retired") or 0)
+            if event.get("budget_exhausted"):
+                summary["budget_exhausted_rounds"] += 1
+        elif kind == "validation_replay_case":
+            summary["replays"] += 1
+            outcome = str(event.get("outcome") or "")
+            if outcome == "candidate_not_exercised":
+                summary["candidate_not_exercised"] += 1
+            elif outcome == "env_wait_timeout":
+                summary["env_wait_timeouts"] += 1
+        elif kind == "validation_verdict":
+            reason = event.get("pending_reason")
+            if reason:
+                pending[str(reason)] = pending.get(str(reason), 0) + 1
+    summary["pending_reasons"] = pending
+    return summary
+
+
+def frozen_harness_telemetry(snapshot: Any, session_id: str) -> HarnessTelemetry:
+    """Explicit arm-B telemetry for eval, where no trace scores are produced."""
+
+    return HarnessTelemetry(
+        session_id=session_id,
+        breached=False,
+        rules_active=int(snapshot.active_count),
+        rules_candidate=int(snapshot.candidate_count),
+        rules_retired=int(snapshot.retired_count),
+        notices=0,
+        mode="frozen_eval",
+        ruleset_hash=str(snapshot.sha256),
+        scores={},
+        gate_breached=False,
+        rules_by_scope=_snapshot_scope_counts(snapshot),
+    )
+
+
+def _snapshot_scope_counts(snapshot: Any) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    for rule in snapshot.rules:
+        scope = str(rule.get("scope") or "global")
+        bucket = counts.setdefault(scope, {"active": 0, "candidate": 0, "retired": 0})
+        status = str(rule.get("status") or "active")
+        if status in bucket:
+            bucket[status] += 1
+    return counts
 
 
 def _count_session_notices(harness: Any, session_id: str) -> int:

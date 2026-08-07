@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 
@@ -51,9 +52,10 @@ async def test_improved_case(
     )
     contexts: list[str] = []
 
-    async def replay(case_arg: EvalCase, context: str) -> str:
+    async def replay(case_arg: EvalCase, context: Any) -> str:
         contexts.append(context)
         assert case_arg.id == case.id
+        assert context.task_tools is not None
         return "s-replay-1"
 
     report = await run_regression(
@@ -72,7 +74,7 @@ async def test_improved_case(
     assert result.replay_session_id == "s-replay-1"
     assert result.deltas is not None
     assert result.deltas["task_completion"] == pytest.approx(0.62)
-    assert contexts and "Harness Rules" in contexts[0]
+    assert contexts and "Learned rules are available" in contexts[0]
 
     (event,) = journal.recent(types=("regression",))
     assert event["improved"] == 1 and event["clean"] is True

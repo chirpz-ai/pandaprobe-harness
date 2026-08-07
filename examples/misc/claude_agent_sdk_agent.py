@@ -11,12 +11,11 @@ The wiring, in order:
 1. ``Harness.for_claude_agent_sdk(...)`` provisions the workspace and patches
    ``ClaudeSDKClient.receive_response`` — one completed response stream fires
    ``hook.on_turn_end`` (one query/response == one evaluated agent turn).
-2. ``as_anthropic_tools(harness.toolset)`` yields plain Anthropic tool dicts
+2. ``as_anthropic_tools(harness.task_tools)`` yields read-only rule tool dicts
    (``specs``) plus an async ``dispatch(name, args)`` — every ``tool_use``
    block naming a harness tool is routed through ``dispatch``. Below, the
    specs are registered as in-process MCP tools whose handlers ARE that route.
-3. ``harness.system_context()`` (rules + pull protocol + mailbox banner) is
-   prepended to the system prompt and re-read each turn.
+3. ``harness.system_context(session_id)`` supplies a stable capability note.
 
 For the fully offline, credential-free version of this loop, see
 ``examples/misc/offline_self_heal.py``.
@@ -28,7 +27,7 @@ import asyncio
 import json
 import sys
 
-from pandaprobe_harness import Harness
+from pandaprobe_harness import Harness, HarnessConfig
 from pandaprobe_harness.agent_tools.native import as_anthropic_tools
 
 try:
@@ -61,17 +60,16 @@ def _register(specs: list[dict], dispatch) -> list:
 
 
 async def main() -> None:
-    # One factory call: workspace + hook + toolset + the receive_response patch.
-    harness = Harness.for_claude_agent_sdk(session_id=SESSION_ID)
+    harness = Harness.for_claude_agent_sdk(
+        session_id=SESSION_ID, config=HarnessConfig.from_env()
+    )
 
     # Anthropic tool dicts + the dispatcher that executes them.
-    specs, dispatch = as_anthropic_tools(harness.toolset)
+    specs, dispatch = as_anthropic_tools(harness.task_tools)
     server = create_sdk_mcp_server(name="harness", tools=_register(specs, dispatch))
 
-    # System prompt = harness context (rules + protocol + mailbox banner) +
-    # yours. Re-read per client/turn so a fresh notice surfaces as the banner.
     options = ClaudeAgentOptions(
-        system_prompt=harness.system_context() + "\n" + BASE_PROMPT,
+        system_prompt=harness.system_context(SESSION_ID) + "\n" + BASE_PROMPT,
         mcp_servers={"harness": server},
         allowed_tools=[f"mcp__harness__{spec['name']}" for spec in specs],
     )
@@ -84,9 +82,7 @@ async def main() -> None:
             await client.query(user_input)
             async for message in client.receive_response():  # turn ends when drained
                 print(message)
-            # Optional: join the in-flight evaluation (bounded by
-            # drain_timeout_s) so the loop observes each turn's outcome.
-            await harness.refresh(SESSION_ID)
+            await harness.settle(SESSION_ID)
 
 
 if __name__ == "__main__":

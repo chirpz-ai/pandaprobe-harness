@@ -1,43 +1,41 @@
-"""Structured self-heal rules with provenance, lifecycle, dedup, cap, and effectiveness.
+"""Structured learned rules with provenance, lifecycle, dedup, and validation.
 
 Rules live as an append-only JSONL store at ``<harness_root>/rules.jsonl``
 (the latest record per rule id wins, so retiring a rule appends an updated
-record rather than rewriting the file). Everything the agent reads is a *rendered
-artifact* of that store, laid out as an agent skill::
+record rather than rewriting the file). Read-only task-facing rules are rendered
+from that store as an agent skill::
 
-    harness_rules.md    the SKILL ROOT — protocol, tool list, and a generated
-                        References index. Contains NO rule text.
-    rules/global.md     whole-trajectory rules, always in force
-    rules/scoped.md     step-level rules; the catch-all default
-    rules/<topic>.md    created by the agent when a topic is worth splitting out
+    rules.md            skill-style task guide plus compact generated scope
+                        index. Contains NO rule text.
+    rules/global.md     the default: broadly reusable rules
+    rules/<topic>.md    a meaningful context chosen by managed repair
+    rules/scoped.md     the fallback for specific rules with no stable name
 
-The split matters: the root stays small and stable enough to be the agent's entry
-point, while rule *content* is pulled on demand rather than pushed into the system
-prompt. ``scope`` is free-form and agent-owned — the harness only ever supplies a
-coarse default (``global`` for a trajectory fire, ``scoped`` for a step-level
-breach) and the agent may re-file anything.
+The split keeps learned content out of the task-agent context until the agent
+chooses a read/search tool. ``scope`` is a reasoned managed-repair decision made
+from the evidence it already holds (see :mod:`.scopes` for what the two reserved
+names mean); host scope hints inform that decision but never dictate it.
 
 Retrieval stays **per rule** over ``rules.jsonl`` (see
-:meth:`RulesStore.relevant`), not per file, so how the agent chooses to organize
-its files can never degrade which rules get selected.
+:meth:`RulesStore.relevant`), not per file, so workspace organization cannot
+degrade which rules get selected.
 
 Lifecycle (evidence before trust)::
 
     candidate ──(validated: metric improved)──▶ active
         │
         └────────(invalidated: no improvement / regressed)──▶ retired
-    active ──(agent or regression run retires it)──▶ retired
+    active ──(regression validation or operator retires it)──▶ retired
 
 When ``config.rule_validation`` is on, :meth:`RulesStore.add` records a
-**candidate**: it is rendered (clearly labeled as provisional, so it is in
-force and therefore measurable) but only a validator verdict promotes it to
-``active``. When the flag is off, rules enter ``active`` immediately (the
-v0.5 behavior).
+**candidate**. It is immediately discoverable and clearly labeled provisional,
+but is never automatically injected; only a validator verdict promotes it to
+``active``. When the flag is off, rules enter ``active`` immediately.
 
-This addresses rule rot: duplicate rules are collapsed on normalized text, a
-live-rule cap forces agent-driven compaction (retire before add), and
-:meth:`RulesStore.effectiveness` gives the reflection cycle before/after
-notice counts per rule from the journal.
+This addresses rule rot with deterministic novelty suppression and
+:meth:`RulesStore.effectiveness`, which gives the reflection cycle before/after
+notice counts per rule from the journal. An optional host-configured count bound
+remains available, but there is no arbitrary default global cap.
 
 All methods are synchronous blocking I/O; async callers wrap them in
 ``asyncio.to_thread``.
@@ -54,73 +52,56 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..config import HarnessConfig
-from ._io import append_jsonl, atomic_write_text, read_jsonl
+from ._io import append_jsonl, atomic_write_json, atomic_write_text, load_json, read_jsonl
 from .journal import Journal
 from .mailbox import DiagnosticNotice
 from .sanitize import sanitize_text
+from .scopes import (
+    GLOBAL_SCOPE,
+    RESERVED_SCOPES,
+    SCOPED_SCOPE,
+    normalize_scope,
+    normalize_scope_description,
+    validate_scope,
+)
 
 __all__ = [
     "GLOBAL_SCOPE",
+    "RESERVED_SCOPES",
     "SCOPED_SCOPE",
     "Rule",
+    "RuleApplicability",
     "RuleStatus",
     "RulesCapError",
     "RulesStore",
     "TrialState",
     "derive_notice_tags",
     "normalize_scope",
+    "normalize_scope_description",
+    "validate_scope",
 ]
 
 _TEMPLATE_PACKAGE = "pandaprobe_harness.filesystem.templates"
-_TEMPLATE_NAME = "harness_rules.md"
+_TEMPLATE_NAME = "rules.md"
 #: Everything in the skill-root template up to (and including) this line is
 #: preserved verbatim; the generated References directory is rendered below it.
 REFERENCES_MARKER = "<!-- REFERENCES — generated by the harness; do not edit below -->"
-#: The v1 marker. Recognized so an existing on-disk root (which spliced live rule
-#: bodies here) migrates cleanly to the v2 references-only root.
-RULES_MARKER = "<!-- ACTIVE RULES — managed by the harness; use the harness rule tools -->"
 #: Heading that separates unproven candidate rules from validated active ones.
 PROVISIONAL_HEADING = "### Provisional rules (under evaluation)"
 _PROVISIONAL_NOTE = (
-    "_The following candidate rules are in force but not yet validated. Treat\n"
-    "them as tentative: apply them, but prefer validated rules when they\n"
-    "conflict._"
+    "_The following candidate rules are available but not yet validated. Treat\n"
+    "them as tentative and prefer validated rules when they conflict._"
 )
 
 RuleStatus = Literal["candidate", "active", "retired"]
-
-#: Tier-1 (trajectory) rules: whole-trajectory lessons, always eligible.
-GLOBAL_SCOPE = "global"
-#: Tier-2/3 (step-level) rules: the general catch-all the agent may split later.
-SCOPED_SCOPE = "scoped"
-#: A scope becomes a filename, so it must be exactly one safe path component.
-_SAFE_SCOPE = re.compile(r"\A[a-z0-9][a-z0-9._-]{0,47}\Z")
-_SCOPE_SEPARATORS = re.compile(r"[^a-z0-9._-]+")
-
-
-def normalize_scope(value: str | None) -> str:
-    """Slugify an agent-supplied scope into one safe path component.
-
-    Scope is deliberately free-form — the agent invents its own organization —
-    but it is also used as a filename, so it is slugified and bounded here rather
-    than trusted. Empty means the documented default (``global``); anything that
-    cannot be slugified at all falls back to the ``scoped`` catch-all, so a rule
-    is never lost to a bad label.
-    """
-
-    if value is None or not value.strip():
-        return GLOBAL_SCOPE
-    slug = _SCOPE_SEPARATORS.sub("-", value.strip().casefold()).strip("-._")[:48]
-    if not slug or slug in {".", ".."} or not _SAFE_SCOPE.match(slug):
-        return SCOPED_SCOPE
-    return slug
+RuleApplicability = Literal["global", "topical", "task"]
 
 #: Journal `notice` events scanned to estimate a candidate's pre-trial baseline.
 _BASELINE_WINDOW = 200
-#: Bounds applied to rule tags (both derived and agent-supplied).
+#: Bounds applied to rule tags (both derived and repair-supplied).
 _TAG_MAX_COUNT = 16
 _TAG_MAX_LEN = 48
 
@@ -186,12 +167,76 @@ def _tokenize(text: str) -> frozenset[str]:
     return frozenset(t for t in _TOKEN_RE.findall(text.casefold()) if len(t) >= 2)
 
 
+_NOVELTY_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "as", "at", "be", "before", "by", "for", "from",
+        "if", "in", "into", "is", "it", "of", "on", "only", "or", "the",
+        "then", "to", "use", "when", "with", "task", "tasks", "workflow",
+    }
+)
+_GENERIC_NOVELTY_TAGS = frozenset(
+    {
+        "active", "argument_correctness", "breach", "candidate", "coherence",
+        "global", "provisional", "scoped", "task_completion", "tool_correctness",
+        "trend",
+    }
+)
+
+
+def _novelty_tokens(text: str) -> frozenset[str]:
+    return _tokenize(text) - _NOVELTY_STOPWORDS
+
+
+def _overlap(left: frozenset[str], right: frozenset[str]) -> tuple[float, float]:
+    if not left or not right:
+        return 0.0, 0.0
+    shared = len(left & right)
+    return shared / len(left | right), shared / min(len(left), len(right))
+
+
+def _coverage_reason(
+    existing: Rule,
+    *,
+    text: str,
+    scope: str,
+    tags: Sequence[str],
+    failure_signatures: Sequence[str],
+) -> str | None:
+    if RulesStore._normalize(existing.rule) == RulesStore._normalize(text):
+        return "exact_text"
+    if existing.scope != scope:
+        return None
+
+    similarity, containment = _overlap(
+        _novelty_tokens(existing.rule), _novelty_tokens(text)
+    )
+    if similarity >= 0.72 or containment >= 0.88:
+        return "near_duplicate_text"
+
+    proposed_signatures = frozenset(str(value) for value in failure_signatures)
+    existing_signatures = frozenset(existing.failure_signatures)
+    same_failure = bool(proposed_signatures & existing_signatures)
+    if same_failure and (similarity >= 0.30 or containment >= 0.55):
+        return "covered_failure_signature"
+
+    proposed_tags = frozenset(_clean_tags(tags)) - _GENERIC_NOVELTY_TAGS
+    existing_tags = frozenset(existing.tags) - _GENERIC_NOVELTY_TAGS
+    meaningful_tag_overlap = {
+        tag for tag in proposed_tags & existing_tags if ":" not in tag
+    }
+    if len(meaningful_tag_overlap) >= 2 and (
+        similarity >= 0.40 or containment >= 0.65
+    ):
+        return "covered_tags"
+    return None
+
+
 def _relevance(rule: Rule, query_tokens: frozenset[str]) -> float:
     """Weighted token overlap, normalized by query size.
 
     Tag hits count double (tags are curated retrieval hooks); rule/rationale/
-    metric text hits count once. A BM25-style IDF adds nothing over a corpus
-    capped at ``max_active_rules`` (~50), so plain overlap keeps this stdlib.
+    metric text hits count once. Plain bounded overlap keeps retrieval
+    deterministic and dependency-free; callers cap the returned result set.
     """
 
     if not query_tokens:
@@ -235,8 +280,7 @@ class TrialState:
 
     The baseline is the pre-candidate breach rate for the rule's metric
     family, estimated from recent journal notices at add time; the trial
-    counts distinct sessions observed (and breached) while the candidate is
-    in force.
+    counts distinct sessions observed (and breached) while the candidate is live.
     """
 
     baseline_breached_sessions: int = 0
@@ -311,9 +355,13 @@ class Rule:
     status: RuleStatus = "active"
     tags: tuple[str, ...] = ()
     trial: TrialState | None = None
-    #: Which ``rules/<scope>.md`` file this rule lives in. Free-form and
-    #: agent-owned; ``global`` rules are always eligible for retrieval.
+    #: Which ``rules/<scope>.md`` file this rule lives in. ``global`` rules are
+    #: always eligible for retrieval.
     scope: str = GLOBAL_SCOPE
+    #: Applicability is independent of the topical file used for discovery.
+    applicability: RuleApplicability = "global"
+    #: Stable evaluator signatures used by deterministic novelty checks.
+    failure_signatures: tuple[str, ...] = ()
 
     @staticmethod
     def new_id() -> str:
@@ -331,6 +379,8 @@ class Rule:
             "tags": list(self.tags),
             "trial": self.trial.to_json() if self.trial is not None else None,
             "scope": self.scope,
+            "applicability": self.applicability,
+            "failure_signatures": list(self.failure_signatures),
         }
 
     @classmethod
@@ -338,14 +388,25 @@ class Rule:
         tags = data.get("tags")
         trial = data.get("trial")
         clean_tags = tuple(str(t) for t in tags) if isinstance(tags, list) else ()
-        raw_scope = data.get("scope")
-        if raw_scope is None:
-            # Forward-migrate a v1 record. v1 had no scope but did treat an
-            # *untagged* rule as global, so preserve that reading: untagged →
-            # global, tagged (i.e. derived from a notice) → the scoped catch-all.
-            scope = GLOBAL_SCOPE if not clean_tags else SCOPED_SCOPE
+        # A record without a scope takes the default, like any other unspecified
+        # field. Forgiving readers keep an older store loadable; they do not
+        # reconstruct a scope nobody recorded.
+        scope = normalize_scope(str(data["scope"])) if data.get("scope") else GLOBAL_SCOPE
+        raw_applicability = data.get("applicability")
+        if raw_applicability in {"global", "topical", "task"}:
+            applicability = cast(RuleApplicability, raw_applicability)
+        elif scope == GLOBAL_SCOPE:
+            applicability = "global"
+        elif scope == SCOPED_SCOPE:
+            applicability = "task"
         else:
-            scope = normalize_scope(str(raw_scope))
+            applicability = "topical"
+        raw_signatures = data.get("failure_signatures")
+        failure_signatures = (
+            tuple(str(value) for value in raw_signatures[:16])
+            if isinstance(raw_signatures, list)
+            else ()
+        )
         return cls(
             id=str(data.get("id", "")),
             created_at=str(data.get("created_at", "")),
@@ -361,16 +422,49 @@ class Rule:
             tags=clean_tags,
             trial=TrialState.from_json(trial) if isinstance(trial, dict) else None,
             scope=scope,
+            applicability=applicability,
+            failure_signatures=failure_signatures,
         )
 
 
 class RulesStore:
-    """Structured rules + rendered ``harness_rules.md``."""
+    """Structured rules + rendered task-facing ``rules.md``."""
 
-    def __init__(self, config: HarnessConfig, *, journal: Journal | None = None) -> None:
+    def __init__(
+        self,
+        config: HarnessConfig,
+        *,
+        journal: Journal | None = None,
+        visible_candidate_ids: frozenset[str] | None = None,
+    ) -> None:
         self._config = config
         self._journal = journal
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._visible_candidate_ids = visible_candidate_ids
+
+    @property
+    def config(self) -> HarnessConfig:
+        """Read-only rendering configuration."""
+
+        return self._config
+
+    def restricted_to_candidates(self, candidate_ids: frozenset[str]) -> RulesStore:
+        """A read view of this store exposing only the named candidates.
+
+        Active rules stay fully visible — they are the validated baseline every
+        read is entitled to. Only *provisional* rules are narrowed, which is what
+        lets candidate validation attribute a replay's outcome: with one candidate
+        visible, the replayed agent cannot be steered by five unrelated ones and
+        have their combined effect scored as this candidate's verdict.
+
+        The store is stateless over its JSONL file, so this is a cheap second
+        instance rather than mutable state. Use it for reads; writes are unfiltered
+        and belong on the primary store.
+        """
+
+        return RulesStore(
+            self._config, journal=self._journal, visible_candidate_ids=candidate_ids
+        )
 
     # -- reads ------------------------------------------------------------------
 
@@ -384,6 +478,18 @@ class RulesStore:
                 latest[rule.id] = rule
         return sorted(latest.values(), key=lambda r: (r.created_at, r.id))
 
+    def _readable(self, rules: list[Rule]) -> list[Rule]:
+        """Apply the candidate restriction, if this is a restricted view."""
+
+        hidden = self._visible_candidate_ids
+        if hidden is None:
+            return rules
+        return [
+            rule
+            for rule in rules
+            if rule.status != "candidate" or rule.id in hidden
+        ]
+
     def active(self) -> list[Rule]:
         return [rule for rule in self.all() if rule.status == "active"]
 
@@ -391,9 +497,75 @@ class RulesStore:
         return [rule for rule in self.all() if rule.status == "candidate"]
 
     def live(self) -> list[Rule]:
-        """Rules currently in force: validated actives plus provisional candidates."""
+        """Rules available to read: validated actives plus provisional candidates."""
 
-        return [rule for rule in self.all() if rule.status in ("active", "candidate")]
+        return self._readable(
+            [rule for rule in self.all() if rule.status in ("active", "candidate")]
+        )
+
+    def register_scope_metadata(self, scope: str, description: str) -> None:
+        """Persist authoritative bounded host metadata for a scope.
+
+        Host metadata outranks an older persisted/derived description. The index
+        is refreshed only when the scope is live, avoiding empty index entries.
+        """
+
+        wanted = normalize_scope(scope)
+        clean = normalize_scope_description(description, scope=wanted)
+        with self._lock:
+            metadata = self._scope_metadata()
+            existing = metadata.get(wanted)
+            if existing == {"description": clean, "source": "host"}:
+                return
+            metadata[wanted] = {"description": clean, "source": "host"}
+            atomic_write_json(self._config.scope_metadata_file, metadata)
+            if any(rule.scope == wanted for rule in self.live()):
+                self._sync_markdown_locked()
+
+    def scope_index(self) -> list[dict[str, Any]]:
+        """Structured equivalent of the compact task-facing index."""
+
+        groups = self._grouped()
+        descriptions = self._scope_descriptions(groups)
+        return [
+            {
+                "scope": scope,
+                "path": f"rules/{scope}.md",
+                "description": descriptions[scope],
+                "active": sum(rule.status == "active" for rule in rules),
+                "provisional": sum(rule.status == "candidate" for rule in rules),
+            }
+            for scope, rules in groups.items()
+        ]
+
+    def _scope_metadata(self) -> dict[str, dict[str, str]]:
+        raw = load_json(self._config.scope_metadata_file) or {}
+        metadata: dict[str, dict[str, str]] = {}
+        for raw_scope, raw_entry in raw.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            scope = normalize_scope(str(raw_scope))
+            description = raw_entry.get("description")
+            if not isinstance(description, str):
+                continue
+            metadata[scope] = {
+                "description": normalize_scope_description(description, scope=scope),
+                "source": str(raw_entry.get("source") or "persisted"),
+            }
+        return metadata
+
+    def _scope_descriptions(
+        self, groups: Mapping[str, Sequence[Rule]]
+    ) -> dict[str, str]:
+        metadata = self._scope_metadata()
+        return {
+            scope: (
+                metadata[scope]["description"]
+                if scope in metadata
+                else normalize_scope_description(None, scope=scope)
+            )
+            for scope in groups
+        }
 
     # -- retrieval ----------------------------------------------------------------
 
@@ -420,8 +592,8 @@ class RulesStore:
     def scopes(self) -> list[str]:
         """Distinct scopes with at least one live rule, in reading order.
 
-        ``global`` first (always in force), then the ``scoped`` catch-all, then
-        any agent-created topic files alphabetically.
+        ``global`` first, then every other live scope
+        alphabetically.
         """
 
         return list(self._grouped())
@@ -449,10 +621,38 @@ class RulesStore:
         """
 
         wanted = set(statuses)
-        pool = [rule for rule in self.all() if rule.status in wanted]
+        pool = self._readable([rule for rule in self.all() if rule.status in wanted])
         query_tokens = _tokenize(query)
         scores = {rule.id: _relevance(rule, query_tokens) for rule in pool}
         return [(rule, scores[rule.id]) for rule in _rank(pool, scores)[: max(0, limit)]]
+
+    def covering_rules(
+        self,
+        rule: str,
+        *,
+        scope: str,
+        tags: Sequence[str] = (),
+        failure_signatures: Sequence[str] = (),
+    ) -> list[tuple[Rule, str]]:
+        """Live rules that deterministically cover a proposed candidate."""
+
+        wanted = normalize_scope(scope)
+        covered: list[tuple[Rule, str]] = []
+        for existing in self.live():
+            reason = _coverage_reason(
+                existing,
+                text=rule,
+                scope=wanted,
+                tags=tags,
+                failure_signatures=failure_signatures,
+            )
+            if reason is not None:
+                covered.append((existing, reason))
+        # Prefer a provisional already testing the same behavior, then the most
+        # recent active. Either suppresses another candidate.
+        covered.sort(key=lambda item: item[0].created_at, reverse=True)
+        covered.sort(key=lambda item: item[0].status != "candidate")
+        return covered
 
     # -- writes -----------------------------------------------------------------
 
@@ -465,18 +665,23 @@ class RulesStore:
         metric: str | None = None,
         tags: Sequence[str] = (),
         scope: str = GLOBAL_SCOPE,
+        applicability: RuleApplicability | None = None,
+        failure_signatures: Sequence[str] = (),
+        scope_description: str | None = None,
+        suppress_similar: bool = False,
     ) -> Rule:
-        """Record a new rule; idempotent on normalized text; capped.
+        """Record a new rule; idempotent on normalized text.
 
         With ``rule_validation`` on, the rule enters as a **candidate** (with
         its pre-trial baseline captured from the journal); otherwise it is
-        ``active`` immediately. Raises ``RulesCapError`` at the live-rule cap
-        — the agent must retire a rule first (agent-driven compaction, no
-        silent eviction).
+        ``active`` immediately. An explicitly configured positive
+        ``max_active_rules`` raises ``RulesCapError`` at its bound; zero is
+        unlimited and no rule is silently evicted.
 
         ``scope`` picks the ``rules/<scope>.md`` file the rule is written to. Any
-        label is allowed and a new one simply creates a file; the caller normally
-        passes the triggering notice's ``scope_hint``.
+        label is allowed and a new one simply creates a file. It defaults to
+        ``global``: a caller with no basis for a narrower choice is stating that
+        the rule is broadly applicable, not that it is unclassifiable.
         """
 
         max_len = self._config.sanitize_max_len
@@ -489,17 +694,34 @@ class RulesStore:
         # The baseline scans the journal; do it before taking the store lock.
         trial = self._capture_baseline(metric) if status == "candidate" else None
 
+        wanted_scope = normalize_scope(scope)
+        if applicability not in {"global", "topical", "task"}:
+            if wanted_scope == GLOBAL_SCOPE:
+                applicability = "global"
+            elif wanted_scope == SCOPED_SCOPE:
+                applicability = "task"
+            else:
+                applicability = "topical"
+        clean_tags = _clean_tags(tags)
+        clean_signatures = tuple(dict.fromkeys(str(value) for value in failure_signatures))[:16]
+
         with self._lock:
             live = self.live()
-            normalized = self._normalize(clean_rule)
             for existing in live:
-                if self._normalize(existing.rule) == normalized:
+                reason = _coverage_reason(
+                    existing,
+                    text=clean_rule,
+                    scope=wanted_scope,
+                    tags=clean_tags,
+                    failure_signatures=clean_signatures,
+                )
+                if reason == "exact_text" or (suppress_similar and reason is not None):
                     return existing
             cap = self._config.max_active_rules
             if cap > 0 and len(live) >= cap:
                 raise RulesCapError(
-                    f"live-rule cap ({cap}) reached; retire a rule first "
-                    "(harness_rule_retire)"
+                    f"live-rule cap ({cap}) reached; lifecycle validation or an "
+                    "operator must retire a rule first"
                 )
             entry = Rule(
                 id=Rule.new_id(),
@@ -509,15 +731,41 @@ class RulesStore:
                 source_notice_id=source_notice_id,
                 metric=metric,
                 status=status,
-                tags=_clean_tags(tags),
+                tags=clean_tags,
                 trial=trial,
-                scope=normalize_scope(scope),
+                scope=wanted_scope,
+                applicability=applicability,
+                failure_signatures=clean_signatures,
             )
             append_jsonl(self._config.rules_store_file, entry.to_json())
+            if scope_description:
+                metadata = self._scope_metadata()
+                metadata[wanted_scope] = {
+                    "description": normalize_scope_description(
+                        scope_description, scope=wanted_scope
+                    ),
+                    "source": "host",
+                }
+                atomic_write_json(self._config.scope_metadata_file, metadata)
             self._sync_markdown_locked()
         if self._journal is not None:
             self._journal.record({"type": "rule_add", **entry.to_json()})
         return entry
+
+    def add_with_result(
+        self, rule: str, rationale: str, **kwargs: Any
+    ) -> tuple[Rule, bool]:
+        """Atomically add and report whether this call created the record.
+
+        The outer re-entrant lock closes the gap between an existence check and
+        :meth:`add`, so concurrent repair episodes cannot both report ownership
+        of the same exact or deterministically covered candidate.
+        """
+
+        with self._lock:
+            before = {existing.id for existing in self.live()}
+            result = self.add(rule, rationale, **kwargs)
+            return result, result.id not in before
 
     def retire(
         self,
@@ -525,11 +773,16 @@ class RulesStore:
         *,
         reason: str | None = None,
         trial: TrialState | None = None,
+        validator: str | None = None,
+        evidence: Mapping[str, Any] | None = None,
     ) -> Rule:
         """Retire a live (active or candidate) rule. Raises ``KeyError`` otherwise.
 
         ``trial`` lets a validator persist its verdict-stamped bookkeeping on
         the retired record, so ``harness_rule_status`` can explain why.
+        ``validator`` and ``evidence`` are journaled alongside ``reason`` so a
+        retirement can be audited structurally rather than by parsing prose — the
+        per-case deltas that decided it are otherwise lost.
         """
 
         with self._lock:
@@ -546,6 +799,10 @@ class RulesStore:
             event: dict[str, Any] = {"type": "rule_retire", "id": rule_id}
             if reason:
                 event["reason"] = reason
+            if validator:
+                event["validator"] = validator
+            if evidence:
+                event["evidence"] = dict(evidence)
             self._journal.record(event)
         return retired
 
@@ -659,60 +916,67 @@ class RulesStore:
             groups.setdefault(rule.scope, []).append(rule)
         for bucket in groups.values():
             bucket.sort(key=lambda r: r.status != "active")  # actives first
-        ordered = [s for s in (GLOBAL_SCOPE, SCOPED_SCOPE) if s in groups]
-        ordered += sorted(set(groups) - {GLOBAL_SCOPE, SCOPED_SCOPE})
+        ordered = [GLOBAL_SCOPE] if GLOBAL_SCOPE in groups else []
+        ordered += sorted(set(groups) - {GLOBAL_SCOPE})
         return {scope: groups[scope] for scope in ordered}
 
     def render_root(self) -> str:
         """The **skill root**: the packaged instructions plus a References directory.
 
-        Deliberately carries **no rule text**. The root is the agent's stable
+        Deliberately carries **no rule text**. The root is a stable read-only
         entry point — protocol, tool list, and a generated index of the rule files
-        that exist — and rule content is pulled on demand from ``rules/*.md``. The
-        agent owns that subtree; nothing from it is force-injected.
+        that exist — and rule content can be pulled on demand from ``rules/*.md``.
         """
 
         return self._root_from(self._grouped())
 
     def _root_from(self, groups: Mapping[str, Sequence[Rule]]) -> str:
         template = self._template()
-        for marker in (REFERENCES_MARKER, RULES_MARKER):
-            at = template.find(marker)
-            if at >= 0:
-                head = template[: at + len(marker)]
-                break
-        else:  # a template without either marker: append the references section
-            head = template.rstrip() + "\n\n" + REFERENCES_MARKER
-        return "\n".join([head, "", *self._reference_lines(groups)]) + "\n"
+        at = template.find(REFERENCES_MARKER)
+        if at >= 0:
+            head = template[: at + len(REFERENCES_MARKER)]
+        else:
+            # The packaged template always carries the marker; this only guards a
+            # hand-edited one.
+            head = template.rstrip() + "\n\n## References\n\n" + REFERENCES_MARKER
+        return "\n".join(
+            [
+                head,
+                "",
+                *self._reference_lines(groups, self._scope_descriptions(groups)),
+            ]
+        ) + "\n"
 
     @staticmethod
-    def _reference_lines(groups: Mapping[str, Sequence[Rule]]) -> list[str]:
+    def _reference_lines(
+        groups: Mapping[str, Sequence[Rule]], descriptions: Mapping[str, str]
+    ) -> list[str]:
         if not groups:
-            return [
-                "_No rules recorded yet. When a notice teaches you something, record "
-                "it with `harness_rule_add`._"
-            ]
-        lines = [
-            "Read a file with `harness_rules_read` before acting. "
-            "`rules/global.md` is always in force — start there.",
-            "",
-        ]
+            # Matches the packaged template's wording, so a freshly-seeded guide
+            # and a regenerated empty one read identically.
+            return ["_No learned rules are available yet._"]
+        lines: list[str] = []
         for scope, rules in groups.items():
             active = sum(1 for r in rules if r.status == "active")
             provisional = len(rules) - active
-            counts = f"{active} active"
-            if provisional:
-                counts += f", {provisional} provisional"
-            lines.append(f"- `rules/{scope}.md` — {counts}")
+            if lines:
+                lines.append("")
+            lines.extend(
+                [
+                    f"- [`{scope}`](rules/{scope}.md)",
+                    f"  {descriptions[scope]}",
+                    f"  {active} active, {provisional} provisional",
+                ]
+            )
         return lines
 
     def render_scope(self, scope: str, *, query: str | None = None) -> str:
-        """One agent-facing rule file: the active rules of ``scope``, then candidates.
+        """One read-only rule file: active rules of ``scope``, then candidates.
 
-        Candidates always render in full under a clearly-labeled provisional
-        heading — they must be in force to be measurable, but every reader can see
-        they are unproven. Retrieval (when ``query`` is given) may narrow the
-        actives, never the candidates: filtering a trial would starve it.
+        Candidates render under a clearly labeled provisional heading so an
+        agent choosing to read the scope can distinguish them from active rules.
+        Retrieval (when ``query`` is given) may narrow the actives, never the
+        candidates.
         """
 
         wanted = normalize_scope(scope)
@@ -764,24 +1028,23 @@ class RulesStore:
     def _scope_intro(scope: str) -> str:
         if scope == GLOBAL_SCOPE:
             return (
-                "_Whole-trajectory rules. These are **always in force** — apply them "
-                "on every turn._"
+                "_Broadly reusable rules, not tied to one task, workflow, "
+                "application, tool, or domain._"
             )
         if scope == SCOPED_SCOPE:
             return (
-                "_Step-level rules learned from specific failures. If several here "
-                "turn out to share a topic, move them into a `rules/<topic>.md` of "
-                "your own and it will appear in the References._"
+                "_Specific rules for which no more meaningful stable scope could "
+                "be determined._"
             )
-        return f"_Step-level rules you grouped under `{scope}`._"
+        return f"_Rules learned in the context of `{scope}`._"
 
     def render_markdown(self, *, query: str | None = None) -> str:
         """The whole corpus in one string: the skill root plus every scope file.
 
         This is the *replay* context — what a candidate rule is validated against,
         and what a regression run replays with — so it must include candidates and
-        every scope. It is not what the agent's system prompt receives; that is
-        :meth:`render_root` alone.
+        every scope. It is not the bounded task-agent context rendered by
+        ``hook.context``.
         """
 
         groups = self._grouped()
@@ -825,8 +1088,8 @@ class RulesStore:
         for scope, rules in groups.items():
             atomic_write_text(cfg.rules_scope_file(scope), self._scope_from(scope, rules))
         # A scope whose every rule was retired keeps its file, rewritten empty, so
-        # the agent sees "no rules here" rather than stale ones. Files are only
-        # ever emptied, never unlinked: the agent may have referenced the path.
+        # readers see "no rules here" rather than stale ones. Files are only
+        # ever emptied, never unlinked because a prior context may reference one.
         if not cfg.rules_dir.is_dir():
             return
         for path in sorted(cfg.rules_dir.glob("*.md")):
@@ -837,20 +1100,33 @@ class RulesStore:
             # than churning the file on every later rule mutation.
             if _read_or_none(path) != empty:
                 atomic_write_text(path, empty)
+        if self._journal is not None:
+            self._journal.record(
+                {
+                    "type": "scope_index_regenerated",
+                    "path": "rules.md",
+                    "scopes": [
+                        {
+                            "scope": scope,
+                            "active": sum(rule.status == "active" for rule in rules),
+                            "provisional": sum(
+                                rule.status == "candidate" for rule in rules
+                            ),
+                        }
+                        for scope, rules in groups.items()
+                    ],
+                }
+            )
 
     def read_scope(self, scope: str) -> str:
-        """The on-disk text of one ``rules/<scope>.md``, rendering it if absent.
+        """Render one scope from the latest store records for task-facing reads.
 
-        The agent's read path. Falling back to a live render (rather than an
-        error) means a scope named in the References is always readable, even if
-        the file has not been written yet.
+        The persisted Markdown remains a recoverable artifact, but a long-lived
+        process must not serve a stale file after another writer updates JSONL.
         """
 
         wanted = normalize_scope(scope)
-        try:
-            return self._config.rules_scope_file(wanted).read_text(encoding="utf-8")
-        except OSError:
-            return self.render_scope(wanted)
+        return self.render_scope(wanted)
 
     @staticmethod
     @lru_cache(maxsize=1)
@@ -866,8 +1142,8 @@ class RulesStore:
         """Per-rule notice counts before/after the rule was added.
 
         Computed from the journal's ``notice`` events for the rule's metric
-        (all notices when the rule has no metric). Raw counts — the agent's
-        reflection cycle interprets them.
+        (all notices when the rule has no metric). Raw counts support operator
+        review and managed-repair decisions.
         """
 
         if self._journal is None:

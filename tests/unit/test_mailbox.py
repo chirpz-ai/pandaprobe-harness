@@ -155,8 +155,8 @@ def test_from_json_is_forgiving() -> None:
     assert empty.severity == "breach"
     assert empty.metrics == ()
 
-    legacy = DiagnosticNotice.from_json({"severity": "relative"})
-    assert legacy.severity == "trend"
+    unknown = DiagnosticNotice.from_json({"severity": "not-a-severity"})
+    assert unknown.severity == "breach"  # unknown values do not silently de-escalate
 
 
 def test_to_json_from_json_round_trips_key_fields() -> None:

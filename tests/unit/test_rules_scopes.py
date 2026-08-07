@@ -1,4 +1,4 @@
-"""The ``rules/`` subtree: scope routing, the skill root, and migration."""
+"""The ``rules/`` subtree: scope routing and the generated guide."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pandaprobe_harness.workspace.rules import (
     Rule,
     normalize_scope,
 )
+from pandaprobe_harness.workspace.scopes import normalize_scope_or_none
 
 
 def _store(tmp_path: Path, **kw: object) -> RulesStore:
@@ -28,9 +29,25 @@ def _store(tmp_path: Path, **kw: object) -> RulesStore:
 
 
 def test_empty_scope_defaults_to_global() -> None:
+    """No scope means "broadly applicable", not "unclassifiable".
+
+    ``scoped`` is a considered verdict — specific, but unnameable — so silence
+    must never resolve to it.
+    """
+
     assert normalize_scope(None) == GLOBAL_SCOPE
     assert normalize_scope("") == GLOBAL_SCOPE
     assert normalize_scope("   ") == GLOBAL_SCOPE
+
+
+def test_absent_scope_is_distinguishable_from_the_default() -> None:
+    """The repair path must tell "nobody chose" from "somebody chose global"."""
+
+    assert normalize_scope_or_none(None) is None
+    assert normalize_scope_or_none("  ") is None
+    assert normalize_scope_or_none("///") is None
+    assert normalize_scope_or_none("spotify") == "spotify"
+    assert normalize_scope_or_none(GLOBAL_SCOPE) == GLOBAL_SCOPE
 
 
 def test_scope_is_slugified_not_trusted() -> None:
@@ -48,10 +65,10 @@ def test_scope_cannot_escape_the_rules_directory() -> None:
         assert slug not in {".", ".."}
 
 
-def test_unslugifiable_scope_falls_back_to_the_catch_all() -> None:
+def test_unslugifiable_scope_falls_back_to_the_default() -> None:
     # No usable characters at all: the rule still has to land somewhere.
-    assert normalize_scope("///") == SCOPED_SCOPE
-    assert normalize_scope("!!!") == SCOPED_SCOPE
+    assert normalize_scope("///") == GLOBAL_SCOPE
+    assert normalize_scope("!!!") == GLOBAL_SCOPE
 
 
 # -- routing -------------------------------------------------------------------
@@ -86,14 +103,14 @@ def test_an_agent_created_scope_appears_in_the_references(tmp_path: Path) -> Non
     assert "1 active" in root
 
 
-def test_scopes_are_ordered_global_then_catch_all_then_topics(tmp_path: Path) -> None:
+def test_scopes_are_ordered_global_then_all_others_alphabetically(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.add("z topic rule", "x", scope="zebra")
     store.add("a topic rule", "x", scope="alpha")
-    store.add("catch-all rule", "x", scope="scoped")
+    store.add("default granular rule", "x", scope="scoped")
     store.add("global rule", "x", scope="global")
 
-    assert store.scopes() == [GLOBAL_SCOPE, SCOPED_SCOPE, "alpha", "zebra"]
+    assert store.scopes() == [GLOBAL_SCOPE, "alpha", SCOPED_SCOPE, "zebra"]
 
 
 def test_a_scope_whose_rules_all_retired_is_emptied_not_left_stale(
@@ -126,29 +143,33 @@ def test_the_skill_root_never_carries_rule_text(tmp_path: Path) -> None:
         assert f"secret {scope} body" not in root
 
 
-# -- migration -----------------------------------------------------------------
+# -- forgiving reads -----------------------------------------------------------
 
 
-def test_a_v1_record_without_a_scope_migrates_by_its_tags(tmp_path: Path) -> None:
-    """v1 had no `scope` but did treat an *untagged* rule as global. Preserve that
-    reading so an existing workspace keeps its meaning."""
+def test_a_record_without_a_scope_reads_as_the_default(tmp_path: Path) -> None:
+    """A missing field takes the default, like any other unspecified field.
+
+    Forgiving readers keep a hand-written or older store loadable; they do not
+    reconstruct a scope nobody recorded.
+    """
 
     store = _store(tmp_path)
     path = store._config.rules_store_file  # noqa: SLF001
     path.parent.mkdir(parents=True, exist_ok=True)
-    legacy = [
+    records = [
         {"id": "r-untagged", "created_at": "2026-01-01T00:00:00+00:00",
-         "rule": "old global", "rationale": "x", "status": "active", "tags": []},
+         "rule": "no scope recorded", "rationale": "x", "status": "active", "tags": []},
         {"id": "r-tagged", "created_at": "2026-01-02T00:00:00+00:00",
-         "rule": "old scoped", "rationale": "x", "status": "active",
+         "rule": "also no scope", "rationale": "x", "status": "active",
          "tags": ["breach:tool_correctness"]},
     ]
-    path.write_text("\n".join(json.dumps(r) for r in legacy) + "\n", encoding="utf-8")
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
     by_id = {rule.id: rule for rule in store.all()}
 
+    # Tags describe retrieval, not applicability, so they do not pick the scope.
     assert by_id["r-untagged"].scope == GLOBAL_SCOPE
-    assert by_id["r-tagged"].scope == SCOPED_SCOPE
+    assert by_id["r-tagged"].scope == GLOBAL_SCOPE
 
 
 def test_scope_round_trips_through_json() -> None:

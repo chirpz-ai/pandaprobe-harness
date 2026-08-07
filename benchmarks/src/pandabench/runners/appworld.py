@@ -16,8 +16,9 @@ import time
 from typing import Any
 
 import httpx
+from pandaprobe_harness import RuleScopeHint
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.harness_wiring import AgentWiring, HarnessWiring, ReplayRuleWiring
 from ..agents.loop import run_agent_loop
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
@@ -98,9 +99,17 @@ class AppWorldRunner(SingleTaskRunner):
         # verifier that re-acquired it would deadlock, and calling /evaluate
         # mid-task would cost a full test run every turn for a partial answer.
         self._outcomes: dict[str, float] = {}
+        self._scope_hints: dict[str, tuple[RuleScopeHint, ...]] = {}
+        self._task_summaries: dict[str, str] = {}
 
     def list_tasks(self, dataset: str) -> list[str]:
         return self._env.list_task_ids(dataset or "dev")
+
+    def rule_scope_hints(self, task_id: str) -> tuple[RuleScopeHint, ...]:
+        return self._scope_hints.get(task_id, ())
+
+    def task_summary(self, task_id: str) -> str:
+        return self._task_summaries.get(task_id, "")
 
     def outcome_for(self, task_id: str, session_id: str) -> float | None:
         """AppWorld's verdict for ``session_id`` as a pass ratio, if one exists.
@@ -122,15 +131,19 @@ class AppWorldRunner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
-        preamble: str | None = None,
+        wiring: AgentWiring | None,
     ) -> TaskOutcome:
         # Serialize the whole lifecycle against the single-world server so a
         # background replay can't interleave with a live trial on the same world.
         async with self._server_lock:
+            # Past the lock, this run is no longer queueing. A validation replay
+            # tells the harness so its execution budget starts here rather than
+            # having been consumed by the wait.
+            if isinstance(wiring, ReplayRuleWiring):
+                wiring.mark_environment_ready()
             return await self._run_once_locked(
                 task_id=task_id, session_id=session_id, model=model, client=client,
-                max_turns=max_turns, wiring=wiring, preamble=preamble,
+                max_turns=max_turns, wiring=wiring,
             )
 
     async def _run_once_locked(
@@ -141,8 +154,7 @@ class AppWorldRunner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
-        preamble: str | None = None,
+        wiring: AgentWiring | None,
     ) -> TaskOutcome:
         start = time.monotonic()
         experiment_name = _experiment_name(self._experiment, session_id)
@@ -151,13 +163,20 @@ class AppWorldRunner(SingleTaskRunner):
                 self._env.initialize, task_id, experiment_name=experiment_name
             )
             api_docs = await asyncio.to_thread(self._env.api_docs)
+            hints = _app_scope_hints(info.instruction, api_docs)
+            self._scope_hints[task_id] = hints
+            self._task_summaries[task_id] = info.instruction
+            if isinstance(wiring, HarnessWiring):
+                wiring.set_rule_scope_hints(hints)
+                # The instruction is the only place the task's actual subject
+                # appears; the task id is opaque. The harness sanitizes and
+                # bounds it before managed repair ever sees it.
+                wiring.set_task_summary(info.instruction)
         except Exception as exc:  # noqa: BLE001 - env failure is a trial error, not a crash
             logger.warning("appworld init failed for %s: %s", task_id, exc)
             return _errored(str(exc), time.monotonic() - start)
 
         system_prompt = APPWORLD_SYSTEM.format(api_docs=api_docs)
-        if preamble is not None:  # replay: inject the harness rules string directly
-            system_prompt = preamble + "\n\n" + system_prompt
 
         user_msg = _task_message(info)
 
@@ -270,6 +289,39 @@ def _experiment_name(base: str, session_id: str) -> str:
     safe_base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-._") or "pandabench"
     digest = hashlib.sha256(session_id.encode()).hexdigest()[:16]
     return f"{safe_base[:40]}-{digest}"
+
+
+_APP_SCOPE_DESCRIPTIONS = {
+    "spotify": "Spotify search, playlist, library, and playback workflows.",
+    "venmo": "Venmo authentication, payment, reminder, and transaction workflows.",
+    "gmail": "Gmail message, thread, label, and mailbox workflows.",
+    "simple_note": "Simple Note creation, search, and organization workflows.",
+}
+
+
+def _app_scope_hints(instruction: str, api_docs: str) -> tuple[RuleScopeHint, ...]:
+    """Match safe AppWorld application metadata without a classifier call."""
+
+    available = re.findall(r"(?m)^-\s+([a-zA-Z][a-zA-Z0-9_]*)\s*:", api_docs)
+    haystack = instruction.casefold()
+    matched = [
+        app.casefold()
+        for app in available
+        if app.casefold() not in {"api_docs", "supervisor"}
+        and re.search(rf"\b{re.escape(app.casefold().replace('_', ' '))}\b", haystack)
+    ]
+    matched.sort(key=lambda app: haystack.find(app.replace("_", " ")))
+    return tuple(
+        RuleScopeHint(
+            key=app,
+            description=_APP_SCOPE_DESCRIPTIONS.get(
+                app, f"{app.replace('_', ' ').title()} application workflows."
+            ),
+            applicability="topical",
+            recommended=(index == 0),
+        )
+        for index, app in enumerate(dict.fromkeys(matched))
+    )
 
 
 def _is_http_5xx(exc: Exception) -> bool:

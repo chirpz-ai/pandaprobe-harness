@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from pandaprobe_harness import HarnessConfig, HarnessToolset, Journal, Mailbox, RulesStore
+from pandaprobe_harness import HarnessConfig, Journal, Mailbox, RulesStore, TaskToolset
 from pandaprobe_harness.hook.context import compose_system_preamble
 from pandaprobe_harness.workspace.rules import _tokenize
-from tests.fakes.fake_cli_client import FakeCliClient
 
 
 def _store(tmp_path: Path, *, topk: int = 2, retrieval: bool = True) -> RulesStore:
@@ -111,8 +110,7 @@ def test_render_scope_notes_omitted_rules(tmp_path: Path) -> None:
 
 
 def test_render_markdown_covers_every_scope(tmp_path: Path) -> None:
-    """The full-corpus render is the *replay* context, so it must reach across
-    every scope — a rule is only validated fairly if it was actually in force."""
+    """The explicit full-corpus operator render still reaches every scope."""
 
     store = _store(tmp_path)
     store.add("global lesson", "x", scope="global")
@@ -150,10 +148,7 @@ def test_search_filters_by_status(tmp_path: Path) -> None:
     assert [rule.id for rule, _ in retired_only] == [gone.id]
 
 
-def test_preamble_never_carries_rule_text_however_it_is_hinted(tmp_path: Path) -> None:
-    """v1 selected rules with a task hint and inlined them. v2 does not inline any
-    rule text at all, so the hint has nothing to select — the agent conditions its
-    own retrieval through `harness_rules_search` / `harness_rules_read`."""
+def test_preamble_contains_no_rule_text_or_expanded_index(tmp_path: Path) -> None:
 
     config = HarnessConfig(
         harness_root=tmp_path / "harness",
@@ -168,13 +163,13 @@ def test_preamble_never_carries_rule_text_however_it_is_hinted(tmp_path: Path) -
     rules.add("verify payment status first", "x", tags=["payment"], scope="scoped")
     rules.add("email retries must back off", "x", tags=["email"], scope="scoped")
 
-    for preamble in (
-        compose_system_preamble(rules, mailbox),
-        compose_system_preamble(rules, mailbox),
-    ):
-        assert "verify payment status first" not in preamble
-        assert "email retries must back off" not in preamble
-        assert "rules/scoped.md" in preamble  # named, so it is one call away
+    preamble = compose_system_preamble(
+        rules, mailbox, "s-1", task_hint="payment charge"
+    )
+    assert "verify payment status first" not in preamble
+    assert "email retries must back off" not in preamble
+    assert "rules/scoped.md" not in preamble
+    assert "harness_rules_list" in preamble
 
 
 async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
@@ -187,11 +182,8 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
     rules = RulesStore(config, journal=journal)
     mailbox = Mailbox(config)
     mailbox.provision()
-    toolset = HarnessToolset(
+    toolset = TaskToolset(
         config=config,
-        cli=FakeCliClient(),
-        mailbox=mailbox,
-        journal=journal,
         rules=rules,
     )
     payment = rules.add("verify payments", "x", tags=["payment"])
@@ -204,15 +196,23 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
     assert found["rules"][0]["score"] == pytest.approx(2.0)
 
     everything = await toolset.call("harness_rules_list", {})
-    assert {r["id"] for r in everything["rules"]} == {payment.id, retired.id}
-
-    retired_only = await toolset.call("harness_rules_list", {"status": "retired"})
-    assert [r["id"] for r in retired_only["rules"]] == [retired.id]
+    assert everything["path"] == "rules.md"
+    assert everything["scopes"] == [
+        {
+            "scope": "global",
+            "path": "rules/global.md",
+            "description": "Broadly reusable execution and verification rules.",
+            "active": 1,
+            "provisional": 0,
+        }
+    ]
+    assert payment.rule not in everything["content"]
+    assert retired.rule not in everything["content"]
 
     searched_retired = await toolset.call(
         "harness_rules_search", {"query": "email", "status": "retired"}
     )
-    assert [r["id"] for r in searched_retired["rules"]] == [retired.id]
+    assert retired.id not in {r["id"] for r in searched_retired["rules"]}
 
 
 def test_notice_signature_tokens_still_rank_the_matching_rule(tmp_path: Path) -> None:
@@ -235,9 +235,7 @@ def test_notice_signature_tokens_still_rank_the_matching_rule(tmp_path: Path) ->
 
 
 def test_candidates_render_even_when_a_query_filters_actives(tmp_path: Path) -> None:
-    """Retrieval must never starve a trial: candidates render in full under any
-    query, outside the top-k budget, because they have to be in force to be
-    measurable."""
+    """A query narrows the actives but never hides a provisional candidate."""
 
     from pandaprobe_harness.workspace.rules import PROVISIONAL_HEADING
 

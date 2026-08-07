@@ -2,9 +2,8 @@
 
 Instrumented via the OpenAI Agents SDK's first-class ``TracingProcessor``
 interface: one ``Runner.run`` trace is one agent turn, and the hook fires on
-trace end. Session identity comes from the SDK session ``ContextVar``.
-Diagnostics reach the agent through the workspace mailbox + harness toolset
-(register them as function tools via ``as_openai_function_tools``).
+trace end. Session identity comes from the SDK session ``ContextVar``. Optional
+read-only rule tools can be registered with ``as_openai_function_tools``.
 """
 
 from __future__ import annotations

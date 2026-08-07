@@ -43,7 +43,7 @@ def test_scrubbed_env_removes_credentials_for_plain_binaries() -> None:
     assert env["HOME"] == "/home/agent"
 
 
-@pytest.mark.parametrize("binary", ["pandaprobe", "pandaprobe-harness-agent"])
+@pytest.mark.parametrize("binary", ["pandaprobe"])
 def test_scrubbed_env_restores_auth_vars_only_for_platform_binaries(binary: str) -> None:
     env = ShellPolicy().scrubbed_env(binary, BASE_ENV)
     assert env["PANDAPROBE_API_KEY"] == "sk-panda"
@@ -71,8 +71,8 @@ def test_allowed_diagnostic_command_passes() -> None:
     ShellPolicy().validate(["pandaprobe", "evals", "scores", "get", "x"])  # must not raise
 
 
-def test_harness_agent_binary_is_allow_listed_by_default() -> None:
-    assert "pandaprobe-harness-agent" in ShellPolicy().allowed_binaries
+def test_removed_administrative_companion_is_not_allow_listed() -> None:
+    assert "pandaprobe-harness-agent" not in ShellPolicy().allowed_binaries
 
 
 # -- integration: real subprocess sees the scoped environment --------------------

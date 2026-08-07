@@ -25,6 +25,17 @@ class HarnessKnobs:
     rule_regress_margin: float = 0.05
     replay_timeout_s: float = 180.0
     replay_max_turns: int = 15
+    # AppWorld serializes every task lifecycle behind one world lock, so a
+    # background replay can queue behind a live trial for minutes. This is the
+    # grace to reach the starting line; replay_timeout_s then bounds the run
+    # itself. Without the split, queueing consumes the run budget and the replay
+    # is scored as inconclusive evidence about a rule that never executed.
+    replay_env_wait_timeout_s: float = 900.0
+    # Wall-clock bound on replay work in one validation round. Past it, remaining
+    # candidates get the cheap forward-trial verdict instead of waiting for a
+    # replay slot — candidates accrue faster than sequential replays retire them,
+    # and a candidate with no verdict at the learning boundary is a wasted trial.
+    validation_round_budget_s: float = 600.0
     regression_sample: int = 0
     # Background eval poll budget (poll_interval_s * poll_max_attempts). Benchmark
     # trace evals are LLM-judged and can take 6-12 min, so this
@@ -33,17 +44,27 @@ class HarnessKnobs:
     poll_max_attempts: int = 200
     # Settle barrier: after the learning phase (and before archiving) wait for
     # outstanding turn evals + candidate-rule validation to drain, so the eval
-    # phase starts with a promoted, settled ruleset. Bounded; breaks early.
+    # phase snapshots a settled boundary ruleset. Bounded; breaks early.
     settle_timeout_s: float = 1080.0
     settle_poll_s: float = 10.0
-    gate_window: int = 5
+    gate_window: int = 10
     enable_tier3: bool = False
-    # The per-turn self-heal barrier's budget. Must exceed the time for one turn's
+    # The per-turn evaluation + managed-repair barrier's budget. Must exceed one turn's
     # trace evals to land (poll_interval_s * poll_max_attempts bounds that), or the
     # barrier gives up before the diagnosis arrives and healing goes back to being
     # after-the-fact.
     barrier_timeout_s: float = 1080.0
     outcome_threshold: float = 0.9
+    # Managed repair is package-owned. ``None`` means the benchmark explicitly
+    # reuses the resolved task-model identifier; a value selects a dedicated
+    # LiteLLM model through the same PandaProbe wrapper path.
+    repair_model: str | None = None
+    repair_timeout_s: float = 60.0
+    repair_max_turns: int = 6
+    repair_max_tokens: int = 4096
+    repair_temperature: float | None = None
+    repair_reasoning_effort: str | None = None
+    trace_repair_agent: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,15 +135,40 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
         rule_regress_margin=float(harness_raw.get("rule_regress_margin", 0.05)),
         replay_timeout_s=float(harness_raw.get("replay_timeout_s", 180.0)),
         replay_max_turns=int(harness_raw.get("replay_max_turns", 15)),
+        replay_env_wait_timeout_s=float(
+            harness_raw.get("replay_env_wait_timeout_s", 900.0)
+        ),
+        validation_round_budget_s=float(
+            harness_raw.get("validation_round_budget_s", 600.0)
+        ),
         regression_sample=int(harness_raw.get("regression_sample", 0)),
         poll_interval_s=float(harness_raw.get("poll_interval_s", 5.0)),
         poll_max_attempts=int(harness_raw.get("poll_max_attempts", 200)),
         settle_timeout_s=float(harness_raw.get("settle_timeout_s", 1080.0)),
-        gate_window=int(harness_raw.get("gate_window", 5)),
+        gate_window=int(harness_raw.get("gate_window", 10)),
         enable_tier3=bool(harness_raw.get("enable_tier3", False)),
         barrier_timeout_s=float(harness_raw.get("barrier_timeout_s", 1080.0)),
         outcome_threshold=float(harness_raw.get("outcome_threshold", 0.9)),
         settle_poll_s=float(harness_raw.get("settle_poll_s", 10.0)),
+        repair_model=(
+            str(harness_raw["repair_model"])
+            if harness_raw.get("repair_model") is not None
+            else None
+        ),
+        repair_timeout_s=float(harness_raw.get("repair_timeout_s", 60.0)),
+        repair_max_turns=int(harness_raw.get("repair_max_turns", 6)),
+        repair_max_tokens=int(harness_raw.get("repair_max_tokens", 4096)),
+        repair_temperature=(
+            float(harness_raw["repair_temperature"])
+            if harness_raw.get("repair_temperature") is not None
+            else None
+        ),
+        repair_reasoning_effort=(
+            str(harness_raw["repair_reasoning_effort"])
+            if harness_raw.get("repair_reasoning_effort") is not None
+            else None
+        ),
+        trace_repair_agent=bool(harness_raw.get("trace_repair_agent", True)),
     )
 
     benchmarks: dict[str, BenchmarkConfig] = {}

@@ -34,12 +34,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from ..agent_tools.spec import ToolDispatcher
 from ..config import HarnessConfig
 from ._io import atomic_write_json, load_json
 from .journal import Journal
 from .sanitize import sanitize_text
 
-__all__ = ["CaseKind", "EvalCase", "EvalSet", "ReplayFn"]
+__all__ = ["CaseKind", "EvalCase", "EvalSet", "ReplayContext", "ReplayFn"]
 
 logger = logging.getLogger("pandaprobe_harness.workspace")
 
@@ -134,11 +135,63 @@ class EvalCase:
         )
 
 
-#: The replay seam: given a case and the system-context string to run under,
-#: re-run the agent on the case's input and return the NEW session id the run
-#: produced (the harness then scores that session via the evaluator). Lives
-#: here so ``validation/`` can import it without a cycle.
-ReplayFn = Callable[[EvalCase, str], Awaitable[str]]
+class ReplayContext(str):
+    """Capability-only replay preamble plus on-demand read tools.
+
+    This remains a ``str`` subclass so existing replay callbacks stay callable,
+    but the string never contains rule bodies or an expanded index. Updated hosts
+    can attach ``task_tools`` and let the replayed task agent discover guidance
+    through the same read-only boundary as a live task turn.
+
+    ``candidate_rule_id`` names the rule under evaluation, so a host can label
+    telemetry and the validator can check the candidate was actually read.
+    """
+
+    task_tools: ToolDispatcher
+    candidate_rule_id: str | None
+    #: Set once the host signals that real work began. A plain flag rather than an
+    #: ``asyncio.Event``: a replay may signal from a worker thread (a blocking
+    #: environment driven via ``to_thread``), where setting an Event bound to the
+    #: validator's loop is not safe. The validator polls it instead.
+    _execution_started: bool
+
+    def __new__(
+        cls,
+        system_context: str,
+        *,
+        task_tools: ToolDispatcher,
+        candidate_rule_id: str | None = None,
+    ) -> ReplayContext:
+        value = str.__new__(cls, system_context)
+        value.task_tools = task_tools
+        value.candidate_rule_id = candidate_rule_id
+        value._execution_started = False
+        return value
+
+    def mark_execution_started(self) -> None:
+        """Signal that the replay has stopped waiting and is now running.
+
+        Optional, and only meaningful where a replay must first acquire a shared
+        resource — one environment server, one container, one device. Without it,
+        time spent queueing behind a live task counts against the replay's
+        execution budget, so a replay can "time out" having executed nothing and
+        be recorded as inconclusive evidence. Calling this restarts the execution
+        budget at the moment real work begins. Idempotent, and safe to call from
+        a worker thread.
+        """
+
+        self._execution_started = True
+
+    @property
+    def execution_started(self) -> bool:
+        """Whether the host has signalled that execution began."""
+
+        return self._execution_started
+
+
+#: Re-run an eval case with a capability-only context and return the NEW
+#: scoreable session id. The callback may attach ``context.task_tools``.
+ReplayFn = Callable[[EvalCase, ReplayContext], Awaitable[str]]
 
 
 class EvalSet:

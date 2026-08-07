@@ -133,17 +133,17 @@ fails on others, and quality tends to drift over long horizons. Peak-performance
 as $\passone$ hide this variance, whereas the stricter reliability metric $\passk$, the
 fraction of tasks solved on \emph{all} $k$ independent trials, exposes it. We present
 \Harness, an open-source runtime envelope developed and maintained by the PandaProbe research lab
-that wraps an arbitrary LLM agent loop and, with no human in the loop, (i) \emph{detects} quality
-degradations from PandaProbe's trace-level evaluation layer, (ii) posts structured diagnostic
-notices to an inspectable workspace that the agent \emph{pulls} on its own initiative, (iii) lets
-the agent author corrective operating \emph{rules} into a rule tree it owns, and (iv) admits each
-rule only after an empirical \emph{evidence gate}: replay of the captured failure or a forward
+that wraps an arbitrary developer-owned LLM agent loop and, with no human in the loop,
+(i) \emph{detects} quality degradations from PandaProbe's trace-level evaluation layer,
+(ii) posts structured diagnostic notices to an inspectable workspace, (iii) assigns each notice
+to a separate package-owned managed repair agent that authors corrective operating \emph{rules},
+and (iv) admits each rule only after an empirical \emph{evidence gate}: replay of the captured failure or a forward
 trial over subsequent live sessions, with a regression guard for past wins. Detection is
 deliberately structured, because a gate is only as good as the signal that invokes it. \Harness
 scores every \emph{trace} of a session with cheap always-on metrics and judges the
 \emph{trajectory} they trace out, so an unfinished task is not mistaken for a failing one; it
 escalates to costly step-level diagnosis only once a \emph{trajectory gate} reports a stall or a
-regression; a per-turn barrier makes each admitted rule take effect \emph{within} the session that
+regression; a per-turn barrier makes each proposed rule visible \emph{within} the session that
 motivated it; and an optional outcome verifier lets the gate decide on ground truth rather than a
 proxy. We formalize the loop as an evidence-gated operator on the agent's policy-inducing context
 and cast rule validation as paired empirical improvement testing with a multi-metric
@@ -175,16 +175,16 @@ matched to it.
 \Harness closes the loop. It wraps an arbitrary agent as a non-blocking runtime envelope and
 runs four stages across episodes: \textbf{Detect}, \textbf{Notice}, \textbf{Heal}, and
 \textbf{Validate} (Figure~\ref{fig:overview}). PandaProbe scores completed sessions. Diagnostic
-notices are persisted in a filesystem workspace that the agent pulls from; the Harness does not
-write evaluator content into the transcript. The agent authors a corrective rule, but that rule
-enters as a provisional candidate and becomes active only after replay or forward-trial evidence.
-Validated rules are retrieved into later prompts, while a replayable eval-set protects previous
-wins against regression.
+notices are persisted in a filesystem workspace consumed by a package-owned repair agent; the
+developer's task agent never receives diagnostic or administrative capabilities. Managed repair
+authors a corrective rule, but that rule enters as a provisional candidate and becomes active only
+after replay or forward-trial evidence. Bounded active and provisional guidance is delivered
+read-only to later task turns, while a replayable eval-set protects previous wins against regression.
 
 PandaProbe Harness is a Python package developed and maintained by PandaProbe, a research lab at
-Chirpz AI building open infrastructure for reliable agent systems. The core has zero runtime
-dependencies and reaches the PandaProbe platform only through the public
-\texttt{pandaprobe} CLI. Project resources are available at:
+Chirpz AI building open infrastructure for reliable agent systems. Task evaluation reaches the
+PandaProbe platform through its public CLI; managed repair model calls use the PandaProbe SDK's
+official LiteLLM wrapper and tracing integration. Project resources are available at:
 \begin{itemize}[leftmargin=*,itemsep=0pt,topsep=2pt]
 \item \textbf{GitHub repository:}\\[-1pt]
   \href{https://github.com/chirpz-ai/pandaprobe-harness}{\nolinkurl{https://github.com/chirpz-ai/}}\\[-1pt]
@@ -205,8 +205,8 @@ proportions, and a corpus-level regression guard (\S\ref{sec:validate}--\S\ref{s
 using $\passone$, $\passk$, metric--failure calibration, rule-promotion checkpoints, paired
 statistics, and explicit overhead accounting across three public benchmarks.
 \item \textbf{An open implementation surface.} The released package provides a small facade,
-six framework adapters, 14 diagnostic tools, offline examples, operator CLIs, and a reproducible
-benchmark project for community extension.
+six framework adapters, four read-only task tools, a restricted managed-repair tool surface,
+offline examples, operator CLIs, and a reproducible benchmark project for community extension.
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -268,8 +268,8 @@ $\ggain,\gdrop$ & gain / drop margins ($0.02$, $0.15$) \\
 $\tau_j$ & absolute threshold, tiers $0,2$ (default $0.5$) \\
 $\outcome$ & optional outcome-verifier score (tier $0$) \\
 $\Rset$ & active $\cup$ candidate rule set, by scope \\
-$c(\Rset)$ & policy-inducing context: protocol $+$ index \\
-$\idx$ & rule-\emph{index} operator (the References) \\
+$c(\Rset)$ & bounded active/candidate guidance for the task agent \\
+$\idx$ & read-only rule-reference index \\
 $\Heal$ & self-heal operator \\
 $\Breach_t$ & conditions observed at turn $t$ \\
 $\dpromote,\dregress$ & margins (default $0.05$) \\
@@ -284,13 +284,13 @@ $p_0,\hat p$ & baseline/trial flagged-session rates \\
 \caption{\textbf{The PandaProbe Harness self-heal loop.} After each \emph{turn}, PandaProbe scores
 the turn's new traces on the always-on tier-1 metrics and the trajectory gate $\Gate$ judges the
 shape of the series; a stall or regression escalates to tier-2 step-level diagnosis on the latest
-trace (\textbf{Detect}). The finding becomes a notice in the workspace (\textbf{Notice}); the agent
-pulls it, inspects the flagged trace, reads the relevant rule file, and writes a rule into a scope
-it owns (\textbf{Heal}); the candidate is promoted only after replay or a forward trial and is
-retired if it regresses (\textbf{Validate}). A per-turn barrier closes the cycle before the next
-turn, which is also what gives $\Gate$ a series to judge. The dashed line is the pull-model
-boundary: the workspace is not injected into the conversation, and the system context carries only
-the protocol and an \emph{index} of the rule files.}
+trace (\textbf{Detect}). The finding becomes a notice in the workspace (\textbf{Notice}); a
+separate package-owned repair agent claims it, inspects only assigned evidence, searches existing
+rules, and may write a candidate (\textbf{Heal}). The candidate is promoted only after replay or a
+forward trial and is retired if it regresses (\textbf{Validate}). A per-turn barrier waits for
+evaluation and bounded repair before the next task turn. The capability boundary leaves the task
+agent with bounded guidance and four optional read-only rule tools, never mailbox or rule-write
+access.}
 \label{fig:overview}
 \end{figure}
 
@@ -302,8 +302,8 @@ sequence of \emph{traces} $s=(x_1,\ldots,x_T)$, one per agent turn, and \Harness
 on that decomposition. PandaProbe's evaluation layer implements a trace-level evaluator $\evalfn$
 that scores an individual trace on a requested metric set, returning values in $[0,1]$ with higher
 better, or \emph{pending} ($\varnothing$) when the service is transiently unavailable. The Harness
-reaches PandaProbe through a CLI/JSON seam, keeping the core dependency-free and easy to exercise
-against a stand-in. Failures degrade to pending scores and never raise into the host loop.
+reaches PandaProbe evaluation through a CLI/JSON seam that is easy to exercise against a stand-in.
+Failures degrade to pending scores and never raise into the host loop.
 
 \paragraph{Why not a single session score.}
 The natural design scores each completed session with one or two aggregate quality metrics and
@@ -402,11 +402,13 @@ with metrics actually run, which is what makes always-on trajectory monitoring a
 Detection is worthless if the correction arrives after the task is over. \Harness therefore exposes
 a per-turn \emph{barrier}: \texttt{settle(session\_id)}, also reachable as a \texttt{settle=True}
 flag on the turn scope, which waits until the turn's evaluation has resolved, its
-report has been handled, any case captured, and any notice posted, so the \emph{next} turn observes
-the rule set and mailbox this turn produced. It runs on its own budget
+report has been handled, any case captured, any notice posted, and one bounded managed-repair
+attempt has completed or timed out. The \emph{next} turn therefore observes any candidate this
+turn produced. It runs on its own budget
 (\texttt{barrier\_timeout\_s}, default 180\,s), separate from the best-effort drain joins used
-elsewhere; on expiry the work continues detached and the turn is flagged as timed out, so a slow
-evaluator degrades \emph{latency}, never correctness.
+elsewhere. Evaluation may continue detached on barrier expiry; a timed-out repair is cancelled,
+journaled, and leaves its notice recoverable. Neither failure path fails the developer's task.
+Replay validation remains detached because the task may hold a non-reentrant environment lock.
 
 The barrier is also a precondition for the gate to function at all. Score history is keyed per
 session, so a host that synchronizes once per \emph{task} contributes one sample per series, the
@@ -442,7 +444,7 @@ $97.5\%$ of sessions where the continuous score separates near-misses from genui
 therefore wire the pass fraction, not the flag.
 % source: benchmarks/src/pandabench/runners/appworld.py outcome_for
 
-\subsection{The agent-owned rule workspace}
+\subsection{Read-only guidance from a managed workspace}
 \label{sec:retrieval}
 
 Learned rules must reach the agent somehow, and inlining them into the system prompt does not
@@ -452,31 +454,30 @@ surface, the agent reoriented toward operating the Harness rather than doing the
 the rules it authored concerned its own diagnostic protocol rather than the work. Growth in what the
 agent has learned should not become growth in what it must read every turn.
 
-\Harness therefore separates the \emph{index} of what has been learned from the \emph{content}:
+\Harness therefore selects bounded live guidance directly for each task session:
 \begin{equation}
-  c(\Rset)=c_0\oplus\idx(\Rset),
+  c(\Rset,s,q)=c_0\oplus\operatorname{topk}(\Rset,s,q),
   \label{eq:context}
-  % source: hook/context.py compose_system_preamble (skill root + banner; no rule bodies)
+  % source: hook/context.py compose_system_preamble
 \end{equation}
-where $c_0$ is a fixed root document (the standing protocol and tool table) and $\idx(\Rset)$ is a
-generated directory of the rule \emph{files} that exist with their sizes, plus a compact banner when
-notices are pending. Equation~\eqref{eq:context} contains \emph{no rule text}. Bodies enter context
-only when the agent reads them, via a read-by-scope or search call it makes on its own initiative.
-Hence $|c(\Rset)|$ grows with the number of rule \emph{files}, not rules, and the context cost of
-adaptation is bounded independently of how much has been learned.
+where $c_0$ explains only active/candidate lifecycle labels and read-only inspection, $s$ is task
+session identity, and $q$ is an optional task hint. Current-session candidates are prioritized so a
+a rule written after turn $t$ is discoverable on turn $t{+}1$; retired rules are excluded,
+duplicates are removed, and list/search results remain bounded. The generated References index and
+four read-only tools preserve strictly on-demand access without injecting rule bodies. No mailbox
+banner or repair instruction enters task context.
 
 \paragraph{Scopes.}
 The rule set is partitioned by a free-form \emph{scope} that is also the file a rule lives in:
-\texttt{global} for whole-trajectory lessons that always apply, \texttt{scoped} as the step-level
-default, and any topic file the agent creates. When several step-level rules share a topic the agent
-may re-file them under a topic of its own naming and retire the originals; the new file appears in
-$\idx(\Rset)$ automatically. Each notice proposes a scope (\texttt{global} for a trajectory finding,
-\texttt{scoped} for a step-level one) as a \emph{default} the agent may override. Scope is explicit
-rather than inferred, which corrects an earlier design that derived it from whether a rule happened
-to carry retrieval tags and so silently made any rule authored outside a notice a permanent global.
+\texttt{scoped} is the default for granular guidance, \texttt{global} is an explicit choice for
+genuinely universal guidance, and managed repair may select any safe task-relevant name. Notices
+default to \texttt{scoped}; a precise host hint may refine that name, while evaluation tier alone
+never implies global applicability. Scope is explicit rather than inferred, which corrects an
+earlier design that derived it from whether a rule happened to carry retrieval tags and so silently
+made any rule authored outside a notice a permanent global.
 
 \paragraph{Relevance ranking.}
-Ranking moved to where the agent asks for it. With $Q$ the case-folded query token set, $T_r$ the
+Ranking supports both bounded context selection and on-demand read-only search. With $Q$ the case-folded query token set, $T_r$ the
 rule-tag tokens and $X_r$ the tokens of rule text, rationale, and metric,
 \begin{equation}
  \mathrm{score}(r,Q)=\frac{2|Q\cap T_r|+|Q\cap(X_r\setminus T_r)|}{\max(1,|Q|)},
@@ -484,9 +485,8 @@ rule-tag tokens and $X_r$ the tokens of rule text, rationale, and metric,
  % source: workspace/rules.py::_relevance
 \end{equation}
 orders search results and narrows the \emph{active} rules rendered inside one scope file when a
-query is supplied ($k{=}8$, ties by score then recency then identifier). Candidates are exempt and
-always render in full, since a candidate under trial must be in force to be measurable. This score
-no longer selects what enters the prompt, because nothing does.
+query is supplied ($k{=}8$, ties by score then recency then identifier). Current-session candidates
+are considered before this ranking and the final context remains bounded.
 
 \subsection{The self-heal operator}
 \label{sec:healop}
@@ -497,20 +497,20 @@ The loop maps the rule set to its next state:
  =\mathrm{gate}\bigl(\Rset_t,\mathrm{propose}(\Rset_t,\Breach_t)\bigr).
  \label{eq:heal}
 \end{equation}
-The agent executes \emph{propose}: after pulling a notice it writes a candidate with rationale,
-target metric, tags, and a \emph{scope} (defaulting to the one the notice proposed). Deterministic
-Harness code executes \emph{gate}. Live rules (active plus candidate) are deduplicated by normalized
-text and capped at 50, at which point an addition fails with a message telling the agent to retire
-something first, so compaction is agent-driven rather than a silent eviction. Candidates render in
-their scope file under an explicitly provisional heading: a rule must be in force to be measurable,
-but every reader can see it is unproven, and the protocol tells the agent to prefer a validated rule
-on conflict.
+The package-owned repair agent executes \emph{propose}: it atomically claims one notice, reads only
+its assigned notice and trace evidence, searches existing rules, and either writes a candidate with
+rationale, target metric, tags, and scope or records a duplicate/no-proposal resolution.
+Deterministic Harness code executes \emph{gate}. Live rules (active plus candidate) are deduplicated
+by normalized text and capped at 50, at which point an addition fails rather than silently evicting
+guidance. Candidates are immediately readable but explicitly provisional; only the validation
+engine can promote or retire them on evidence. The repair agent never receives domain tools or a
+promotion capability.
 
 \begin{algorithm}[t]
 \caption{PandaProbe Harness self-heal loop}
 \label{alg:heal}
 \begin{algorithmic}[1]
-\STATE compose $c(\Rset)$ \hfill{\footnotesize\itshape protocol $+$ index; no rule text}
+\STATE compose bounded read-only $c(\Rset,s,q)$ for the task agent
 \STATE run one agent turn; new traces $X$
 \STATE $\Breach\gets\varnothing$
 \FORALL{$x\in X$ chronologically, $j\in\Mset_1$}
@@ -525,12 +525,13 @@ on conflict.
   \STATE post notice at severity Eq.~\eqref{eq:sev}
   \STATE capture replay case iff severity is \texttt{breach}
 \ENDIF
-\STATE \textsc{ValidateCandidates}($\Rset$)
-\STATE \textbf{barrier}: wait until the above has landed
-\IF{agent pulls notice}
-  \STATE inspect flagged trace; read suggested scope; author candidate $r$
-  \STATE $\Rset\gets\Rset\cup\{r\}$
+\STATE \textbf{barrier}: wait for evaluation and bounded managed repair
+\IF{managed repair claims the notice}
+  \STATE inspect assigned evidence; search existing rules
+  \STATE add candidate $r$, or resolve duplicate/no-proposal
+  \STATE acknowledge only after successful resolution
 \ENDIF
+\STATE schedule \textsc{ValidateCandidates}($\Rset$) without holding the task environment
 \STATE \textbf{return} $\Rset$
 \end{algorithmic}
 \end{algorithm}
@@ -651,29 +652,27 @@ since the metric set in our study contains no such dimension. Finally the guaran
 eval-set coverage, and by the reliability of $\evalfn$ itself; missing replay inputs and scores are
 explicitly skipped.
 
-\subsection{Pull model, action space, and workspace}
+\subsection{Capability separation and workspace}
 \label{sec:actionspace}
 
 Notices, rules, replay cases, traces, state, and an append-only journal live under
-\texttt{HARNESS\_ROOT}. The standing system protocol tells the agent to pull notices and treat
-diagnostics as untrusted data. Because $c(\Rset)$ carries no rule bodies and eval-derived text
-reaches the agent only through explicit tool calls, the blast radius of a poisoned rule is a file the
-agent chose to read rather than every prompt.
+\texttt{HARNESS\_ROOT}. Two dispatchers enforce the ownership boundary rather than relying only on
+omitted schemas. The task dispatcher exposes exactly rule read, search, list, and status; even a
+hallucinated administrative call is rejected. It has no mailbox, diagnostic, write, retirement,
+validation, or regression capability.
 
-\emph{Ten} structured tools cover mailbox list, read, and acknowledge; trace inspection; and rule
-read, list, search, add, retire, and status. Every tool returns an \texttt{ok} envelope and folds
-errors into data. Size is a design parameter, not an accident: each additional capability is a turn the agent
-might spend on harness bookkeeping instead of the task, so \Harness withholds surfaces that are
-redundant with what a notice already carries (the score trajectory, which the notice reports) or
-that invite the agent to audit its own process (a journal digest, a reflection summary). Corpus
-curation is an operator concern, reached from code rather than from the agent.
+The package-owned repair dispatcher is scoped to one notice. It can read that notice, inspect only
+the notice's flagged traces, read/search/list rules and status, add a candidate, retire an active
+rule where allowed, and acknowledge or explicitly resolve the notice. It has no developer domain
+tools, shell or filesystem write access, replay controls, or direct promotion. Every operation
+writes through the atomic mailbox and rule-store APIs.
 
 The workspace is intentionally ordinary and inspectable. Note that
 \texttt{harness\_rules.md} is a \emph{skill root}, holding the protocol and the generated References
-index but no rule text; rule bodies live in the \texttt{rules/} tree the agent owns:
+index but no rule text; rule bodies live in the package-managed \texttt{rules/} tree:
 \begin{lstlisting}[language={}]
 HARNESS_ROOT/
-  harness_rules.md   <- skill root (no rule text)
+  rules.md           <- SKILL-style task guide + scope index (no rule text)
   rules/             <- global.md, scoped.md, <topic>.md
   mailbox/{pending,processed}/
   traces/       evalset/
@@ -710,19 +709,20 @@ $\dpromote,\dregress$ & validation margins & $0.05$ \\
 
 The minimal raw-loop integration is small:
 \begin{lstlisting}[language=Python]
-from pandaprobe_harness import Harness
+from pandaprobe_harness import Harness, HarnessConfig
 
 harness = Harness.create(
+    HarnessConfig(repair_model="openai/gpt-..."),
     replay=my_replay,      # counterfactual validation
     verifier=my_grader,    # ground-truth outcome (optional)
 )
-# protocol + rule-file index + banner; no rule bodies
-prompt = harness.system_context() + prompt
+# bounded guidance; session identity prioritizes fresh candidates
+prompt = harness.system_context(session_id, task_hint=user_input) + prompt
 
-# settle=True awaits this turn's diagnosis, so a rule
-# learned now is in force for the next turn
+# only optional read-only rule tools go to the task agent
+tools = my_domain_tools + list(harness.task_tools.specs())
 async with harness.turn(session_id, settle=True):
-    result = await agent_step(prompt, harness.toolset)
+    result = await agent_step(prompt, tools)
 \end{lstlisting}
 The package installs from PyPI as \texttt{pandaprobe-harness}. Factories support
 LangGraph, LangChain, DeepAgents, CrewAI, the Claude Agent SDK, and OpenAI Agents. Native
@@ -754,8 +754,7 @@ and LLM user simulator in the retail domain; native $\passk$.
 \begin{itemize}[leftmargin=*,itemsep=2pt]
 \item \textbf{A, baseline}: plain agent loop, no Harness preamble or toolset.
 \item \textbf{B, PandaProbe Harness}: the tiered trace trigger, trajectory gate, per-turn barrier,
-10 tools, the agent-owned rule tree, capture, replay, and candidate validation.
-\item \textbf{B$'$, no validation}: arm B with immediate activation, run where budget permits.
+four read-only task tools, package-owned managed repair, capture, replay, and candidate validation.
 \end{itemize}
 
 \subsection{Learning and frozen evaluation}
@@ -798,8 +797,8 @@ signal, arm B is inert and the null mechanism is reported rather than tuned away
 which confirms the barrier is working and the stall window is reachable at all; a length-one series
 means the trigger could never have fired. Checkpoint 3 verifies rules were promoted before
 evaluation; the study uses $n{=}3$ so the short learning phase can resolve candidates. The Harness
-preamble and 10 tool schemas consume tokens every turn, so token, latency, and cost overhead, plus
-barrier wait, are reported alongside success.
+bounded guidance and four optional read-only tool schemas consume tokens, while managed repair and
+the barrier add conditional cost and latency; all are reported alongside success.
 
 \begin{table}[t]
 \centering\small
@@ -913,13 +912,12 @@ barrier wait / turn (s)&\TBD&\TBD&\TBD\\
 \end{table}
 
 \subsection{Ablations}
-No-validation isolates the evidence gate. \emph{No-barrier} isolates in-session healing, and its
-prediction is sharper than the others: without it a session contributes too few samples per series
+\emph{No-barrier} isolates in-session repair, and its prediction is sharper than the others:
+without it a session contributes too few samples per series
 for the stall window to close, so notices and promotions should fall toward zero and arm B should
-collapse onto baseline-plus-overhead. \emph{Inlined rules} renders the whole corpus into the prompt
-instead of the index of Eq.~\eqref{eq:context}, isolating pull-on-demand; we report the fraction of
-agent tool calls that are harness operations beside $\passk$, since that ratio is the mechanism this
-design protects. \emph{Tier-3 on} buys richer diagnoses at a cost scaling with metric count.
+collapse onto baseline-plus-overhead. \emph{Inlined rules} renders the whole corpus instead of the
+bounded selection in Eq.~\eqref{eq:context}; we report the fraction of task-agent calls that use the
+optional read-only Harness tools beside $\passk$. \emph{Tier-3 on} buys richer diagnoses at a cost scaling with metric count.
 Replay-only and forward-only isolate the validators. Each row reports delta from the full Harness.
 
 \begin{table}[t]
@@ -931,7 +929,6 @@ Replay-only and forward-only isolate the validators. Each row reports delta from
 Variant&$\passone$&$\passk$&$\Delta\passk$\\
 \midrule
 Full Harness&\TBD&\TBD&--\\
-No validation&\TBD&\TBD&\TBD\\
 No barrier&\TBD&\TBD&\TBD\\
 Inlined rules&\TBD&\TBD&\TBD\\
 Tier 3 enabled&\TBD&\TBD&\TBD\\
@@ -958,8 +955,8 @@ nothing. An outcome verifier (\S\ref{sec:verifier}) covers exactly that case, wh
 reason to wire one where possible.
 
 \paragraph{Token-overhead confound.}
-The preamble and ten tool schemas consume context every turn even when no rule is read, and the
-barrier adds per-turn latency. Any $\passk$ change must be read next to
+Bounded guidance and four optional read-only tool schemas consume context, and the barrier plus
+separate repair-model calls add latency and cost on failing turns. Any $\passk$ change must be read next to
 Table~\ref{tab:telemetry}.
 
 \paragraph{Gate parameters as a design surface.}
@@ -983,17 +980,19 @@ other metric families, richer rules, and architectures remains open.
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
 
-PandaProbe Harness closes the loop on agent reliability: it detects degradation, lets an agent
-author durable corrections, and admits each correction only after replay or live evidence, with a
-regression guard for prior wins. Equally important is what invokes the gate. \Harness scores every
+PandaProbe Harness closes the loop on agent reliability: it detects degradation, assigns diagnosis
+and candidate authoring to a separate package-owned repair agent, and admits each correction only
+after replay or live evidence, with a regression guard for prior wins. The developer's task agent
+keeps ownership of its model, framework, prompt, tools, loop, and environment while receiving only
+bounded read-only guidance. Equally important is what invokes the gate. \Harness scores every
 step of a session and judges the \emph{trajectory} those scores trace out, so an unfinished task is
 not mistaken for a failing one; it spends expensive step-level diagnosis only on sessions a cheap
 always-on signal already flagged; it closes the loop inside the session through a per-turn barrier;
 and it decides on a developer's own outcome oracle in preference to a judged proxy when one is
-available. Because the policy-inducing context carries an \emph{index} of what has been learned
-rather than its contents, the cost of adaptation is decoupled from the size of what the agent has
-learned. The implementation makes that loop practical as an inspectable, dependency-free envelope
-around existing agent code. The empirical verdict is forthcoming.
+available. Session-aware top-$k$ retrieval keeps the policy-inducing context bounded as the corpus
+grows. The implementation makes that loop practical as an inspectable envelope around existing
+agent code, using PandaProbe's official LiteLLM wrapper for provider-neutral managed-repair calls
+and trace isolation. The empirical verdict is forthcoming.
 
 Future work includes structured rules with preconditions, vector-valued/Pareto validation,
 cross-agent rule sharing with provenance, causal attribution of regression, theoretical analysis
