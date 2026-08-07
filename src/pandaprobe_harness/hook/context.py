@@ -7,10 +7,10 @@ __all__ = ["compose_system_preamble"]
 _HEADER = "===================== PANDAPROBE HARNESS ==========================="
 _FOOTER = "===================================================================="
 _CAPABILITY = (
-    "Optional learned guidance is available through PandaProbe's read-only tools. "
-    "Call harness_rules_list to load harness_guide.md and its scope "
-    "references; use harness_rules_read, harness_rules_search, or "
-    "harness_rule_status only when useful for the current task."
+    "Learned rules are available through PandaProbe's read-only tools. Call "
+    "harness_rules_list to load rules.md and inspect relevant rule "
+    "scopes; harness_rules_read, harness_rules_search, and harness_rule_status "
+    "read them on demand. PandaProbe does not automatically insert rule contents."
 )
 
 
