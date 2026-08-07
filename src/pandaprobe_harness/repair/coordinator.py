@@ -19,6 +19,7 @@ from ..workspace.journal import Journal
 from ..workspace.mailbox import DiagnosticNotice, Mailbox
 from ..workspace.rules import RulesStore
 from ..workspace.sanitize import is_sensitive_key, sanitize_text
+from ..workspace.scopes import RESERVED_SCOPES
 from .agent import ManagedRepairAgent
 from .models import RepairAssignment, RepairResult
 
@@ -180,9 +181,16 @@ class ManagedRepairCoordinator:
         descriptor: dict[str, Any] = {}
         if turn is not None and turn.end_state:
             # Sanitization and output bounds happen in the notice/prompt path;
-            # retain only a shallow, JSON-oriented descriptor here.
+            # retain only a shallow, JSON-oriented descriptor here. `task_summary`
+            # is dropped: it is already a first-class assignment field, sanitized
+            # and bounded, and repeating it here would only spend prompt budget.
             descriptor = _bounded_descriptor(
-                turn.end_state, max_len=self._config.sanitize_max_len
+                {
+                    key: value
+                    for key, value in turn.end_state.items()
+                    if key != "task_summary"
+                },
+                max_len=self._config.sanitize_max_len,
             )
         scope_hints = (
             tuple(hint.to_json() for hint in turn.rule_scope_hints)
@@ -193,10 +201,13 @@ class ManagedRepairCoordinator:
             scope_hints = tuple(
                 dict(hint) for item in notices for hint in item.scope_hints
             )
+        # Host identity labels — the integration's own name for itself. They
+        # describe where the agent runs, never what failed, so they must not
+        # become rule scopes. Collected here so the toolset can reject them.
         generic_scopes = tuple(
-            value
-            for value in (str(descriptor.get("benchmark") or ""),)
-            if value
+            str(descriptor[key])
+            for key in ("benchmark", "integration", "host")
+            if descriptor.get(key)
         )
         return RepairAssignment(
             task_session_id=notice.session_id,
@@ -209,6 +220,7 @@ class ManagedRepairCoordinator:
             recommended_scope=_recommended_scope(notices),
             generic_scopes=generic_scopes,
             task_descriptor=descriptor,
+            task_summary=turn.task_summary if turn is not None else "",
             domain_policy=sanitize_text(
                 self._config.domain_policy, max_len=self._config.sanitize_max_len
             )
@@ -239,11 +251,19 @@ def _episode_id(notices: tuple[DiagnosticNotice, ...]) -> str:
     return "e-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
 
 
-def _recommended_scope(notices: tuple[DiagnosticNotice, ...]) -> str:
+def _recommended_scope(notices: tuple[DiagnosticNotice, ...]) -> str | None:
+    """The most precise host recommendation across a coalesced episode.
+
+    ``None`` when no notice carried one — the repair model then chooses freely.
+    A reserved name is not a recommendation: it carries no topic information the
+    model does not already have.
+    """
+
     for notice in notices:
-        if notice.recommended_scope not in {"global", "scoped"}:
-            return notice.recommended_scope
-    return notices[0].recommended_scope or notices[0].scope_hint
+        scope = notice.recommended_scope
+        if scope and scope not in RESERVED_SCOPES:
+            return scope
+    return None
 
 
 def _related(left: DiagnosticNotice, right: DiagnosticNotice) -> bool:
