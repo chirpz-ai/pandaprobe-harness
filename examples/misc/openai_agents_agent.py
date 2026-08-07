@@ -11,7 +11,7 @@ The wiring, in order:
 1. ``Harness.for_openai_agents(...)`` provisions the workspace and installs a
    ``TracingProcessor`` — one completed ``Runner.run`` trace fires
    ``hook.on_turn_end`` (one run == one evaluated agent turn).
-2. ``harness.system_context(session_id)`` supplies bounded learned guidance.
+2. ``harness.system_context(session_id)`` supplies a stable capability note.
 3. ``as_openai_function_tools(harness.task_tools)`` registers read-only rules.
 
 For the fully offline, credential-free version of this loop, see
