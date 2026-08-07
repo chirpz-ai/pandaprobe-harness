@@ -3,8 +3,8 @@
 Manages the persistent workspace that PandaProbe repair writes and task and
 repair agents read:
 
-- ``harness_guide.md`` — task-facing skill-style instructions plus a compact generated
-  live-scope index with no rule bodies.
+- ``rules.md`` — task-facing skill-style instructions plus a compact generated
+  live-scope index with no rule bodies. Sits beside ``rules.jsonl``/``rules/``.
 - ``rules/`` — the rule files themselves, one per scope, written by
   ``RulesStore.sync_markdown``.
 - ``traces/latest_eval.json`` — the most recent eval dump (written atomically).
@@ -27,7 +27,7 @@ from ..workspace._io import atomic_write_json, load_json
 __all__ = ["HarnessFilesystem"]
 
 _TEMPLATE_PACKAGE = "pandaprobe_harness.filesystem.templates"
-_TEMPLATE_NAME = "harness_guide.md"
+_TEMPLATE_NAME = "rules.md"
 
 
 class HarnessFilesystem:
@@ -51,10 +51,6 @@ class HarnessFilesystem:
         cfg.traces_dir.mkdir(parents=True, exist_ok=True)
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         cfg.rules_dir.mkdir(parents=True, exist_ok=True)
-        if not cfg.rules_file.exists() and cfg.legacy_rules_file.exists():
-            # Older workspaces used harness_rules.md for this generated root.
-            # Preserve the artifact before RulesStore regenerates current content.
-            cfg.legacy_rules_file.replace(cfg.rules_file)
         if not cfg.rules_file.exists():
             cfg.rules_file.write_text(self._default_rules_template(), encoding="utf-8")
 
