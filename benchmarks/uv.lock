@@ -2054,7 +2054,7 @@ dependencies = [
     { name = "pandaprobe", extra = ["litellm"] },
 ]
 wheels = [
-    { filename = "pandaprobe_harness-0.8.0-py3-none-any.whl", hash = "sha256:f8129d4eab97966cddea254027fed6643aae60bb4159d3fd6a9e8c81f8d0cc40" },
+    { filename = "pandaprobe_harness-0.8.0-py3-none-any.whl", hash = "sha256:607e8b08236f9243c3a63300686b9c5af576258a4d4c26814d400ef06fecfbdd" },
 ]
 
 [package.metadata]
