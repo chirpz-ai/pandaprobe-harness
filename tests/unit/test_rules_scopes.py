@@ -27,10 +27,10 @@ def _store(tmp_path: Path, **kw: object) -> RulesStore:
 # -- scope normalization -------------------------------------------------------
 
 
-def test_empty_scope_defaults_to_global() -> None:
-    assert normalize_scope(None) == GLOBAL_SCOPE
-    assert normalize_scope("") == GLOBAL_SCOPE
-    assert normalize_scope("   ") == GLOBAL_SCOPE
+def test_empty_scope_defaults_to_scoped() -> None:
+    assert normalize_scope(None) == SCOPED_SCOPE
+    assert normalize_scope("") == SCOPED_SCOPE
+    assert normalize_scope("   ") == SCOPED_SCOPE
 
 
 def test_scope_is_slugified_not_trusted() -> None:
@@ -86,14 +86,14 @@ def test_an_agent_created_scope_appears_in_the_references(tmp_path: Path) -> Non
     assert "1 active" in root
 
 
-def test_scopes_are_ordered_global_then_catch_all_then_topics(tmp_path: Path) -> None:
+def test_scopes_are_ordered_global_then_all_others_alphabetically(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.add("z topic rule", "x", scope="zebra")
     store.add("a topic rule", "x", scope="alpha")
-    store.add("catch-all rule", "x", scope="scoped")
+    store.add("default granular rule", "x", scope="scoped")
     store.add("global rule", "x", scope="global")
 
-    assert store.scopes() == [GLOBAL_SCOPE, SCOPED_SCOPE, "alpha", "zebra"]
+    assert store.scopes() == [GLOBAL_SCOPE, "alpha", SCOPED_SCOPE, "zebra"]
 
 
 def test_a_scope_whose_rules_all_retired_is_emptied_not_left_stale(
