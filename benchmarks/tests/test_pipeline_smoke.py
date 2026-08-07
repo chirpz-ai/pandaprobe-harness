@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pandaprobe_harness import ReplayContext
+from pandaprobe_harness.agent_tools.spec import ToolSpec
 
 from pandabench.agents.frozen_wiring import FrozenEvalWiring
 from pandabench.agents.harness_wiring import AgentWiring, HarnessWiring
@@ -39,12 +42,11 @@ class RecordingMockTaskRunner(MockTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: HarnessWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome:
         self.session_ids.append(session_id)
         return await super().run_once(
             task_id=task_id, session_id=session_id, model=model, client=client,
-            max_turns=max_turns, wiring=wiring, preamble=preamble,
+            max_turns=max_turns, wiring=wiring,
         )
 
 
@@ -63,9 +65,8 @@ class ReplayTaskRunner(MockTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: HarnessWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome:
-        del task_id, session_id, model, client, max_turns, wiring, preamble
+        del task_id, session_id, model, client, max_turns, wiring
         self._events.append("run")
         if self._fail:
             raise RuntimeError("replay failed")
@@ -87,7 +88,6 @@ class WiringRecordingRunner(MockTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: AgentWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome:
         self.wirings.append(wiring)
         if isinstance(wiring, FrozenEvalWiring):
@@ -95,7 +95,7 @@ class WiringRecordingRunner(MockTaskRunner):
             self.frozen_rule_reads.append(str(result["content"]))
         return await super().run_once(
             task_id=task_id, session_id=session_id, model=model, client=client,
-            max_turns=max_turns, wiring=wiring, preamble=preamble,
+            max_turns=max_turns, wiring=wiring,
         )
 
 
@@ -346,11 +346,21 @@ async def test_replay_flushes_traces_before_return_or_error(tmp_path, monkeypatc
     replay = runner._make_replay("appworld", model, 1, "namespace")
     case = SimpleNamespace(id="case-1", replay_input={"task_id": "same-task"})
 
+    class EmptyTaskTools:
+        def specs(self) -> tuple[ToolSpec, ...]:
+            return ()
+
+        async def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+            del name, args
+            return {"ok": False}
+
+    context = ReplayContext("capability only", task_tools=EmptyTaskTools())
+
     if fail:
         with pytest.raises(RuntimeError, match="replay failed"):
-            await replay(case, "candidate rule")
+            await replay(case, context)
     else:
-        session_id = await replay(case, "candidate rule")
+        session_id = await replay(case, context)
         events.append("validation_lookup")
         assert "-replay-" in session_id
 
