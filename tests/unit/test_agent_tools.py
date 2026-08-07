@@ -74,10 +74,11 @@ async def test_task_can_list_search_read_and_inspect_status(tmp_path: Path) -> N
     rule = rules.add("Verify payment status before retrying.", "Avoid duplicate writes")
     tools = TaskToolset(config=config, rules=rules)
     index = await tools.call("harness_rules_list", {})
-    assert index["scopes"][0]["scope"] == "scoped"
+    assert index["scopes"][0]["scope"] == "global"
     assert index["scopes"][0]["provisional"] == 1
     assert rule.rule not in index["content"]
     assert (await tools.call("harness_rules_search", {"query": "payment"}))["rules"]
+    # A bare read defaults to `global`, which is also where an unscoped add lands.
     assert rule.rule in (await tools.call("harness_rules_read", {}))["content"]
     assert (await tools.call("harness_rule_status", {"rule_id": rule.id}))["ok"] is True
 
