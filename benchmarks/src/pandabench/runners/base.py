@@ -23,8 +23,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from pandaprobe_harness import RuleScopeHint
+
 from ..agents.frozen_wiring import FrozenEvalWiring
-from ..agents.harness_wiring import AgentWiring, HarnessWiring
+from ..agents.harness_wiring import AgentWiring, HarnessWiring, ReplayRuleWiring
 from ..config import StudyConfig
 from ..frozen_rules import FROZEN_RULES_FILENAME, FrozenRulesSnapshot
 from ..harness_glue import (
@@ -98,6 +100,12 @@ class SingleTaskRunner(Protocol):
 
     def list_tasks(self, dataset: str) -> list[str]: ...
 
+    def rule_scope_hints(self, task_id: str) -> tuple[RuleScopeHint, ...]:
+        """Return safe deterministic scope metadata already known by the host."""
+
+        del task_id
+        return ()
+
     async def run_once(
         self,
         *,
@@ -107,7 +115,6 @@ class SingleTaskRunner(Protocol):
         client: ChatClient,
         max_turns: int,
         wiring: AgentWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome: ...
 
     def outcome_for(self, task_id: str, session_id: str) -> float | None:
@@ -354,6 +361,7 @@ class BenchmarkRunner:
                 # sees the trajectory one trace at a time instead of once at the
                 # end — the precondition for the trajectory gate having a series.
                 session_id=session_id, flush=client.flush,
+                rule_scope_hints=self._single.rule_scope_hints(task_id),
             )
         elif frozen_snapshot is not None and arm == "harness" and phase == "eval":
             wiring = FrozenEvalWiring(frozen_snapshot)
@@ -430,10 +438,11 @@ class BenchmarkRunner:
     def _make_replay(
         self, benchmark: str, model: ResolvedModel, seed: int, session_namespace: str
     ) -> Any:
-        """Build the harness ReplayFn: re-run a captured task under candidate rules.
+        """Build the Harness ReplayFn with candidate rules available on demand.
 
         Uses a TRACED client (so the replayed session is scoreable) and
-        ``wiring=None`` (no ``on_turn_end`` -> no recursion / re-capture); the
+        ReplayRuleWiring exposes read-only tools without settlement, so replay
+        cannot recurse or re-capture. The
         replay session uses ``arm="replay"`` so it never collides with graded
         records and is excluded from metrics.
         """
@@ -443,7 +452,7 @@ class BenchmarkRunner:
         )
         replay_max_turns = self._study.harness.replay_max_turns
 
-        async def replay_runner(task_id: str, preamble: str) -> str:
+        async def replay_runner(task_id: str, context: Any) -> str:
             self._replay_counter += 1
             session_id = make_session_id(
                 session_namespace=session_namespace, benchmark=benchmark, task_id=task_id,
@@ -453,7 +462,7 @@ class BenchmarkRunner:
             try:
                 await self._single.run_once(
                     task_id=task_id, session_id=session_id, model=model, client=replay_client,
-                    max_turns=replay_max_turns, wiring=None, preamble=preamble,
+                    max_turns=replay_max_turns, wiring=ReplayRuleWiring(context),
                 )
             finally:
                 replay_client.flush()
