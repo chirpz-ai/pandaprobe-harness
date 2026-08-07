@@ -169,6 +169,9 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
                 # HarnessWiring.settle_turn for why per-turn rather than per-trial.
                 session_id=session_id, flush=self._client.flush,
                 rule_scope_hints=scope_hints,
+                # Harbor passes the task statement straight to the agent, so it
+                # is the natural summary; the harness sanitizes and bounds it.
+                task_summary=instruction,
             )
         elif self._frozen_snapshot is not None:
             wiring = FrozenEvalWiring(self._frozen_snapshot)
