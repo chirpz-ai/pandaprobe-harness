@@ -3,7 +3,7 @@
 This is the canonical, dependency-free implementation of ``FrameworkAdapter``
 and documents the intended contract: parse a plain turn payload, register the
 hook, and let the driving loop call ``hook.on_turn_end`` at each turn end. The
-host requests read-only learned guidance before the next turn.
+host requests read-only learned rules before the next turn.
 
 A turn payload is a plain mapping::
 
