@@ -314,7 +314,7 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     assert case.replay_input["benchmark"] == "appworld"
 
     assert settled.repair is not None
-    assert settled.repair.status == "completed"
+    assert settled.repair.status == "candidate_added"
     assert settled.repair.repair_session_id != session_id
     assert settled.repair.candidate_rule_ids
     assignments = [
@@ -322,7 +322,11 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
         for call in repair_completion.calls
     ]
     assert all(assignment["repair_session_id"] != session_id for assignment in assignments)
-    assert "Inspect the task state before changing it" in wiring.system_preamble()
+    assert "Inspect the task state before changing it" not in wiring.system_preamble()
+    index = await wiring.dispatch("harness_rules_list", {})
+    assert index["scopes"][0]["scope"] == "global"
+    scoped = await wiring.dispatch("harness_rules_read", {"scope": "global"})
+    assert "Inspect the task state before changing it" in scoped["content"]
 
     task_tool_names = {
         tool["function"]["name"] for tool in wiring.harness_tools()
@@ -344,7 +348,7 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     )
     assert telemetry.breached is True
     assert telemetry.repair is not None
-    assert telemetry.repair["status"] == "completed"
+    assert telemetry.repair["status"] == "candidate_added"
 
 
 async def test_settling_a_turn_twice_returns_the_first_diagnosis(tmp_path):
