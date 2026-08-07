@@ -37,7 +37,7 @@ async def test_compact_index_and_scope_reads_follow_live_lifecycle(tmp_path: Pat
     assert listed["scopes"][0]["active"] == 1
     assert listed["scopes"][1]["provisional"] == 1
     assert listed["scopes"][1]["description"].startswith("Spotify search")
-    assert listed["path"] == "harness_guide.md"
+    assert listed["path"] == "rules.md"
     assert listed["content"].startswith("---\nname: pandaprobe-learned-rules")
     assert "allowed-tools:" in listed["content"]
     assert "## Workflow" in listed["content"]
@@ -97,7 +97,7 @@ async def test_descriptions_are_bounded_and_list_reads_fresh_store_state(
     assert [entry["scope"] for entry in refreshed["scopes"]] == ["spotify", "venmo"]
 
 
-def test_legacy_workspace_regenerates_index_without_scope_migration(tmp_path: Path) -> None:
+def test_an_existing_workspace_regenerates_its_index_in_place(tmp_path: Path) -> None:
     config, _, rules = _workspace(tmp_path)
     config.rules_store_file.parent.mkdir(parents=True, exist_ok=True)
     config.rules_store_file.write_text(
