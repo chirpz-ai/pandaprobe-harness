@@ -101,7 +101,7 @@ class _TurnScope:
 
 
 class Harness:
-    """Task instrumentation, evaluation, managed repair, and learned guidance."""
+    """Task instrumentation, evaluation, managed repair, and learned rules."""
 
     def __init__(
         self,
@@ -468,10 +468,31 @@ class Harness:
 
         return await self._hook.validate_candidates()
 
-    async def drain_validation(self) -> None:
-        """Await in-flight candidate-validation tasks (bounded)."""
+    async def drain_validation(self, *, timeout: float | None = None) -> bool:
+        """Await in-flight candidate-validation tasks; ``True`` if they finished.
 
-        await self._hook.drain_validation()
+        Defaults to the best-effort ``drain_timeout_s`` join. At a phase boundary
+        prefer :meth:`settle_validation`, which also runs the rounds needed to
+        reach a standstill.
+        """
+
+        return await self._hook.drain_validation(timeout=timeout)
+
+    async def settle_validation(self, *, timeout: float) -> bool:
+        """Run candidate validation to a standstill; ``True`` if it settled.
+
+        Call this at a phase boundary — before snapshotting or reporting a
+        ruleset — so a candidate that has already earned a verdict receives it
+        instead of being recorded as permanently provisional.
+        """
+
+        return await self._hook.settle_validation(timeout=timeout)
+
+    @property
+    def validation_pending(self) -> int:
+        """Candidate-validation rounds currently in flight."""
+
+        return self._hook.validation_pending
 
     async def run_regression(self, *, sample: int | None = None) -> RegressionReport:
         """Replay the eval-set against the current rule set and report drift.
