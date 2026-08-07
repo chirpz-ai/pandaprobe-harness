@@ -73,7 +73,10 @@ async def test_task_can_list_search_read_and_inspect_status(tmp_path: Path) -> N
     config, _, _, rules, _ = _workspace(tmp_path)
     rule = rules.add("Verify payment status before retrying.", "Avoid duplicate writes")
     tools = TaskToolset(config=config, rules=rules)
-    assert (await tools.call("harness_rules_list", {}))["rules"][0]["id"] == rule.id
+    index = await tools.call("harness_rules_list", {})
+    assert index["scopes"][0]["scope"] == "scoped"
+    assert index["scopes"][0]["provisional"] == 1
+    assert rule.rule not in index["content"]
     assert (await tools.call("harness_rules_search", {"query": "payment"}))["rules"]
     assert rule.rule in (await tools.call("harness_rules_read", {}))["content"]
     assert (await tools.call("harness_rule_status", {"rule_id": rule.id}))["ok"] is True
@@ -95,6 +98,7 @@ async def test_repair_surface_is_restricted_and_assignment_scoped(tmp_path: Path
         "execute",
         "bash",
         "harness_rule_promote",
+        "harness_rule_retire",
         "harness_validate",
         "harness_regression_run",
     ):
@@ -151,7 +155,7 @@ async def test_duplicate_and_no_proposal_are_explicit(tmp_path: Path) -> None:
         "harness_notice_resolve",
         {
             "notice_id": notice.id,
-            "resolution": "duplicate",
+            "resolution": "already_covered",
             "existing_rule_id": existing.id,
             "note": "already covered",
         },
@@ -159,4 +163,4 @@ async def test_duplicate_and_no_proposal_are_explicit(tmp_path: Path) -> None:
     assert result["ok"] is True
     processed = mailbox.read(notice.id)
     assert processed is not None and processed.resolution is not None
-    assert processed.resolution.kind == "duplicate"
+    assert processed.resolution.kind == "already_covered"
