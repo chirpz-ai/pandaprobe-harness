@@ -219,9 +219,11 @@ def test_persisted_workspace_is_reused_without_task_administration(tmp_path: Pat
     )
     assert rule.rule not in second.system_context("new-session")
     index = asyncio.run(second.task_tools.call("harness_rules_list", {}))
-    assert index["scopes"][0]["scope"] == "scoped"
-    scoped = asyncio.run(second.task_tools.call("harness_rules_read", {"scope": "scoped"}))
-    assert rule.rule in scoped["content"]
+    assert index["scopes"][0]["scope"] == rule.scope
+    persisted = asyncio.run(
+        second.task_tools.call("harness_rules_read", {"scope": rule.scope})
+    )
+    assert rule.rule in persisted["content"]
     assert {spec.name for spec in second.task_tools.specs()} == {
         "harness_rules_read",
         "harness_rules_search",
