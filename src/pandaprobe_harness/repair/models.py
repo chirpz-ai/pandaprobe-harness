@@ -64,9 +64,14 @@ class RepairAssignment:
     episode_id: str = ""
     notices: tuple[DiagnosticNotice, ...] = ()
     scope_hints: tuple[dict[str, Any], ...] = ()
-    recommended_scope: str = "scoped"
+    #: A precise host-recommended scope, or ``None`` for "no recommendation".
+    #: Never defaulted: the scope decision belongs to the repair model, and a
+    #: pre-filled value would read as an instruction it should follow.
+    recommended_scope: str | None = None
     generic_scopes: tuple[str, ...] = ()
     task_descriptor: dict[str, Any] = field(default_factory=dict)
+    #: What the failing turn was trying to do, in the host's own words.
+    task_summary: str = ""
     domain_policy: str | None = None
 
     @property
@@ -110,6 +115,7 @@ class RepairAssignment:
             "scope_hints": [dict(hint) for hint in self.scope_hints],
             "recommended_scope": self.recommended_scope,
             "task_descriptor": self.task_descriptor,
+            "task_summary": self.task_summary,
             "domain_policy": self.domain_policy,
         }
 
@@ -134,6 +140,7 @@ class RepairResult:
     existing_rule_id: str | None = None
     recommended_scope: str | None = None
     selected_scope: str | None = None
+    scope_rationale: str | None = None
     considered_rule_ids: tuple[str, ...] = ()
     resolution_kind: str | None = None
     candidate_suppression_reason: str | None = None
@@ -167,6 +174,7 @@ class RepairResult:
             "existing_rule_id": self.existing_rule_id,
             "recommended_scope": self.recommended_scope,
             "selected_scope": self.selected_scope,
+            "scope_rationale": self.scope_rationale,
             "considered_rule_ids": list(self.considered_rule_ids),
             "resolution_kind": self.resolution_kind or self.status,
             "candidate_suppression_reason": self.candidate_suppression_reason,
