@@ -20,9 +20,6 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 ## 1. One-time setup
 
 ```bash
-cd ..
-uv build --wheel                 # build the unreleased managed-repair candidate
-cd benchmarks
 cp .env.example .env          # fill in credentials
 make setup                    # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # re-check tools + creds + a 1-token ping
@@ -35,12 +32,13 @@ export PANDABENCH_APPWORLD_PYTHON=$HOME/.pandabench/awenv/bin/python
 export APPWORLD_ROOT=$HOME/.pandabench/appworld
 ```
 
-The benchmark's exact `pandaprobe-harness==0.8.0` requirement is temporarily
-resolved from that wheel by `[tool.uv.sources]`, not from `../src` and not from
-PyPI. Confirm with `uv pip show pandaprobe-harness`; the location metadata should
-name `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl`. Rebuild and sync after
-any root-package change. Once the new architecture is released, delete the source
-override and update the exact dependency pin.
+The benchmark installs `pandaprobe-harness==0.9.0` from PyPI — the released
+artifact, not `../src` and not a local build. Confirm with
+`uv pip show pandaprobe-harness` (version 0.9.0, location under `.venv`). A study
+run therefore measures exactly what a user installs; editing `../src` has no
+effect on it. To move to a newer harness release, bump the pin in `pyproject.toml`
+and run `uv lock && uv sync --all-extras --group dev`, then re-record affected
+runs — `manifest.json` stamps `pandaprobe_harness_version` per run.
 
 Harness learning uses package-owned managed repair. By default PandaBench reuses
 the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
