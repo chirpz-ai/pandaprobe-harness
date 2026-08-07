@@ -47,7 +47,7 @@ def test_create_provisions_workspace_and_context(
 
     context = harness.system_context("s-facade")
     assert "PANDAPROBE HARNESS" in context
-    assert "Relevant learned guidance" in context
+    assert "Optional learned guidance" in context
     assert "harness_mailbox_list" not in context
     assert {spec.name for spec in harness.task_tools.specs()} == {
         "harness_rules_read",
