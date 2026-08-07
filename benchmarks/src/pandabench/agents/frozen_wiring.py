@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import re
 from typing import Any
 
@@ -15,7 +16,7 @@ _TOOL_DETAILS: dict[str, tuple[str, dict[str, Any]]] = {
         {
             "type": "object",
             "properties": {"scope": {"type": "string"}},
-            "required": ["scope"],
+            "required": [],
         },
     ),
     "harness_rules_search": (
@@ -25,19 +26,13 @@ _TOOL_DETAILS: dict[str, tuple[str, dict[str, Any]]] = {
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                "status": {"type": "string", "enum": ["active", "candidate", "retired"]},
             },
             "required": ["query"],
         },
     ),
     "harness_rules_list": (
-        "List frozen rules, optionally filtered by lifecycle status.",
-        {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "enum": ["active", "candidate", "retired"]}
-            },
-        },
+        "Load the canonical harness_guide.md and its compact frozen live-scope index.",
+        {"type": "object", "properties": {}},
     ),
     "harness_rule_status": (
         "Read one frozen rule's lifecycle status and preserved trial state.",
@@ -72,26 +67,13 @@ class FrozenEvalWiring:
         return False
 
     def system_preamble(self) -> str:
-        lines = [
-            "PANDAPROBE LEARNING RULES — FROZEN READ-ONLY EVALUATION",
-            "Learning is complete. Apply the fixed ruleset indexed below; "
-            "it cannot change during eval.",
-            "Rule bodies remain available through the read-only harness_rules_* tools.",
-            "",
-            "References:",
-        ]
-        scopes = self.live_rule_scopes()
-        if not scopes:
-            lines.append("- No learning rules were available at the frozen boundary.")
-        for scope in scopes:
-            rules = [rule for rule in self.snapshot.live_rules if rule.get("scope") == scope]
-            active = sum(rule.get("status") == "active" for rule in rules)
-            candidate = sum(rule.get("status") == "candidate" for rule in rules)
-            suffix = f"{active} active"
-            if candidate:
-                suffix += f", {candidate} provisional"
-            lines.append(f"- rules/{scope}.md — {suffix}")
-        return "\n".join(lines)
+        return (
+            "Optional frozen learned guidance is available through PandaProbe's "
+            "read-only tools. Call harness_rules_list to load harness_guide.md "
+            "guide and its scope references; use harness_rules_read, "
+            "harness_rules_search, or harness_rule_status only when useful for "
+            "the current task."
+        )
 
     def harness_tools(self) -> list[dict[str, Any]]:
         return list(self._tools)
@@ -102,8 +84,8 @@ class FrozenEvalWiring:
 
     def live_rule_scopes(self) -> tuple[str, ...]:
         scopes = {str(rule.get("scope") or "global") for rule in self.snapshot.live_rules}
-        ordered: list[str] = [scope for scope in ("global", "scoped") if scope in scopes]
-        ordered.extend(sorted(scope for scope in scopes if scope not in ("global", "scoped")))
+        ordered: list[str] = ["global"] if "global" in scopes else []
+        ordered.extend(sorted(scope for scope in scopes if scope != "global"))
         return tuple(ordered)
 
     def is_harness_tool(self, name: str) -> bool:
@@ -130,7 +112,9 @@ class FrozenEvalWiring:
         del turn_index
 
     def _read(self, args: dict[str, Any]) -> dict[str, Any]:
-        scope = str(args.get("scope") or "global")
+        scope = str(args.get("scope") or "scoped")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,47}", scope) or scope in {".", ".."}:
+            return {"ok": False, "error": "invalid rule scope"}
         rules = [rule for rule in self.snapshot.live_rules if rule.get("scope") == scope]
         active = [rule for rule in rules if rule.get("status") == "active"]
         candidates = [rule for rule in rules if rule.get("status") == "candidate"]
@@ -156,11 +140,7 @@ class FrozenEvalWiring:
             limit = max(1, min(50, int(args.get("limit", 10))))
         except (TypeError, ValueError):
             limit = 10
-        requested = args.get("status")
-        statuses = {str(requested)} if requested in ("active", "candidate", "retired") else {
-            "active",
-            "candidate",
-        }
+        statuses = {"active", "candidate"}
         query_tokens = _tokens(query)
         ranked: list[tuple[int, str, dict[str, Any]]] = []
         for rule in self.snapshot.rules:
@@ -175,15 +155,53 @@ class FrozenEvalWiring:
         ranked.sort(key=lambda item: (item[0], item[1], str(item[2].get("id", ""))), reverse=True)
         return {
             "ok": True,
-            "rules": [{**rule, "score": score} for score, _, rule in ranked[:limit]],
+            "rules": [
+                {
+                    "id": rule.get("id"),
+                    "scope": rule.get("scope") or "global",
+                    "status": rule.get("status"),
+                    "snippet": _snippet(str(rule.get("rule") or "")),
+                    "score": score,
+                }
+                for score, _, rule in ranked[:limit]
+            ],
         }
 
     def _list(self, args: dict[str, Any]) -> dict[str, Any]:
-        requested = args.get("status")
-        rules = list(self.snapshot.rules)
-        if requested in ("active", "candidate", "retired"):
-            rules = [rule for rule in rules if rule.get("status") == requested]
-        return {"ok": True, "rules": rules}
+        del args
+        scopes: list[dict[str, Any]] = []
+        lines = [_guide_head(), ""]
+        for index, scope in enumerate(self.live_rule_scopes()):
+            rules = [rule for rule in self.snapshot.live_rules if rule.get("scope") == scope]
+            active = sum(rule.get("status") == "active" for rule in rules)
+            provisional = sum(rule.get("status") == "candidate" for rule in rules)
+            description = _scope_description(scope)
+            if index:
+                lines.append("")
+            lines.extend(
+                [
+                    f"- [`{scope}`](rules/{scope}.md)",
+                    f"  {description}",
+                    f"  {active} active, {provisional} provisional",
+                ]
+            )
+            scopes.append(
+                {
+                    "scope": scope,
+                    "path": f"rules/{scope}.md",
+                    "description": description,
+                    "active": active,
+                    "provisional": provisional,
+                }
+            )
+        if not scopes:
+            lines.append("_No learned guidance is available yet._")
+        return {
+            "ok": True,
+            "path": "harness_guide.md",
+            "content": "\n".join(lines) + "\n",
+            "scopes": scopes,
+        }
 
     def _status(self, args: dict[str, Any]) -> dict[str, Any]:
         rule_id = str(args.get("rule_id") or "")
@@ -191,10 +209,41 @@ class FrozenEvalWiring:
             if str(rule.get("id")) == rule_id:
                 return {
                     "ok": True,
-                    "rule": rule,
+                    "rule": {
+                        "id": rule.get("id"),
+                        "scope": rule.get("scope") or "global",
+                        "status": rule.get("status"),
+                        "applicability": rule.get("applicability"),
+                    },
                     "lifecycle": {
                         "status": rule.get("status"),
                         "trial": rule.get("trial"),
                     },
                 }
         return {"ok": False, "error": f"no frozen rule {rule_id!r}"}
+
+
+def _snippet(value: str, *, limit: int = 240) -> str:
+    compact = " ".join(value.split())
+    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+
+
+def _scope_description(scope: str) -> str:
+    if scope == "global":
+        return "Cross-domain execution and verification guidance."
+    if scope == "scoped":
+        return "Narrow task-specific execution and verification guidance."
+    return f"{scope.replace('_', ' ').replace('-', ' ').title()} workflows."
+
+
+def _guide_head() -> str:
+    """Load the installed package's canonical SKILL-style guide."""
+
+    marker = "<!-- REFERENCES — generated by the harness; do not edit below -->"
+    resource = (
+        importlib.resources.files("pandaprobe_harness.filesystem.templates")
+        / "harness_guide.md"
+    )
+    template = resource.read_text(encoding="utf-8")
+    before, found, _ = template.partition(marker)
+    return before + marker if found else template.rstrip()
