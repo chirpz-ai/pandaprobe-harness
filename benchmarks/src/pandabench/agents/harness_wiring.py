@@ -1,38 +1,56 @@
-"""Arm-B wiring: the only thing that differs between the two arms.
+"""Arm-B task-agent wiring for package-owned managed repair.
 
 An arm-B trial passes a :class:`HarnessWiring` into the shared loop; arm A
-passes ``None``. The wiring supplies (1) the per-turn system preamble (the skill
-root plus any pending-notice banner, or a fixed override during replay), (2) the
-harness tools as OpenAI function-tool JSON, (3) a dispatcher for ``harness_*``
-tool calls, (4) the replayable ``end_state`` that turns a breaching session into
-an eval case, and (5) the **per-turn barrier**.
+passes ``None``. The wiring supplies a stable capability-only preamble,
+read-only task tools, replay metadata, and the per-turn settlement barrier. The
+package-owned repair agent receives notices and administrative capabilities;
+the benchmark task agent never does.
 
 The barrier is what makes healing in-session. v1 hooked the harness once per
 task-trial, so a session's trajectory was scored exactly once and the trend
 machinery never had enough samples to fire — and any lesson arrived after the
 task was already over. Now every turn ends with ``on_turn_end`` + ``settle``, so
-the next turn's preamble already reflects whatever the harness just found.
+the next turn can discover whatever the harness just found through its tools.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
+
+from pandaprobe_harness import ReplayContext, RuleScopeHint
 
 if TYPE_CHECKING:
     from pandaprobe_harness import Harness, SettleResult
 
-__all__ = ["HarnessWiring", "specs_to_openai"]
+__all__ = ["AgentWiring", "HarnessWiring", "ReplayRuleWiring", "specs_to_openai"]
 
 logger = logging.getLogger("pandabench.harness")
+
+
+class AgentWiring(Protocol):
+    """Agent-facing surface shared by live learning and frozen evaluation."""
+
+    @property
+    def settles_turns(self) -> bool: ...
+
+    def system_preamble(self) -> str: ...
+
+    def harness_tools(self) -> list[dict[str, Any]]: ...
+
+    def is_harness_tool(self, name: str) -> bool: ...
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def settle_turn(self, turn_index: int) -> Any: ...
 
 
 def specs_to_openai(specs: Any) -> list[dict[str, Any]]:
     """Convert harness ``ToolSpec`` objects to OpenAI function-tool JSON.
 
     We roll our own instead of ``as_openai_function_tools`` so the study needs
-    no ``[openai-agents]`` extra; dispatch goes through ``harness.toolset.call``.
+    no ``[openai-agents]`` extra; dispatch goes through ``harness.task_tools``.
     """
 
     tools: list[dict[str, Any]] = []
@@ -61,76 +79,69 @@ class HarnessWiring:
         task_id: str,
         capture: bool,
         replay_descriptor: dict[str, Any],
-        preamble_override: str | None = None,
-        session_id: str | None = None,
+        session_id: str,
         flush: Callable[[], None] | None = None,
         settle_each_turn: bool = True,
+        rule_scope_hints: tuple[RuleScopeHint, ...] = (),
+        task_summary: str = "",
     ) -> None:
         self.harness = harness
         self.benchmark = benchmark
         self.task_id = task_id
         self.capture = capture
         self.replay_descriptor = replay_descriptor
-        self.preamble_override = preamble_override
         self.session_id = session_id
         self._flush = flush
+        self._task_summary = task_summary
         # A replay must not recurse into the barrier: it re-runs a task purely to
         # be scored, and hooking its turns would spawn evals inside an eval.
-        self._settle_each_turn = settle_each_turn and session_id is not None
+        self._settle_each_turn = settle_each_turn
+        self._rule_scope_hints = rule_scope_hints
         # Cache the tool JSON once; the spec set is stable for a harness.
-        self._tools = specs_to_openai(harness.toolset.specs())
+        self._tools = specs_to_openai(harness.task_tools.specs())
         self.turns_settled = 0
         # The most recent (turn_index, result), so settling a turn twice returns
         # the first answer instead of re-evaluating. See settle_turn.
         self._settled: tuple[int, SettleResult | None] | None = None
 
-    def system_preamble(self) -> str:
-        """The preamble to prepend to the benchmark system prompt this turn.
+    @property
+    def settles_turns(self) -> bool:
+        """Whether callers should invoke the live per-turn evaluation barrier."""
 
-        During replay we inject the harness-supplied rules string verbatim (the
-        candidate under evaluation is already rendered into it); otherwise we
-        recompute ``system_context`` so the References index and the pending-notice
-        banner reflect whatever the last turn's barrier just produced.
+        return self._settle_each_turn
+
+    def system_preamble(self) -> str:
+        """Stable capability note; rule content remains behind read-only tools."""
+
+        return self.harness.system_context(self.session_id)
+
+    def set_rule_scope_hints(self, hints: tuple[RuleScopeHint, ...]) -> None:
+        """Attach safe semantic metadata discovered during task initialization."""
+
+        self._rule_scope_hints = hints
+
+    def set_task_summary(self, summary: str) -> None:
+        """Attach what this task asks for, once the environment reveals it.
+
+        Benchmarks learn the task statement at initialize time, after the wiring
+        is built. Managed repair reads it as untrusted evidence when diagnosing a
+        failure and choosing a rule scope.
         """
 
-        if self.preamble_override is not None:
-            return self.preamble_override
-        return self.harness.system_context()
+        self._task_summary = summary
 
     def harness_tools(self) -> list[dict[str, Any]]:
         return self._tools
 
-    def pending_notice_ids(self, *, session_id: str | None = None) -> tuple[str, ...]:
-        """Return pending notice ids, preferring the caller's current session.
-
-        Framework adapters normally let the model discover notices through
-        ``harness_mailbox_list``.  tau2 additionally needs a host-side readiness
-        check because its synchronous agent API separates workspace maintenance
-        from the domain action that is returned to the orchestrator.  This method
-        exposes identifiers only; the model must still read and resolve each
-        notice through the normal harness tools.
-        """
-
-        pending = self.harness.mailbox.pending()
-        if session_id is None:
-            return tuple(notice.id for notice in pending)
-        current = [notice.id for notice in pending if notice.session_id == session_id]
-        other = [notice.id for notice in pending if notice.session_id != session_id]
-        return tuple((*current, *other))
-
-    def live_rule_scopes(self) -> tuple[str, ...]:
-        """Scopes containing active or provisional rules, in stable order."""
-
-        rules = (*self.harness.rules.active(), *self.harness.rules.candidates())
-        return tuple(sorted({rule.scope for rule in rules}))
-
     def is_harness_tool(self, name: str) -> bool:
+        # Capability enforcement lives in TaskToolset.call, so hallucinated
+        # administrative names are routed there and rejected safely.
         return name.startswith("harness_")
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Route a ``harness_*`` tool call to the harness toolset."""
+        """Route a ``harness_*`` call through the task capability boundary."""
 
-        return await self.harness.toolset.call(name, args)
+        return await self.harness.task_tools.call(name, args)
 
     async def settle_turn(self, turn_index: int) -> SettleResult | None:
         """End one turn and wait for the harness to finish diagnosing it.
@@ -155,7 +166,7 @@ class HarnessWiring:
         — a harness hiccup must degrade the study's telemetry, not fail the trial.
         """
 
-        if not self._settle_each_turn or self.session_id is None:
+        if not self._settle_each_turn:
             return None
         if self._settled is not None and self._settled[0] == turn_index:
             return self._settled[1]
@@ -170,6 +181,9 @@ class HarnessWiring:
                     "session_id": self.session_id,
                     "turn_index": turn_index,
                     "end_state": self.end_state(),
+                    "rule_scope_hints": [
+                        hint.to_json() for hint in self._rule_scope_hints
+                    ],
                 }
             )
             result = await self.harness.settle(self.session_id)
@@ -193,12 +207,56 @@ class HarnessWiring:
 
         Serves two consumers: it is stashed verbatim as ``EvalCase.replay_input``
         when a breach is captured, and it identifies the task to the outcome
-        verifier. It therefore carries the task id in **both** phases — capture is
-        gated by ``capture_eval_cases`` (off outside the learning phase), so the
-        frozen eval phase still gets a verified outcome without capturing cases.
+        verifier. The live wiring therefore always carries the task id; capture is
+        separately gated by ``capture_eval_cases``. Frozen eval does not call this
+        method because it has no live harness or outcome verifier.
         """
 
         state: dict[str, Any] = {"benchmark": self.benchmark, "task_id": self.task_id}
+        if self._task_summary:
+            # Read by managed repair (sanitized and bounded by the harness) so a
+            # rule's scope can come from what the task actually asked for rather
+            # than from an opaque id like "3ab5b8b_2".
+            state["task_summary"] = self._task_summary
         if self.capture:
             state["replay"] = self.replay_descriptor
         return state
+
+
+class ReplayRuleWiring:
+    """Read-only on-demand rule access for a detached validation replay."""
+
+    def __init__(self, context: ReplayContext) -> None:
+        self._context = context
+        self._tools = specs_to_openai(context.task_tools.specs())
+
+    def mark_environment_ready(self) -> None:
+        """Tell the harness this replay has stopped queueing and is now running.
+
+        AppWorld serializes every task lifecycle behind one world lock, so a
+        background replay can sit behind a live trial for minutes. Without this
+        signal that wait is charged to the replay's execution budget, and the
+        resulting timeout is indistinguishable from a hung agent — recorded as
+        inconclusive evidence about a rule that never actually ran.
+        """
+
+        self._context.mark_execution_started()
+
+    @property
+    def settles_turns(self) -> bool:
+        return False
+
+    def system_preamble(self) -> str:
+        return str(self._context)
+
+    def harness_tools(self) -> list[dict[str, Any]]:
+        return list(self._tools)
+
+    def is_harness_tool(self, name: str) -> bool:
+        return name.startswith("harness_")
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        return await self._context.task_tools.call(name, args)
+
+    async def settle_turn(self, turn_index: int) -> None:
+        del turn_index

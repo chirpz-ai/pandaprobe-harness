@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -104,6 +107,17 @@ def _stores(
     return config, journal, rules, evalset
 
 
+async def _read_candidate(context: Any, rule: Rule) -> None:
+    """Do what a real replayed agent does: pull the scope it was told about.
+
+    A replay that never reads the candidate cannot produce a conclusive verdict
+    (that is the point of the read ledger), so any test asserting promote/retire
+    has to actually exercise it.
+    """
+
+    await context.task_tools.call("harness_rules_read", {"scope": rule.scope})
+
+
 def _seed_failure_case(evalset: EvalSet, *, replayable: bool = True) -> EvalCase:
     case = evalset.capture(
         session_id="s-original",
@@ -125,9 +139,16 @@ async def test_replay_promotes_when_metric_improves(tmp_path: Path) -> None:
     fake = FakeCliClient()
     fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
     contexts: list[str] = []
+    replay_rule_text: list[str] = []
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
         contexts.append(context)
+        index = await context.task_tools.call("harness_rules_list", {})
+        assert index["scopes"][0]["scope"] == candidate.scope
+        read = await context.task_tools.call(
+            "harness_rules_read", {"scope": candidate.scope}
+        )
+        replay_rule_text.append(read["content"])
         return "s-replayed"
 
     validator = ReplayValidator(
@@ -141,13 +162,13 @@ async def test_replay_promotes_when_metric_improves(tmp_path: Path) -> None:
 
     assert verdict.outcome == "promote"
     assert verdict.validator == "replay"
-    # The candidate was in force during the replay: the provisional SECTION
-    # rendered (the template merely mentions the phrase in prose, so the
-    # "###" heading is the meaningful check).
+    # The candidate was discoverable on demand during replay, not injected.
     from pandaprobe_harness.workspace.rules import PROVISIONAL_HEADING
 
-    assert PROVISIONAL_HEADING in contexts[0]
-    assert "verify before retrying" in contexts[0]
+    assert PROVISIONAL_HEADING not in contexts[0]
+    assert PROVISIONAL_HEADING in replay_rule_text[0]
+    assert "verify before retrying" not in contexts[0]
+    assert "verify before retrying" in replay_rule_text[0]
 
 
 async def test_replay_retires_without_improvement(tmp_path: Path) -> None:
@@ -158,7 +179,8 @@ async def test_replay_retires_without_improvement(tmp_path: Path) -> None:
     # Replayed session scores exactly the baseline: no improvement, no regression.
     fake.script_trace("s-replayed", task_completion=0.3, coherence=0.4)
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
         return "s-replayed"
 
     validator = ReplayValidator(
@@ -192,7 +214,8 @@ async def test_replay_retires_on_win_regression(tmp_path: Path) -> None:
     )
     fake.script_trace(f"s-replay-{win.id}", task_completion=0.2)
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
         return f"s-replay-{case.id}"
 
     validator = ReplayValidator(
@@ -441,7 +464,7 @@ async def test_engine_retires_failed_trial(tmp_path: Path) -> None:
 
 async def test_engine_prefers_replay_over_forward_trial(tmp_path: Path) -> None:
     config, journal, rules, evalset = _stores(tmp_path)
-    rules.add(
+    candidate = rules.add(
         "verify before retrying", "x", metric="task_completion",
         tags=["stall:task_completion"],
     )
@@ -449,7 +472,8 @@ async def test_engine_prefers_replay_over_forward_trial(tmp_path: Path) -> None:
     fake = FakeCliClient()
     fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
         return "s-replayed"
 
     engine = ValidationEngine(
@@ -497,7 +521,7 @@ async def test_evidence_observed_during_a_replay_round_survives_the_verdict(
     snapshot."""
 
     config, journal, rules, evalset = _stores(tmp_path)
-    rules.add(
+    candidate = rules.add(
         "verify before retrying", "x", metric="task_completion",
         tags=["stall:task_completion"],
     )
@@ -506,7 +530,8 @@ async def test_evidence_observed_during_a_replay_round_survives_the_verdict(
     fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
     engine_ref: list[ValidationEngine] = []
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
         # A concurrent session's report lands mid-round.
         engine_ref[0].observe_report("s-during-replay", set())
         return "s-replayed"
@@ -544,7 +569,8 @@ async def test_candidate_retired_mid_round_is_skipped(tmp_path: Path) -> None:
     fake = FakeCliClient()
     fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, first)
         # While the first candidate replays, the agent retires the second.
         rules.retire(second.id, reason="agent decided against it")
         return "s-replayed"
@@ -561,3 +587,523 @@ async def test_candidate_retired_mid_round_is_skipped(tmp_path: Path) -> None:
     verdicts = await engine.evaluate_candidates()
     assert [v.rule_id for v in verdicts] == [first.id]  # the second was skipped
     assert [r.id for r in rules.active()] == [first.id]
+
+
+# -- every candidate reaches a verdict ----------------------------------------------
+
+
+async def test_a_beneficial_candidate_is_promoted_by_the_forward_trial(
+    tmp_path: Path,
+) -> None:
+    """The cheap path must be able to promote on its own.
+
+    In the inspected run three candidates had already earned this verdict and
+    never received it, because the code only reached the forward validator after
+    replay returned non-pending or exhausted its attempts.
+    """
+
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=2)
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+    # Two clean sessions: the candidate's metric family never fired.
+    engine.observe_report("s1", set())
+    engine.observe_report("s2", set())
+
+    (verdict,) = await engine.evaluate_candidates()
+
+    assert verdict.outcome == "promote" and verdict.validator == "forward_trial"
+    assert [rule.id for rule in rules.active()] == [candidate.id]
+
+
+async def test_a_regressing_candidate_is_retired_by_the_forward_trial(
+    tmp_path: Path,
+) -> None:
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=2)
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+    # Both sessions still breach the metric the rule claims to fix.
+    engine.observe_report("s1", {"breach:task_completion"})
+    engine.observe_report("s2", {"breach:task_completion"})
+
+    (verdict,) = await engine.evaluate_candidates()
+
+    assert verdict.outcome == "retire"
+    assert rules.active() == []
+    assert [rule.status for rule in rules.all() if rule.id == candidate.id] == ["retired"]
+
+
+async def test_a_replay_that_never_read_the_candidate_is_not_conclusive(
+    tmp_path: Path,
+) -> None:
+    """Scores moved, but this rule was never seen — so it did not move them."""
+
+    config, journal, rules, evalset = _stores(tmp_path)
+    candidate = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    # Scores that would otherwise promote outright.
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        del case, context  # deliberately never reads the rule
+        return "s-replayed"
+
+    verdict = await ReplayValidator(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        replay=replay,
+    ).validate(candidate)
+
+    assert verdict.outcome == "pending"
+    assert verdict.pending_reason == "candidate_not_exercised"
+    assert verdict.details["unexercised"] == 1
+    assert verdict.details["cases"][0]["candidate_surfaced"] is False
+
+
+async def test_a_replay_only_sees_the_candidate_under_test(tmp_path: Path) -> None:
+    """Unrelated provisionals cannot steer a replay and be charged to this rule."""
+
+    config, journal, rules, evalset = _stores(tmp_path)
+    under_test = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    unrelated = rules.add("some other provisional idea", "y", metric="coherence")
+    active = rules.add("an already validated rule", "z")
+    rules.promote(active.id, reason="test setup")
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
+    seen: list[str] = []
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        del case
+        for scope in ("global", under_test.scope, unrelated.scope):
+            result = await context.task_tools.call("harness_rules_read", {"scope": scope})
+            seen.append(result["content"])
+        found = await context.task_tools.call("harness_rules_search", {"query": "rule"})
+        seen.extend(rule["id"] for rule in found["rules"])
+        return "s-replayed"
+
+    verdict = await ReplayValidator(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        replay=replay,
+    ).validate(under_test)
+
+    blob = "\n".join(seen)
+    assert "verify before retrying" in blob  # the candidate under test
+    assert "an already validated rule" in blob  # actives stay visible
+    assert "some other provisional idea" not in blob  # the other candidate does not
+    assert unrelated.id not in seen
+    assert verdict.outcome == "promote"
+
+
+async def test_an_unrelated_metric_drop_does_not_retire_the_candidate(
+    tmp_path: Path,
+) -> None:
+    """A candidate answers for its own metric, not for everything scored beside it.
+
+    All four retirements in the inspected run fired on a metric the candidate never
+    claimed — one on a coherence drop of 0.09, against a natural spread of ~0.15.
+    """
+
+    config, journal, rules, evalset = _stores(tmp_path)
+    candidate = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    # Target metric improves past the margin; an unrelated judged metric dips.
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.25)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
+        return "s-replayed"
+
+    verdict = await ReplayValidator(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        replay=replay,
+    ).validate(candidate)
+
+    assert verdict.outcome == "promote"
+    assert "coherence" not in verdict.details["retire_on"]
+
+
+async def test_a_target_metric_drop_still_retires_the_candidate(tmp_path: Path) -> None:
+    config, journal, rules, evalset = _stores(tmp_path)
+    candidate = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.script_trace("s-replayed", task_completion=0.05, coherence=0.4)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
+        return "s-replayed"
+
+    verdict = await ReplayValidator(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        replay=replay,
+    ).validate(candidate)
+
+    assert verdict.outcome == "retire"
+    assert "task_completion" in verdict.reason
+
+
+async def test_every_pending_replay_round_counts_toward_the_fallback(
+    tmp_path: Path,
+) -> None:
+    """`replay_attempts` must advance on ANY pending replay, not just some.
+
+    Counting only rounds whose prose said "inconclusive" left a candidate with no
+    matching replayable case retrying replay forever, so the forward trial was
+    unreachable and the candidate never got a verdict at all.
+    """
+
+    # A trial window of 3 with one observed session keeps the forward trial pending
+    # too, so the only thing that can advance across rounds is the replay counter.
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=3)
+    rules.add("verify before retrying", "x", metric="task_completion")
+    # No eval case exists, so replay is pending with "no matching replayable case".
+    replays = 0
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        nonlocal replays
+        replays += 1
+        return "s-never"
+
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+        replay=replay,
+    )
+    engine.observe_report("s1", set())
+
+    attempts = []
+    for _ in range(4):
+        await engine.evaluate_candidates()
+        candidates = rules.candidates()
+        if not candidates:
+            break
+        attempts.append(candidates[0].trial.replay_attempts)  # type: ignore[union-attr]
+
+    assert replays == 0  # nothing was replayable to begin with
+    # The counter advances every round, so _MAX_REPLAY_ATTEMPTS is reachable and
+    # the candidate stops burning rounds on a replay that can never happen.
+    assert attempts == [1, 2, 3, 3]
+
+
+async def test_the_round_budget_still_yields_a_verdict_per_candidate(
+    tmp_path: Path,
+) -> None:
+    """Past the replay budget, candidates get the cheap verdict — not none.
+
+    Sequential replays are slower than candidate creation, so a round that only
+    ever replays leaves the newest candidates permanently undecided.
+    """
+
+    config, journal, rules, evalset = _stores(
+        tmp_path, rule_trial_min_sessions=1, validation_round_budget_s=0.001
+    )
+    for index in range(3):
+        rules.add(f"rule number {index}", "x", metric="task_completion")
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        del case, context
+        await asyncio.sleep(0.01)  # push the round past its budget
+        return "s-replayed"
+
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        journal=journal,
+        replay=replay,
+    )
+    engine.observe_report("s1", set())
+
+    verdicts = await engine.evaluate_candidates()
+
+    assert len(verdicts) == 3  # every candidate was judged
+    assert all(verdict.outcome != "pending" for verdict in verdicts)
+
+
+async def test_the_round_rotates_which_candidate_replays_first(
+    tmp_path: Path,
+) -> None:
+    """Otherwise a round always re-spends its budget on the same head of the list."""
+
+    config, journal, rules, evalset = _stores(
+        tmp_path, rule_trial_min_sessions=99  # never conclude; observe ordering only
+    )
+    first = rules.add("rule alpha", "x", metric="task_completion")
+    second = rules.add("rule beta", "y", metric="task_completion")
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+
+    first_round = [v.rule_id for v in await engine.evaluate_candidates()]
+    second_round = [v.rule_id for v in await engine.evaluate_candidates()]
+
+    assert first_round == [first.id, second.id]
+    assert second_round == [first.id, second.id][::-1]
+
+
+async def test_env_wait_is_not_charged_to_the_replay_budget(tmp_path: Path) -> None:
+    """A replay queued for a shared environment must not "time out" before running.
+
+    AppWorld serializes every lifecycle behind one world lock, so this wait is
+    routine; charging it to the run budget reports an inconclusive replay for a
+    candidate that never executed.
+    """
+
+    config, journal, rules, evalset = _stores(
+        tmp_path, replay_timeout_s=5.0, replay_env_wait_timeout_s=5.0
+    )
+    candidate = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        del case
+        await asyncio.sleep(0.05)  # queueing for the environment
+        context.mark_execution_started()
+        await _read_candidate(context, candidate)
+        return "s-replayed"
+
+    verdict = await ReplayValidator(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        replay=replay,
+    ).validate(candidate)
+
+    assert verdict.outcome == "promote"
+
+
+async def test_a_replay_that_never_reaches_its_environment_stays_recoverable(
+    tmp_path: Path,
+) -> None:
+    config, journal, rules, evalset = _stores(
+        tmp_path, replay_timeout_s=5.0, replay_env_wait_timeout_s=0.05
+    )
+    candidate = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    _seed_failure_case(evalset)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        del case, context
+        await asyncio.sleep(30)  # never acquires the environment
+        return "s-never"
+
+    verdict = await ReplayValidator(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        replay=replay,
+    ).validate(candidate)
+
+    assert verdict.outcome == "pending"
+    assert verdict.pending_reason == "env_wait_timeout"
+    # Recoverable: the candidate is untouched and can be validated again.
+    assert [rule.status for rule in rules.candidates()] == ["candidate"]
+
+
+async def test_validation_telemetry_explains_pending_and_terminal_states(
+    tmp_path: Path,
+) -> None:
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=2)
+    rules.add("verify before retrying", "x", metric="task_completion")
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+
+    await engine.evaluate_candidates()  # pending: the trial window is not full
+    engine.observe_report("s1", set())
+    engine.observe_report("s2", set())
+    await engine.evaluate_candidates()  # now promotable
+
+    events = journal.recent(limit=0, types=("validation_verdict",))
+    reasons = [event.get("pending_reason") for event in events]
+    outcomes = [event.get("outcome") for event in events]
+    assert "trial_in_progress" in reasons
+    assert outcomes[-1] == "promote"
+    rounds = journal.recent(limit=0, types=("validation_round_finished",))
+    assert rounds[-1]["promoted"] == 1
+    assert rounds[-1]["decided"] == 1
+    starts = journal.recent(limit=0, types=("validation_round_started",))
+    assert starts and starts[0]["queued_rule_ids"]
+
+
+async def test_repeated_validation_is_idempotent(tmp_path: Path) -> None:
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=1)
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+    engine.observe_report("s1", set())
+
+    first = await engine.evaluate_candidates()
+    second = await engine.evaluate_candidates()
+    third = await engine.evaluate_candidates()
+
+    assert [v.outcome for v in first] == ["promote"]
+    assert second == [] and third == []  # nothing left to decide
+    assert [rule.id for rule in rules.active()] == [candidate.id]
+    promotions = journal.recent(limit=0, types=("rule_promote",))
+    assert len(promotions) == 1  # promoted once, not once per round
+
+
+async def test_a_concurrent_verdict_cannot_double_apply(tmp_path: Path) -> None:
+    """Two rounds racing on one candidate produce one transition, not a conflict."""
+
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=1)
+    candidate = rules.add("verify before retrying", "x", metric="task_completion")
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+    engine.observe_report("s1", set())
+
+    results = await asyncio.gather(
+        engine.evaluate_candidates(), engine.evaluate_candidates()
+    )
+
+    # Both rounds may reach the same conclusion — the store is what serializes it.
+    # `promote` raises KeyError once the rule is no longer a candidate, so the
+    # second application is a caught no-op rather than a conflicting transition.
+    assert [v.outcome for batch in results for v in batch] == ["promote", "promote"]
+    assert [rule.id for rule in rules.active()] == [candidate.id]
+    assert len(journal.recent(limit=0, types=("rule_promote",))) == 1
+    assert [rule.status for rule in rules.all()] == ["active"]
+
+
+async def test_a_retirement_journals_its_structured_evidence(tmp_path: Path) -> None:
+    """The deltas that decided a retirement must survive, not just the prose."""
+
+    config, journal, rules, evalset = _stores(tmp_path)
+    candidate = rules.add(
+        "verify before retrying", "x", metric="task_completion",
+        tags=["stall:task_completion"],
+    )
+    _seed_failure_case(evalset)
+    fake = FakeCliClient()
+    fake.script_trace("s-replayed", task_completion=0.05, coherence=0.4)
+
+    async def replay(case: EvalCase, context: Any) -> str:
+        await _read_candidate(context, candidate)
+        return "s-replayed"
+
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(fake, config),
+        journal=journal,
+        replay=replay,
+    )
+    await engine.evaluate_candidates()
+
+    (event,) = journal.recent(limit=0, types=("rule_retire",))
+    assert event["validator"] == "replay"
+    assert event["evidence"]["cases"][0]["deltas"]["task_completion"] < 0
+    assert event["evidence"]["cases"][0]["candidate_surfaced"] is True
+    cases = journal.recent(limit=0, types=("validation_replay_case",))
+    assert cases and cases[0]["outcome"] == "scored"
+
+
+async def test_a_trial_record_without_the_newer_fields_still_loads(
+    tmp_path: Path,
+) -> None:
+    config, journal, rules, evalset = _stores(tmp_path, rule_trial_min_sessions=1)
+    path = config.rules_store_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "id": "r-minimal",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "rule": "a persisted candidate with a minimal trial",
+                "rationale": "x",
+                "status": "candidate",
+                "scope": "scoped",
+                "trial": {"observed_sessions": ["s-old"], "breached_sessions": []},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    (candidate,) = rules.candidates()
+    assert candidate.trial is not None
+    assert candidate.trial.replay_attempts == 0
+    assert candidate.scope == "scoped"  # an explicit scope is respected as-is
+
+    engine = ValidationEngine(
+        config=config,
+        rules=rules,
+        evalset=evalset,
+        evaluator=MetricEvaluator(FakeCliClient(), config),
+        journal=journal,
+    )
+    (verdict,) = await engine.evaluate_candidates()
+    assert verdict.outcome == "promote"

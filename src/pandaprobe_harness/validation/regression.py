@@ -1,8 +1,8 @@
 """Regression runs: replay the eval-set against the current rule set.
 
 ``run_regression`` re-runs every (or a sampled subset of the) captured eval
-case through the developer-supplied :data:`ReplayFn` with the *current*
-rendered rules in context, scores the replayed session via the
+case through the developer-supplied :data:`ReplayFn` with the current live rules
+available through read-only tools, scores the replayed session via the
 ``MetricEvaluator``, and classifies each case ``improved`` / ``unchanged`` /
 ``regressed`` against its captured baseline. This is the periodic "did a new
 rule break an old win" guard.
@@ -14,8 +14,8 @@ async. Without a replay function the run degrades honestly — one clear
 warning, every case reported ``skipped`` — and never raises.
 
 ``main`` is the ``pandaprobe-harness-eval`` operator CLI over the
-env-configured workspace (``HARNESS_*``), mirroring the companion CLI's
-subprocess-friendly JSON output.
+environment-configured workspace (``HARNESS_*``), with JSON output suitable
+for automation.
 """
 
 from __future__ import annotations
@@ -30,9 +30,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from ..agent_tools.toolset import TaskToolset
 from ..config import HarnessConfig
 from ..evaluation.evaluator import MetricEvaluator
-from ..workspace.evalset import EvalCase, EvalSet, ReplayFn
+from ..hook.context import compose_system_preamble
+from ..workspace.evalset import EvalCase, EvalSet, ReplayContext, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.rules import RulesStore
 
@@ -155,7 +157,7 @@ def _skipped(case: EvalCase, reason: str) -> CaseResult:
 
 async def replay_case(
     case: EvalCase,
-    context: str,
+    context: ReplayContext,
     *,
     config: HarnessConfig,
     evaluator: MetricEvaluator,
@@ -249,7 +251,10 @@ async def run_regression(
         )
         results = [_skipped(case, "no replay function wired") for case in ordered]
     else:
-        context = await asyncio.to_thread(rules.render_markdown)
+        context = ReplayContext(
+            compose_system_preamble(),
+            task_tools=TaskToolset(config=config, rules=rules),
+        )
         for case in ordered:
             results.append(
                 await replay_case(

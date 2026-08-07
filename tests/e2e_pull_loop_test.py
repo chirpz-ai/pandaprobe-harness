@@ -1,246 +1,232 @@
-"""End-to-end pull-based self-healing scenario (v0.5-compat mode).
-
-Simulates an agent stuck in an infinite-repetition / inconsistent-session
-failure and verifies the full pull loop:
-
-  failure turn -> eval resolves -> hook posts a diagnostic notice (NO
-  injection) -> the system context shows the mailbox banner -> the agent
-  pulls the notice with its harness toolset, inspects the flagged trace,
-  records a structured rule with provenance, acknowledges the notice ->
-  the banner clears -> subsequent turns pass and post nothing further ->
-  the journal records the whole cycle, across runs.
-
-These tests run with ``rule_validation=False`` / ``rule_retrieval=False`` —
-the explicit v0.5-compatibility switches — so a rule enters ``active`` the
-moment it is written. The default closed-loop behavior (candidate rules,
-automatic validation, retrieval) is covered by ``e2e_closed_loop_test.py``.
-"""
+"""Arbitrary developer task loop with package-owned managed repair."""
 
 from __future__ import annotations
 
-import os
+import asyncio
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from pandaprobe_harness import Harness, HarnessConfig
+from pandaprobe_harness.repair.completion import (
+    NormalizedRepairMessage,
+    NormalizedToolCall,
+)
+from pandaprobe_harness.repair.models import RepairUsage
 from tests.fakes.fake_cli_client import FakeCliClient
-from tests.fakes.mock_agent import MITIGATION_RULE, MockLLMAgent
 
-SESSION = "s-e2e-1"
-
-
-def _compat_config(tmp_path: Path) -> HarnessConfig:
-    """The v0.5-equivalent switches under test: add() -> active immediately."""
-
-    return HarnessConfig(
-        harness_root=tmp_path / "harness",
-        poll_interval_s=0.0,
-        poll_max_attempts=5,
-        drain_timeout_s=5.0,
-        rule_validation=False,
-        rule_retrieval=False,
-        gate_window=1,
-    )
+SESSION = "developer-task-session"
+GUIDANCE = "Verify the exact transaction status before retrying a payment mutation."
 
 
-def _failing_cli() -> FakeCliClient:
-    return FakeCliClient()
+class CandidateRepairCompletion:
+    """Script the normalized PandaProbe/LiteLLM tool-call contract."""
 
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
 
-async def test_pull_loop_self_heals_and_converges(tmp_path: Path) -> None:
-    config = _compat_config(tmp_path)
-    cli = _failing_cli()
-    harness = Harness.create(config, cli=cli)
-    agent = MockLLMAgent(session_id=SESSION, toolset=harness.toolset)
-
-    async def run_turn() -> None:
-        raw = await agent.take_turn()
-        scores = (
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        max_tokens: int,
+        temperature: float | None,
+        reasoning_effort: str | None,
+        timeout_s: float,
+    ) -> NormalizedRepairMessage:
+        self.calls.append(
             {
-                "task_completion": 0.92,
-                "coherence": 0.88,
-                "tool_correctness": 0.92,
-                "argument_correctness": 0.88,
-            }
-            if agent.healed
-            else {
-                "task_completion": 0.30,
-                "coherence": 0.40,
-                "tool_correctness": 0.20,
-                "argument_correctness": 0.20,
+                "model": model,
+                "messages": list(messages),
+                "tools": list(tools),
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "reasoning_effort": reasoning_effort,
+                "timeout_s": timeout_s,
             }
         )
-        cli.script_trace(SESSION, **scores)
-        if len(cli.session_traces[SESSION]) == 1:
-            cli.script_trace(SESSION, **scores)
-        harness.on_turn_end(raw)
-        await harness.refresh(SESSION)
-
-    # --- Turn 1: the failure (identical repeated tool call) -----------------
-    await run_turn()
-    assert agent.actions == ["charge_payment"]
-
-    # The eval resolved and the notice was posted with NO injection and NO
-    # drain barrier — it is simply waiting in the mailbox.
-    pending = harness.mailbox.pending()
-    assert len(pending) == 1
-    notice = pending[0]
-    assert notice.severity == "breach"
-    assert notice.flagged_traces == (f"{SESSION}-tr2",)
-    assert notice.signal_breakdown[f"{SESSION}-tr2"] == {
-        "task_completion": 0.3,
-        "coherence": 0.4,
-        "tool_correctness": 0.2,
-        "argument_correctness": 0.2,
-    }
-    assert os.path.exists(notice.dump_path)
-    assert config.latest_eval_file.exists()
-
-    # The always-loaded system context now carries the banner + protocol.
-    context = harness.system_context()
-    assert "⚠ HARNESS: 1 pending diagnostic notice(s)" in context
-    assert "max severity: breach" in context
-    assert "harness_mailbox_list" in context
-
-    # --- Turn 2: the agent pulls, diagnoses, records a rule, acknowledges ---
-    await run_turn()
-    assert agent.actions[-1] == "diagnose"
-
-    ops = [name for name, _ in agent.tool_calls]
-    assert ops[:2] == ["harness_mailbox_list", "harness_mailbox_list"] or ops[0] == (
-        "harness_mailbox_list"
-    )
-    for expected in (
-        "harness_mailbox_read",
-        "harness_trace_inspect",
-        "harness_journal",
-        "harness_rule_add",
-        "harness_mailbox_ack",
-    ):
-        assert expected in ops
-
-    # The notice moved pending -> processed with its resolution.
-    assert harness.mailbox.pending() == []
-    processed = harness.mailbox.read(notice.id)
-    assert processed is not None and processed.status == "acknowledged"
-    assert processed.resolution is not None
-    assert processed.resolution.rule_id == agent.rule_ids[0]
-
-    # The structured rule carries provenance and reaches the rendered rules.
-    # With rule_validation=False (the compat switch) it is active immediately.
-    active = harness.rules.active()
-    assert len(active) == 1
-    assert active[0].status == "active"
-    assert active[0].source_notice_id == notice.id
-    assert active[0].metric in {"task_completion", "coherence"}
-    # The rule body lands in its scope file; the skill root only indexes it.
-    scope_file = config.rules_scope_file(active[0].scope)
-    assert MITIGATION_RULE[:30] in scope_file.read_text(encoding="utf-8")
-
-    # The banner cleared, and the learned rule is back within the agent's reach:
-    # named in the References and one `harness_rules_read` away. That pull — not
-    # an injection into the prompt — is what closes the loop in v2.
-    context = harness.system_context()
-    assert "⚠ HARNESS" not in context
-    assert f"rules/{active[0].scope}.md" in context
-    assert MITIGATION_RULE[:30] not in context
-    fetched = await harness.toolset.call("harness_rules_read", {"scope": active[0].scope})
-    assert MITIGATION_RULE[:30] in fetched["content"]
-
-    # --- Turns 3-4: corrected behaviour, no further notices -----------------
-    await run_turn()
-    assert agent.actions[-1] == "verified_payment_then_charge"
-    await run_turn()
-    assert harness.mailbox.pending() == []
-
-    # --- Convergence: the journal recorded the full cycle, exactly once -----
-    notices = harness.journal.recent(types=("notice",))
-    assert len(notices) == 1
-    assert [e["type"] for e in harness.journal.recent(types=("rule_add",))] == ["rule_add"]
-    assert [e["type"] for e in harness.journal.recent(types=("ack",))] == ["ack"]
-    assert len(harness.journal.recent(types=("recovery",))) == 1
-    assert agent.healed
+        assignment = json.loads(str(messages[1]["content"]).split("\n", 1)[1])
+        if len(self.calls) == 1:
+            return NormalizedRepairMessage(
+                tool_calls=(
+                    NormalizedToolCall(
+                        "read",
+                        "harness_notice_read",
+                        json.dumps({"notice_id": assignment["notice_id"]}),
+                    ),
+                    NormalizedToolCall(
+                        "trace",
+                        "harness_trace_inspect",
+                        json.dumps({"trace_id": assignment["flagged_traces"][0]}),
+                    ),
+                    NormalizedToolCall(
+                        "search",
+                        "harness_rules_search",
+                        json.dumps({"query": "payment retry"}),
+                    ),
+                    NormalizedToolCall(
+                        "add",
+                        "harness_rule_add",
+                        json.dumps(
+                            {
+                                "rule": GUIDANCE,
+                                "rationale": "The failed turn repeated a mutation blindly.",
+                                "metric": "tool_correctness",
+                                "scope": "payments",
+                            }
+                        ),
+                    ),
+                ),
+                usage=RepairUsage(input_tokens=100, output_tokens=40, total_tokens=140),
+            )
+        add_result = next(
+            json.loads(str(message["content"]))
+            for message in messages
+            if message.get("role") == "tool" and message.get("name") == "harness_rule_add"
+        )
+        return NormalizedRepairMessage(
+            tool_calls=(
+                NormalizedToolCall(
+                    "ack",
+                    "harness_notice_ack",
+                    json.dumps(
+                        {
+                            "notice_id": assignment["notice_id"],
+                            "rule_id": add_result["rule"]["id"],
+                        }
+                    ),
+                ),
+            ),
+            usage=RepairUsage(input_tokens=80, output_tokens=10, total_tokens=90),
+        )
 
 
-async def test_tier_one_stall_posts_single_advisory_notice(tmp_path: Path) -> None:
-    """A Tier-1 stall posts one advisory notice without a Tier-2 breach."""
+class DeveloperTaskAgent:
+    """The host owns this object, its prompt handling, and its domain action."""
 
-    cfg = HarnessConfig(
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+        self.rule_calls: list[str] = []
+
+    async def turn(self, context: str, tools: Any) -> dict[str, Any]:
+        index = await tools.call("harness_rules_list", {})
+        self.rule_calls.append("harness_rules_list")
+        guidance = ""
+        if any(scope["scope"] == "payments" for scope in index["scopes"]):
+            read = await tools.call("harness_rules_read", {"scope": "payments"})
+            self.rule_calls.append("harness_rules_read")
+            guidance = str(read["content"])
+        action = "check_status_then_charge" if GUIDANCE in guidance else "charge_twice"
+        self.actions.append(action)
+        return {"action": action, "task": "charge transaction tx-1"}
+
+
+async def test_managed_repair_reaches_same_session_next_turn(tmp_path: Path) -> None:
+    config = HarnessConfig(
         harness_root=tmp_path / "harness",
-        poll_interval_s=0.0,
-        poll_max_attempts=5,
-        eval_retry_backoff_s=0.0,
-        gate_window=2,
+        repair_model="openai/test-repair-model",
+        repair_timeout_s=5,
+        repair_max_turns=4,
+        poll_interval_s=0,
+        eval_retry_backoff_s=0,
+        gate_window=1,
+        health_check=False,
     )
     cli = FakeCliClient()
-    cli.script_trajectory("s-stall", "task_completion", (0.30, 0.30, 0.30))
-    harness = Harness.create(cfg, cli=cli)
+    completion = CandidateRepairCompletion()
+    harness = Harness.create(config, cli=cli, _repair_completion=completion)
+    task_agent = DeveloperTaskAgent()
 
-    session = "s-stall"
-    harness.on_turn_end({"session_id": session, "turn_index": 1, "end_state": {}})
-    await harness.refresh(session)
-    cli.script_trace(session, task_completion=0.30)
-    harness.on_turn_end({"session_id": session, "turn_index": 2, "end_state": {}})
-    await harness.refresh(session)
-
-    pending = harness.mailbox.pending()
-    assert len(pending) == 1, "exactly one notice despite a persistent stall"
-    assert pending[0].severity == "trend"
-
-
-async def test_rules_and_journal_persist_across_runs(tmp_path: Path) -> None:
-    """Cross-run memory: a second harness over the same workspace sees the
-    learned rules in its context, the journal spanning runs, and rule
-    effectiveness computed against pre-rule notices."""
-
-    config = _compat_config(tmp_path)
-    # Run 1: breach -> self-heal.
-    cli = _failing_cli()
-    harness1 = Harness.create(config, cli=cli)
-    agent = MockLLMAgent(session_id=SESSION, toolset=harness1.toolset)
+    first_context = harness.system_context(SESSION, task_hint="payment")
+    first_end_state = await task_agent.turn(first_context, harness.task_tools)
     for _ in range(2):
-        raw = await agent.take_turn()
-        scores = (
-            {
-                "task_completion": 0.92,
-                "coherence": 0.88,
-                "tool_correctness": 0.92,
-                "argument_correctness": 0.88,
-            }
-            if agent.healed
-            else {
-                "task_completion": 0.30,
-                "coherence": 0.40,
-                "tool_correctness": 0.20,
-                "argument_correctness": 0.20,
-            }
+        cli.script_trace(
+            SESSION,
+            task_completion=0.2,
+            coherence=0.3,
+            tool_correctness=0.1,
+            argument_correctness=0.1,
         )
-        cli.script_trace(SESSION, **scores)
-        if len(cli.session_traces[SESSION]) == 1:
-            cli.script_trace(SESSION, **scores)
-        harness1.on_turn_end(raw)
-        await harness1.refresh(SESSION)
-    assert agent.healed
+    harness.on_turn_end(
+        {"session_id": SESSION, "turn_index": 1, "end_state": first_end_state}
+    )
+    settled = await harness.settle(SESSION)
 
-    # Run 2: a fresh process over the same workspace. The learned rule survives
-    # and is still reachable — the References index is regenerated from the store,
-    # so a new process rediscovers the rule files without being told about them.
-    harness2 = Harness.create(config, cli=FakeCliClient())
-    assert "rules/scoped.md" in harness2.system_context()
-    fetched = await harness2.toolset.call("harness_rules_read", {"scope": "scoped"})
-    assert "payment tool twice" in fetched["content"]
+    assert settled.report is not None and settled.report.any_alert
+    assert settled.repair is not None and settled.repair.status == "candidate_added"
+    assert len(settled.repair.candidate_rule_ids) == 1
+    assert len(completion.calls) == 2
+    assert all(call["model"] == config.repair_model for call in completion.calls)
+    assert settled.repair.repair_session_id != SESSION
+    assert settled.repair.repair_session_id.startswith(f"repair-{SESSION}-")
+    assert harness.mailbox.pending() == []
 
-    events = harness2.journal.recent(types=("notice", "rule_add", "ack"))
-    assert {e["type"] for e in events} == {"notice", "rule_add", "ack"}
+    candidate = harness.rules.candidates()[0]
+    second_context = harness.system_context(SESSION, task_hint="payment")
+    assert candidate.id not in second_context
+    assert GUIDANCE not in second_context
+    index = await harness.task_tools.call("harness_rules_list", {})
+    assert index["scopes"] == [
+        {
+            "scope": "payments",
+            "path": "rules/payments.md",
+            "description": "Payments workflows.",
+            "active": 0,
+            "provisional": 1,
+        }
+    ]
+    scoped = await harness.task_tools.call("harness_rules_read", {"scope": "payments"})
+    assert GUIDANCE in scoped["content"]
+    assert "candidate" in scoped["content"].casefold()
+    second_end_state = await task_agent.turn(second_context, harness.task_tools)
+    assert task_agent.actions == ["charge_twice", "check_status_then_charge"]
 
-    effectiveness = harness2.rules.effectiveness()
-    rule_id = harness2.rules.active()[0].id
-    assert effectiveness[rule_id]["notices_before"] >= 1
-    assert effectiveness[rule_id]["notices_after"] == 0
+    cli.script_trace(
+        SESSION,
+        task_completion=0.9,
+        coherence=0.9,
+        tool_correctness=0.9,
+        argument_correctness=0.9,
+    )
+    harness.on_turn_end(
+        {"session_id": SESSION, "turn_index": 2, "end_state": second_end_state}
+    )
+    await harness.settle(SESSION)
+    assert len(completion.calls) == 2, "repair did not recurse or run twice"
+    listed_sessions = [
+        call[call.index("--session-id") + 1]
+        for call in cli.calls
+        if call[:2] == ("traces", "list") and "--session-id" in call
+    ]
+    assert listed_sessions and set(listed_sessions) == {SESSION}
 
 
-def test_fake_binary_is_executable() -> None:
-    fake = Path(__file__).parent / "bin" / "fake_pandaprobe"
-    assert fake.exists()
-    assert os.access(fake, os.X_OK), "fake CLI must carry the executable bit"
-    first_line = fake.read_text(encoding="utf-8").splitlines()[0]
-    assert first_line.startswith("#!") and "python" in first_line
+def test_persisted_workspace_is_reused_without_task_administration(tmp_path: Path) -> None:
+    config = HarnessConfig(
+        harness_root=tmp_path / "harness",
+        repair_model="test/fake",
+        health_check=False,
+    )
+    first = Harness.create(
+        config, cli=FakeCliClient(), _repair_completion=CandidateRepairCompletion()
+    )
+    rule = first.rules.add("Paginate all result pages.", "avoid incomplete totals")
+    second = Harness.create(
+        config, cli=FakeCliClient(), _repair_completion=CandidateRepairCompletion()
+    )
+    assert rule.rule not in second.system_context("new-session")
+    index = asyncio.run(second.task_tools.call("harness_rules_list", {}))
+    assert index["scopes"][0]["scope"] == rule.scope
+    persisted = asyncio.run(
+        second.task_tools.call("harness_rules_read", {"scope": rule.scope})
+    )
+    assert rule.rule in persisted["content"]
+    assert {spec.name for spec in second.task_tools.specs()} == {
+        "harness_rules_read",
+        "harness_rules_search",
+        "harness_rules_list",
+        "harness_rule_status",
+    }

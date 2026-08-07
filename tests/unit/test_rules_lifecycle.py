@@ -58,19 +58,19 @@ def test_persisted_candidate_round_trips(validating_rules: RulesStore) -> None:
     assert [r.id for r in validating_rules.live()] == [rule.id]
 
 
-def test_legacy_v05_record_parses_as_active(tmp_path: Path) -> None:
+def test_a_record_without_a_status_parses_as_active(tmp_path: Path) -> None:
     config = HarnessConfig(harness_root=tmp_path / "harness")
     config.rules_store_file.parent.mkdir(parents=True, exist_ok=True)
-    legacy = {
-        "id": "r-legacy",
+    record = {
+        "id": "r-minimal",
         "created_at": "2026-01-01T00:00:00+00:00",
-        "rule": "A v0.5 rule",
-        "rationale": "written before the lifecycle existed",
+        "rule": "A rule stored without lifecycle bookkeeping",
+        "rationale": "no trial, no tags",
         "source_notice_id": None,
         "metric": None,
         "status": "active",
     }
-    config.rules_store_file.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+    config.rules_store_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
     store = RulesStore(config)
     (rule,) = store.all()
@@ -86,7 +86,7 @@ def test_add_is_candidate_only_when_validation_enabled(tmp_path: Path) -> None:
     plain = RulesStore(
         HarnessConfig(harness_root=tmp_path / "plain", rule_validation=False)
     )
-    assert plain.add("rule one", "r").status == "active"  # the v0.5-compat switch
+    assert plain.add("rule one", "r").status == "active"  # validation off
 
     validating = RulesStore(
         HarnessConfig(harness_root=tmp_path / "validating", rule_validation=True)
@@ -282,7 +282,7 @@ def test_active_rules_render_before_provisional_section(validating_rules: RulesS
 
 
 def test_v05_rendering_unchanged_without_candidates(tmp_path: Path) -> None:
-    """With validation off the rendered markdown matches the v0.5 shape."""
+    """With validation off, every rule renders as active with no trial note."""
 
     store = RulesStore(
         HarnessConfig(harness_root=tmp_path / "plain", rule_validation=False)

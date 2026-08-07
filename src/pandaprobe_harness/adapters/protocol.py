@@ -1,6 +1,6 @@
 """The contract every framework adapter implements.
 
-In the pull model an adapter is a **pure turn-detector** with exactly two
+An adapter is a pure turn detector with exactly two
 jobs:
 
 1. ``parse_turn`` — translate a framework's turn-end payload into a normalized
@@ -8,9 +8,8 @@ jobs:
 2. ``register`` — wire the hook into the framework's event system so a
    completed turn fires ``hook.on_turn_end``.
 
-Self-healing delivery is framework-agnostic and lives elsewhere: the hook
-posts diagnostic notices to the workspace mailbox, and the agent pulls them
-through its harness toolset. Adapters expose no injection surface.
+Managed repair and read-only guidance are framework-agnostic and live in the
+facade. Adapters expose no injection or administrative surface.
 """
 
 from __future__ import annotations

@@ -79,7 +79,8 @@ def test_replay_flag_imports_and_runs(tmp_path: Path, fake_bin: Path) -> None:
     (replay_dir / "myreplay.py").write_text(
         "from pathlib import Path\n"
         "async def replay(case, context):\n"
-        "    assert 'Harness Rules' in context\n"
+            "    assert 'Learned rules are available' in context\n"
+            "    assert context.task_tools is not None\n"
         f"    Path({str(sentinel)!r}).write_text(case.id, encoding='utf-8')\n"
         "    return 's-replayed'\n",
         encoding="utf-8",

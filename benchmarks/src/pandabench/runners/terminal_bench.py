@@ -19,7 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.harness_wiring import AgentWiring
+from ..frozen_rules import FrozenRulesSnapshot
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
 from ..results import RecordWriter, TrialRecord, resume_key
@@ -107,9 +108,14 @@ class TerminalBenchRunner(SingleTaskRunner):
         backend: str | None,
         max_turns: int,
         benchmark: str,
-        noval: bool,
+        frozen_rules_path: Path | None,
     ) -> bool:
         effective_backend = model.backend
+        frozen_snapshot = (
+            FrozenRulesSnapshot.load(frozen_rules_path)
+            if arm == "harness" and phase == "eval" and frozen_rules_path is not None
+            else None
+        )
         pending_tasks = [
             task_id
             for task_id in tasks
@@ -144,8 +150,8 @@ class TerminalBenchRunner(SingleTaskRunner):
             backend=backend,
             harness_root=harness_root,
             max_turns=max_turns,
-            noval=noval,
             session_namespace=session_namespace,
+            frozen_rules_path=frozen_rules_path,
         )
 
         logger.info("starting Harbor %s phase for %d task(s)", phase, len(pending_tasks))
@@ -182,6 +188,7 @@ class TerminalBenchRunner(SingleTaskRunner):
             run_id=run_id,
             seed=seed,
             benchmark=benchmark,
+            frozen_snapshot=frozen_snapshot,
         )
         missing_error = launch_error or (
             f"Harbor exited with status {returncode} without producing this result"
@@ -208,6 +215,7 @@ class TerminalBenchRunner(SingleTaskRunner):
                         trial=trial,
                         phase=phase,
                         returncode=returncode,
+                        frozen_snapshot=frozen_snapshot,
                     )
                 )
 
@@ -223,10 +231,9 @@ class TerminalBenchRunner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
-        preamble: str | None = None,
+        wiring: AgentWiring | None,
     ) -> TaskOutcome:
-        del task_id, session_id, model, client, max_turns, wiring, preamble
+        del task_id, session_id, model, client, max_turns, wiring
         raise RuntimeError("Terminal-Bench is bulk-driven through run_phase(), not run_once()")
 
     def outcome_for(self, task_id: str, session_id: str) -> float | None:
@@ -260,8 +267,8 @@ def _harbor_argv(
     backend: str | None,
     harness_root: Path,
     max_turns: int,
-    noval: bool,
     session_namespace: str,
+    frozen_rules_path: Path | None,
 ) -> list[str]:
     argv = [
         _harbor_executable(), "run",
@@ -276,12 +283,17 @@ def _harbor_argv(
         "--ak", f"arm={arm}",
         "--ak", f"seed={seed}",
         "--ak", f"model_key={model.key}",
+        "--ak", f"phase={phase}",
+        "--ak", f"frozen_eval={str(arm == 'harness' and phase == 'eval').lower()}",
         "--ak", f"capture={str(phase == 'learning').lower()}",
         "--ak", f"harness_root={harness_root.resolve()}",
         "--ak", f"max_turns={max_turns}",
-        "--ak", f"noval={str(noval).lower()}",
         "--ak", f"session_namespace={session_namespace}",
     ]
+    if arm == "harness" and phase == "eval":
+        if frozen_rules_path is None:
+            raise ValueError("frozen harness eval requires a frozen rules snapshot path")
+        argv.extend(("--ak", f"frozen_rules_path={frozen_rules_path.resolve()}"))
     resolved_backend = backend or model.backend
     if resolved_backend is not None:
         argv.extend(("--ak", f"backend={resolved_backend}"))
@@ -302,6 +314,7 @@ def _ingest_results(
     run_id: str,
     seed: int,
     benchmark: str,
+    frozen_snapshot: FrozenRulesSnapshot | None = None,
 ) -> set[tuple[str, int]]:
     """Ingest Harbor trial artifacts and return the task/ordinal slots observed."""
 
@@ -340,6 +353,7 @@ def _ingest_results(
                 seed=seed,
                 trial=trial,
                 phase=phase,
+                frozen_snapshot=frozen_snapshot,
             )
             writer.append(record)
     return seen
@@ -357,6 +371,7 @@ def _record_from_result(
     seed: int,
     trial: int,
     phase: str,
+    frozen_snapshot: FrozenRulesSnapshot | None = None,
 ) -> TrialRecord:
     verifier = payload.get("verifier_result") or {}
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
@@ -370,6 +385,12 @@ def _record_from_result(
     harness = metadata.get("harness")
     if arm != "harness" or not isinstance(harness, dict):
         harness = None
+    if harness is None and arm == "harness" and phase == "eval" and frozen_snapshot is not None:
+        from ..results import frozen_harness_telemetry
+
+        harness = frozen_harness_telemetry(
+            frozen_snapshot, str(metadata.get("session_id") or "unavailable")
+        ).to_dict()
 
     error = _exception_message(payload.get("exception_info"))
     if reward is None and error is None:
@@ -457,7 +478,15 @@ def _error_record(
     trial: int,
     phase: str,
     returncode: int,
+    frozen_snapshot: FrozenRulesSnapshot | None = None,
 ) -> TrialRecord:
+    from ..results import frozen_harness_telemetry
+
+    harness = (
+        frozen_harness_telemetry(frozen_snapshot, "unavailable").to_dict()
+        if arm == "harness" and phase == "eval" and frozen_snapshot is not None
+        else None
+    )
     return TrialRecord(
         run_id=run_id,
         benchmark=benchmark,
@@ -475,7 +504,7 @@ def _error_record(
         turns=0,
         wall_time_s=0.0,
         usage={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
-        harness=None,
+        harness=harness,
         error=message,
     )
 

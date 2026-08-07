@@ -101,7 +101,6 @@ def run_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--phases", default="learning,eval", help="comma list of phases")
     parser.add_argument("--dry-run", action="store_true", help="mock model, no external calls")
-    parser.add_argument("--noval", action="store_true", help="B' ablation: rule_validation off")
     parser.add_argument("--run-id", default=None, help="reuse an existing run_id to resume")
     parser.add_argument("--max-turns", type=int, default=None)
     parser.add_argument("--preflight", action="store_true", help="validate env + creds, then exit")
@@ -125,7 +124,7 @@ def run_main(argv: list[str] | None = None) -> int:
         runner.run(
             arm=args.arm, model_key=args.model, backend=args.backend, seed=args.seed,
             k=args.k or study.k, limit=args.limit, dry_run=args.dry_run, phases=phases,
-            run_id=args.run_id, noval=args.noval, max_turns_override=args.max_turns,
+            run_id=args.run_id, max_turns_override=args.max_turns,
             dataset_override=args.dataset,
         )
     )

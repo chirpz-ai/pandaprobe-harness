@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from pandaprobe_harness import CliResult, Harness, HarnessConfig
+from pandaprobe_harness.repair.completion import (
+    NormalizedRepairMessage,
+    NormalizedToolCall,
+)
 
 from pandabench.agents.harness_wiring import HarnessWiring
 from pandabench.agents.loop import run_agent_loop
@@ -191,6 +195,53 @@ class FakeCli:
         return {}
 
 
+class FakeRepairCompletion:
+    """Author and acknowledge one candidate without a provider call."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete(self, **kwargs: Any) -> NormalizedRepairMessage:
+        self.calls.append(dict(kwargs))
+        messages = kwargs["messages"]
+        assignment = json.loads(str(messages[1]["content"]).split("\n", 1)[1])
+        notice_id = str(assignment["notice_id"])
+        if len(self.calls) > 1:
+            rule_id = ""
+            for message in reversed(messages):
+                if message.get("role") != "tool" or message.get("name") != "harness_rule_add":
+                    continue
+                payload = json.loads(str(message["content"]))
+                rule_id = str(payload["rule"]["id"])
+                break
+            return NormalizedRepairMessage(
+                tool_calls=(NormalizedToolCall(
+                    "ack",
+                    "harness_notice_ack",
+                    json.dumps({
+                        "notice_id": notice_id,
+                        "rule_id": rule_id,
+                        "note": "Candidate written by deterministic managed repair.",
+                    }),
+                ),)
+            )
+        return NormalizedRepairMessage(
+            tool_calls=(
+                NormalizedToolCall("read", "harness_notice_read", json.dumps({
+                    "notice_id": notice_id,
+                })),
+                NormalizedToolCall("search", "harness_rules_search", json.dumps({
+                    "query": "task failure",
+                })),
+                NormalizedToolCall("add", "harness_rule_add", json.dumps({
+                    "rule": "Inspect the task state before changing it.",
+                    "rationale": "The evaluated task trace changed state without inspection.",
+                    "scope": "global",
+                })),
+            )
+        )
+
+
 async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     cfg = HarnessConfig(
         harness_root=tmp_path / "hroot",
@@ -202,11 +253,13 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
         health_check=False,
         rule_trial_min_sessions=1,
         gate_window=2,  # two flat traces close the stall window in this short test
+        repair_model="mock/repair",
     )
     # `build_harness` deliberately has no `cli=` seam (it always drives the real
     # binary), so this test assembles the harness directly over one shared fake.
     # The subject here is the *glue* — wiring, session ids, capture, telemetry.
-    harness = Harness.create(cfg, cli=FakeCli())
+    repair_completion = FakeRepairCompletion()
+    harness = Harness.create(cfg, cli=FakeCli(), _repair_completion=repair_completion)
 
     registry = load_registry(CONFIGS / "models.yaml")
     model = registry.resolve("mock")
@@ -260,8 +313,42 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     assert case.replay_input["task_id"] == "t1"
     assert case.replay_input["benchmark"] == "appworld"
 
-    telemetry = collect_harness_telemetry(harness, session_id, report)
+    assert settled.repair is not None
+    assert settled.repair.status == "candidate_added"
+    assert settled.repair.repair_session_id != session_id
+    assert settled.repair.candidate_rule_ids
+    assignments = [
+        json.loads(str(call["messages"][1]["content"]).split("\n", 1)[1])
+        for call in repair_completion.calls
+    ]
+    assert all(assignment["repair_session_id"] != session_id for assignment in assignments)
+    assert "Inspect the task state before changing it" not in wiring.system_preamble()
+    index = await wiring.dispatch("harness_rules_list", {})
+    assert index["scopes"][0]["scope"] == "global"
+    scoped = await wiring.dispatch("harness_rules_read", {"scope": "global"})
+    assert "Inspect the task state before changing it" in scoped["content"]
+
+    task_tool_names = {
+        tool["function"]["name"] for tool in wiring.harness_tools()
+    }
+    assert task_tool_names == {
+        "harness_rules_read",
+        "harness_rules_search",
+        "harness_rules_list",
+        "harness_rule_status",
+    }
+    rejected = await wiring.dispatch("harness_rule_add", {"rule": "forbidden"})
+    assert rejected == {
+        "ok": False,
+        "error": "unsupported capability 'harness_rule_add'",
+    }
+
+    telemetry = collect_harness_telemetry(
+        harness, session_id, report, repair=settled.repair
+    )
     assert telemetry.breached is True
+    assert telemetry.repair is not None
+    assert telemetry.repair["status"] == "candidate_added"
 
 
 async def test_settling_a_turn_twice_returns_the_first_diagnosis(tmp_path):
@@ -279,9 +366,12 @@ async def test_settling_a_turn_twice_returns_the_first_diagnosis(tmp_path):
         eval_retry_attempts=1,
         health_check=False,
         gate_window=2,
+        repair_model="mock/repair",
     )
     cli = FakeCli()
-    harness = Harness.create(cfg, cli=cli)
+    harness = Harness.create(
+        cfg, cli=cli, _repair_completion=FakeRepairCompletion()
+    )
     wiring = HarnessWiring(
         harness=harness, benchmark="appworld", task_id="t1", capture=True,
         replay_descriptor={}, session_id="s-dup",

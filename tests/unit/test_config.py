@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pandaprobe_harness import HarnessConfig
+import pytest
+
+from pandaprobe_harness import Harness, HarnessConfig
+from tests.fakes.fake_cli_client import FakeCliClient
 
 
 def test_derived_paths_from_root() -> None:
     cfg = HarnessConfig(harness_root=Path("/tmp/harness"))
     assert cfg.traces_dir == Path("/tmp/harness/traces")
-    assert cfg.rules_file == Path("/tmp/harness/harness_rules.md")
+    # One name for the generated guide, beside the store and scope files it
+    # indexes. There is no alternate or fallback filename.
+    assert cfg.rules_file == Path("/tmp/harness/rules.md")
+    assert cfg.rules_store_file == Path("/tmp/harness/rules.jsonl")
     assert cfg.rules_dir == Path("/tmp/harness/rules")
     assert cfg.rules_scope_file("payments") == Path("/tmp/harness/rules/payments.md")
     assert cfg.latest_eval_file == Path("/tmp/harness/traces/latest_eval.json")
@@ -17,7 +23,8 @@ def test_derived_paths_from_root() -> None:
 def test_defaults() -> None:
     cfg = HarnessConfig()
     assert cfg.cli_binary == "pandaprobe"
-    assert cfg.concurrent_eval
+    assert cfg.rule_validation
+    assert not cfg.observe_only
 
 
 def test_from_env_reads_overrides(monkeypatch) -> None:
@@ -60,7 +67,7 @@ def test_control_defaults() -> None:
     assert cfg.observe_only is False
     assert cfg.circuit_breaker_max_notices == 5
     assert cfg.circuit_breaker_window_s == 600.0
-    assert cfg.max_active_rules == 50
+    assert cfg.max_active_rules == 0
     assert cfg.health_check is True
 
 
@@ -80,8 +87,6 @@ def test_from_env_reads_control_knobs(monkeypatch) -> None:
 
 def test_frozen() -> None:
     import dataclasses
-
-    import pytest
 
     cfg = HarnessConfig()
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -184,3 +189,50 @@ def test_from_env_binds_the_primary_trace_knobs(monkeypatch) -> None:
     assert cfg.gate_window == 8
     assert cfg.barrier_timeout_s == 42.5
     assert cfg.enable_tier3 is True
+
+
+def test_managed_repair_defaults_select_no_billable_model() -> None:
+    cfg = HarnessConfig()
+    assert cfg.repair_model is None
+    assert cfg.repair_timeout_s == 60.0
+    assert cfg.repair_max_turns == 6
+    assert cfg.repair_max_tokens == 4096
+    assert cfg.repair_temperature is None
+    assert cfg.repair_reasoning_effort == "none"
+    assert cfg.trace_repair_agent is False
+    assert cfg.domain_policy is None
+
+
+def test_managed_repair_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_REPAIR_MODEL", "bedrock/anthropic.test")
+    monkeypatch.setenv("HARNESS_REPAIR_TIMEOUT_S", "12.5")
+    monkeypatch.setenv("HARNESS_REPAIR_MAX_TURNS", "3")
+    monkeypatch.setenv("HARNESS_REPAIR_MAX_TOKENS", "777")
+    monkeypatch.setenv("HARNESS_REPAIR_TEMPERATURE", "0.25")
+    monkeypatch.setenv("HARNESS_REPAIR_REASONING_EFFORT", "none")
+    monkeypatch.setenv("HARNESS_TRACE_REPAIR_AGENT", "true")
+    monkeypatch.setenv("HARNESS_DOMAIN_POLICY", "Authorized domain policy")
+    cfg = HarnessConfig.from_env()
+    assert cfg.repair_model == "bedrock/anthropic.test"
+    assert cfg.repair_timeout_s == 12.5
+    assert cfg.repair_max_turns == 3
+    assert cfg.repair_max_tokens == 777
+    assert cfg.repair_temperature == 0.25
+    assert cfg.repair_reasoning_effort == "none"
+    assert cfg.trace_repair_agent is True
+    assert cfg.domain_policy == "Authorized domain policy"
+
+
+def test_harness_requires_model_only_when_mutating(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no billable default"):
+        Harness.create(
+            HarnessConfig(harness_root=tmp_path / "live", health_check=False),
+            cli=FakeCliClient(),
+        )
+    observed = Harness.create(
+        HarnessConfig(
+            harness_root=tmp_path / "observe", observe_only=True, health_check=False
+        ),
+        cli=FakeCliClient(),
+    )
+    assert observed.config.observe_only is True

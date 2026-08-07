@@ -63,9 +63,21 @@ def _flatten(rec: dict[str, Any]) -> dict[str, Any]:
     flat["output_tokens"] = usage.get("output_tokens", 0)
     flat["cost_usd"] = usage.get("cost_usd", 0.0)
     flat["has_harness"] = bool(harness)
-    for key in ("breached", "gate_breached",
-                "rules_active", "rules_candidate", "rules_retired", "notices"):
+    for key in ("mode", "ruleset_hash", "breached", "gate_breached",
+                "rules_active", "rules_candidate", "rules_retired", "notices",
+                "repair_episodes"):
         flat[f"h_{key}"] = harness.get(key)
+    flat["h_resolution_counts"] = json.dumps(harness.get("resolution_counts") or {})
+    flat["h_rules_by_scope"] = json.dumps(harness.get("rules_by_scope") or {})
+    validation = harness.get("validation") or {}
+    for key in (
+        "rounds", "promoted", "retired", "replays",
+        "candidate_not_exercised", "env_wait_timeouts", "budget_exhausted_rounds",
+    ):
+        flat[f"h_validation_{key}"] = validation.get(key)
+    flat["h_validation_pending_reasons"] = json.dumps(
+        validation.get("pending_reasons") or {}
+    )
     # Flatten each resolved trace metric into its own column.
     for name, value in (harness.get("scores") or {}).items():
         flat[f"h_score_{name}"] = value
@@ -171,14 +183,32 @@ def _telemetry(df: pd.DataFrame) -> pd.DataFrame:
             {
                 "benchmark": benchmark, "dataset": dataset, "model": model, "phase": phase,
                 "trials": len(group),
+                "mode": _mode(group["h_mode"]),
                 "rules_active_max": _safe_max(group["h_rules_active"]),
                 "rules_candidate_max": _safe_max(group["h_rules_candidate"]),
                 "rules_retired_max": _safe_max(group["h_rules_retired"]),
                 "notices_total": _safe_sum(group["h_notices"]),
+                "repair_episodes_total": _safe_sum(group["h_repair_episodes"]),
                 "breach_rate": _safe_mean(group["h_breached"]),
+                # Promotions and retirements are counted from validation verdicts,
+                # not inferred from status high-water marks: a status count cannot
+                # say whether validation ever reached a candidate.
+                "validation_rounds_max": _safe_max(group["h_validation_rounds"]),
+                "promotions_max": _safe_max(group["h_validation_promoted"]),
+                "retirements_max": _safe_max(group["h_validation_retired"]),
+                "replays_max": _safe_max(group["h_validation_replays"]),
+                "unexercised_replays_max": _safe_max(
+                    group["h_validation_candidate_not_exercised"]
+                ),
+                "env_wait_timeouts_max": _safe_max(group["h_validation_env_wait_timeouts"]),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _mode(series: pd.Series) -> str:
+    values = sorted({str(value) for value in series.dropna() if str(value)})
+    return ",".join(values) if values else "legacy_live"
 
 
 def _safe_max(s: pd.Series) -> float:
@@ -253,9 +283,15 @@ def _write_report_md(
         "- **Nondeterminism.** The study does not send `temperature` to Claude, so "
         "trial-to-trial variance comes from natural model nondeterminism; no "
         "sampler seed is forced.",
-        "- **Preamble confound.** The arm-B harness preamble + 14 tools cost "
-        "context/tokens every turn (see cost/overhead), which can depress arm B "
+        "- **Preamble confound.** The arm-B harness preamble plus four read-only "
+        "rule tools cost context/tokens during learning and frozen eval (see "
+        "cost/overhead), which can still depress arm B "
         "on long tasks independent of rule quality.",
+        "- **Frozen eval.** Arm-B learning runs the complete evaluation and repair "
+        "loop with repair owned by the installed harness package. Eval uses one "
+        "hashed, read-only learning ruleset and runs no "
+        "PandaProbe trace evaluation, notices, rule mutation, validation, or replay; "
+        "benchmark-native grading remains enabled.",
         "- **Checkpoints.** Checkpoint 1 (metric<->failure calibration) and "
         "Checkpoint 2 (rule promotion; `learning_outcome` in each manifest) gate "
         "the full matrix; see IMPLEMENTATION_NOTES.md.",
@@ -294,6 +330,6 @@ def _md_table(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return "_(none)_"
     try:
-        return df.to_markdown(index=False)
+        return str(df.to_markdown(index=False))
     except Exception:  # noqa: BLE001 - tabulate may be absent
-        return "```\n" + df.to_string(index=False) + "\n```"
+        return "```\n" + str(df.to_string(index=False)) + "\n```"

@@ -5,7 +5,7 @@ bridge, ``register``) plus a ``notify_turn_end`` convenience that
 framework-specific instrumentation (callbacks, monkeypatch wrappers) calls to
 fire ``hook.on_turn_end`` for one completed turn. That is the adapter's whole
 job in the pull model — diagnostic delivery happens through the workspace
-mailbox and the agent's harness toolset, never through the adapter.
+managed repair, never through the adapter.
 """
 
 from __future__ import annotations
@@ -63,11 +63,12 @@ class BaseSinkAdapter:
     # -- helpers -----------------------------------------------------------------
 
     def startup_context_text(self) -> str:
-        """The harness system context (rules + protocol + mailbox banner)."""
+        """Read-only learned rules when the adapter can resolve a session."""
 
         if self._hook is None:
             return ""
-        return self._hook.startup_context()
+        session_id = self._session_id or current_session_id()
+        return self._hook.startup_context(session_id) if session_id else ""
 
     def notify_turn_end(
         self,

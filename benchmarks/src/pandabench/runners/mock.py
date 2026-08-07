@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..agents.harness_wiring import HarnessWiring
+from ..agents.harness_wiring import AgentWiring
 from ..agents.loop import run_agent_loop
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
@@ -53,13 +53,10 @@ class MockTaskRunner(SingleTaskRunner):
         model: ResolvedModel,
         client: ChatClient,
         max_turns: int,
-        wiring: HarnessWiring | None,
-        preamble: str | None = None,
+        wiring: AgentWiring | None,
     ) -> TaskOutcome:
         start = time.monotonic()
         system_prompt = f"[mock:{self.name}] complete the task and reply when done."
-        if preamble is not None:
-            system_prompt = preamble + "\n\n" + system_prompt
 
         async def executor(name: str, args: dict[str, Any]) -> Any:
             return {"ok": True}

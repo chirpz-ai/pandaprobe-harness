@@ -6,9 +6,8 @@ shared callback): :meth:`make_callback` returns a handler that fires
 ``hook.on_turn_end`` on the *root* chain end (one turn = one root invocation);
 session identity comes from the SDK session ``ContextVar``.
 
-That is the adapter's entire job in the pull model. Self-healing context
-(rules + protocol + mailbox banner) comes from ``Harness.system_context()``
-and the agent's harness tools — nothing is spliced into the message state.
+That is the adapter's entire job. The host attaches read-only guidance from
+``Harness.system_context(session_id)``; nothing is spliced into message state.
 
 Concrete adapters subclass this and set ``_extra`` (the pip extra name used in
 ImportError hints).

@@ -1,8 +1,8 @@
 """Sanitization for eval-derived free text (prompt-injection trust boundary).
 
 Text that originates outside the harness — platform eval ``reason`` strings,
-trace content echoed into summaries, agent-authored rules — crosses into the
-agent's system context via the mailbox and ``harness_rules.md``. Before it
+trace content echoed into summaries, repair-authored rules — crosses into the
+managed-repair prompt or task-agent guidance. Before it
 does, it is passed through :func:`sanitize_text`, which:
 
 1. strips control characters (keeping ``\\n``/``\\t``) and ANSI escape
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["sanitize_text"]
+__all__ = ["is_sensitive_key", "sanitize_text"]
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -34,6 +34,21 @@ _MARKER_RES = (
     re.compile(r"(harness)(:)", re.IGNORECASE),
 )
 _TRUNCATION_SUFFIX = "…[truncated]"
+_SENSITIVE_KEY_SUFFIXES = (
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+
+
+def is_sensitive_key(value: object) -> bool:
+    """Recognize common credential-bearing mapping keys conservatively."""
+
+    compact = re.sub(r"[^a-z0-9]", "", str(value).casefold())
+    return any(compact.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES)
 
 
 def sanitize_text(text: str | None, *, max_len: int = 2000) -> str:

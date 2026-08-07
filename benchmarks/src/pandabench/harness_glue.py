@@ -22,7 +22,7 @@ from pandaprobe_harness import Harness, HarnessConfig
 from .config import StudyConfig
 
 if TYPE_CHECKING:
-    from pandaprobe_harness import EvalCase, ReplayFn, VerifierFn
+    from pandaprobe_harness import EvalCase, ReplayContext, ReplayFn, VerifierFn
 
 __all__ = [
     "OutcomeGrader",
@@ -37,10 +37,10 @@ __all__ = [
     "sanitize_component",
 ]
 
-# A benchmark's replay entry point: given a task id + the harness-rendered rules
-# context, re-run the task once (cheap, traced, no turn hooks) and return the
-# NEW session id the run produced.
-ReplayRunner = Callable[[str, str], Awaitable[str]]
+# A benchmark's replay entry point: given a task id plus a capability-only
+# ReplayContext carrying read-only rule tools, re-run the task once (cheap,
+# traced, no turn hooks) and return the NEW session id the run produced.
+ReplayRunner = Callable[[str, "ReplayContext"], Awaitable[str]]
 
 # A benchmark's own grader: task id + session id -> pass ratio in [0, 1], or
 # None when it has no verdict (no grader, or the session has not been graded).
@@ -118,26 +118,32 @@ def build_harness_config(
     phase: str,
     study: StudyConfig,
     benchmark: str,
-    noval: bool = False,
+    repair_model: str,
     health_check: bool = True,
 ) -> HarnessConfig:
     """Resolve a HarnessConfig for one run.
 
-    Capture is on only in the learning phase; validation is off only for the
-    B' (harness-noval) ablation; the breach threshold is identical across all
-    arms/seeds of a benchmark (set by Checkpoint 1). Explicit overrides beat any
-    ambient ``HARNESS_*`` env so runs are deterministic.
+    Capture is on only in the learning phase. Managed repair always retains the
+    candidate-validation lifecycle required by the package. The breach threshold
+    is identical across all arms/seeds of a benchmark (set by Checkpoint 1).
+    Explicit overrides beat ambient ``HARNESS_*`` env so runs are deterministic.
     """
 
     threshold = study.breach_threshold(benchmark)
+    benchmark_config = study.benchmarks.get(benchmark)
+    benchmark_policy = (
+        benchmark_config.extra.get("domain_policy") if benchmark_config is not None else None
+    )
     return HarnessConfig.from_env(
         harness_root=harness_root,
         capture_eval_cases=(phase == "learning"),
-        rule_validation=(not noval),
+        rule_validation=True,
         rule_trial_min_sessions=study.harness.rule_trial_min_sessions,
         rule_promote_margin=study.harness.rule_promote_margin,
         rule_regress_margin=study.harness.rule_regress_margin,
         replay_timeout_s=study.harness.replay_timeout_s,
+        replay_env_wait_timeout_s=study.harness.replay_env_wait_timeout_s,
+        validation_round_budget_s=study.harness.validation_round_budget_s,
         regression_sample=study.harness.regression_sample,
         # Bound how long a barrier waits for platform scores per turn
         # (poll_interval_s * poll_max_attempts); generous because trace-heavy
@@ -151,6 +157,14 @@ def build_harness_config(
         enable_tier3=study.harness.enable_tier3,
         barrier_timeout_s=study.harness.barrier_timeout_s,
         outcome_threshold=study.harness.outcome_threshold,
+        repair_model=study.harness.repair_model or repair_model,
+        repair_timeout_s=study.harness.repair_timeout_s,
+        repair_max_turns=study.harness.repair_max_turns,
+        repair_max_tokens=study.harness.repair_max_tokens,
+        repair_temperature=study.harness.repair_temperature,
+        repair_reasoning_effort=study.harness.repair_reasoning_effort,
+        trace_repair_agent=study.harness.trace_repair_agent,
+        domain_policy=str(benchmark_policy) if benchmark_policy is not None else None,
     )
 
 
@@ -186,12 +200,12 @@ def make_replay_fn(*, replay_runner: ReplayRunner) -> ReplayFn:
 
     The harness calls ``replay(case, context)`` during candidate validation and
     regression: we pull the task id from ``case.replay_input`` (the end_state we
-    stashed via ``on_turn_end``) and re-run that task under ``context`` (the
-    rendered rules string with the candidate in force), returning the new
-    session id for the harness to score.
+    stashed via ``on_turn_end``) and re-run that task under ``context``. The
+    context carries a stable capability preamble and read-only rule tools; it
+    never carries rule bodies. The replay returns a new session id to score.
     """
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: ReplayContext) -> str:
         payload = case.replay_input or {}
         task_id = payload.get("task_id") if isinstance(payload, dict) else None
         if not task_id:

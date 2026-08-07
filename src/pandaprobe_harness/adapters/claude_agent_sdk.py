@@ -3,8 +3,7 @@
 Instrumented by monkey-patching ``ClaudeSDKClient.receive_response`` (the SDK uses
 the same ``wrapt`` approach): a completed ``receive_response`` stream is one agent
 turn, after which the hook fires. Session identity comes from the SDK session
-``ContextVar``. Diagnostics reach the agent through the workspace mailbox +
-harness toolset (register them via ``as_anthropic_tools``).
+``ContextVar``. Optional read-only rule tools use ``as_anthropic_tools``.
 """
 
 from __future__ import annotations
