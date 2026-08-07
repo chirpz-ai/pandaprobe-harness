@@ -15,7 +15,12 @@ from ..config import HarnessConfig
 from ..workspace._io import load_json
 from ..workspace.journal import Journal
 from ..workspace.mailbox import Mailbox
-from ..workspace.rules import RulesStore, RuleStatus, derive_notice_tags, normalize_scope
+from ..workspace.rules import (
+    RulesStore,
+    derive_notice_tags,
+    normalize_scope,
+    validate_scope,
+)
 from ..workspace.sanitize import is_sensitive_key, sanitize_text
 from .spec import ToolSpec
 
@@ -25,7 +30,7 @@ logger = logging.getLogger("pandaprobe_harness.agent_tools")
 
 TASK_OP_SCHEMAS: dict[str, dict[str, Any]] = {
     "harness_rules_read": {
-        "description": "Read one learned-rule scope. Defaults to global.",
+        "description": "Read one learned-rule scope. Defaults to scoped.",
         "input_schema": {
             "type": "object",
             "properties": {"scope": {"type": "string"}},
@@ -33,30 +38,21 @@ TASK_OP_SCHEMAS: dict[str, dict[str, Any]] = {
         },
     },
     "harness_rules_search": {
-        "description": "Search learned rules by lexical relevance across scopes.",
+        "description": "Search live learned rules and return bounded references/snippets.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer"},
-                "status": {
-                    "type": "string",
-                    "enum": ["candidate", "active", "retired"],
-                },
             },
             "required": ["query"],
         },
     },
     "harness_rules_list": {
-        "description": "List rules by lifecycle status, or all rules when omitted.",
+        "description": "Load the canonical harness_guide.md and its compact live-scope index.",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "enum": ["candidate", "active", "retired"],
-                }
-            },
+            "properties": {},
             "required": [],
         },
     },
@@ -98,19 +94,12 @@ REPAIR_OP_SCHEMAS: dict[str, dict[str, Any]] = {
                 "metric": {"type": "string"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "scope": {"type": "string"},
+                "applicability": {
+                    "type": "string",
+                    "enum": ["global", "topical", "task"],
+                },
             },
             "required": ["rule", "rationale"],
-        },
-    },
-    "harness_rule_retire": {
-        "description": "Retire an obsolete active rule; candidates remain validator-owned.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "rule_id": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["rule_id", "reason"],
         },
     },
     "harness_notice_ack": {
@@ -133,7 +122,9 @@ REPAIR_OP_SCHEMAS: dict[str, dict[str, Any]] = {
                 "notice_id": {"type": "string"},
                 "resolution": {
                     "type": "string",
-                    "enum": ["duplicate", "no_proposal"],
+                    "enum": [
+                        "duplicate", "already_covered", "no_proposal", "unactionable"
+                    ],
                 },
                 "existing_rule_id": {"type": "string"},
                 "note": {"type": "string"},
@@ -150,7 +141,11 @@ class _RuleReads:
         self._rules = rules
 
     async def rules_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        scope = normalize_scope(str(args["scope"]) if args.get("scope") is not None else None)
+        scope = (
+            validate_scope(args["scope"])
+            if args.get("scope") is not None
+            else "scoped"
+        )
         content = await asyncio.to_thread(self._rules.read_scope, scope)
         return {"ok": True, "scope": scope, "path": f"rules/{scope}.md", "content": content}
 
@@ -161,26 +156,35 @@ class _RuleReads:
         except (TypeError, ValueError):
             limit = 10
         limit = min(50, max(1, limit))
-        raw_status = args.get("status")
-        statuses: tuple[RuleStatus, ...] = (
-            (raw_status,)
-            if raw_status in {"candidate", "active", "retired"}
-            else ("active", "candidate")
-        )
         results = await asyncio.to_thread(
-            self._rules.search, query, limit=limit, statuses=statuses
+            self._rules.search, query, limit=limit, statuses=("active", "candidate")
         )
         return {
             "ok": True,
-            "rules": [{**rule.to_json(), "score": score} for rule, score in results],
+            "rules": [
+                {
+                    "id": rule.id,
+                    "scope": rule.scope,
+                    "status": rule.status,
+                    "snippet": _snippet(rule.rule),
+                    "score": score,
+                }
+                for rule, score in results
+            ],
         }
 
     async def rules_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        raw_status = args.get("status")
-        rules = await asyncio.to_thread(self._rules.all)
-        if raw_status in {"candidate", "active", "retired"}:
-            rules = [rule for rule in rules if rule.status == raw_status]
-        return {"ok": True, "rules": [rule.to_json() for rule in rules]}
+        del args
+        content, scopes = await asyncio.gather(
+            asyncio.to_thread(self._rules.render_root),
+            asyncio.to_thread(self._rules.scope_index),
+        )
+        return {
+            "ok": True,
+            "path": "harness_guide.md",
+            "content": content,
+            "scopes": scopes,
+        }
 
     async def rule_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         rule_id = str(args["rule_id"])
@@ -200,7 +204,16 @@ class _RuleReads:
                         "verdict": rule.trial.verdict,
                     }
                 )
-            return {"ok": True, "rule": rule.to_json(), "lifecycle": lifecycle}
+            return {
+                "ok": True,
+                "rule": {
+                    "id": rule.id,
+                    "scope": rule.scope,
+                    "status": rule.status,
+                    "applicability": rule.applicability,
+                },
+                "lifecycle": lifecycle,
+            }
         return {"ok": False, "error": f"no rule {rule_id!r}"}
 
 
@@ -227,7 +240,7 @@ class TaskToolset(_RuleReads):
 
 
 class RepairToolset(_RuleReads):
-    """One-notice administrative surface used only by managed repair."""
+    """One-episode administrative surface used only by managed repair."""
 
     def __init__(
         self,
@@ -239,16 +252,29 @@ class RepairToolset(_RuleReads):
         rules: RulesStore,
         notice_id: str,
         allowed_trace_ids: tuple[str, ...],
+        notice_ids: tuple[str, ...] = (),
+        episode_id: str = "",
+        recommended_scope: str = "scoped",
+        scope_hints: tuple[dict[str, Any], ...] = (),
+        generic_scopes: tuple[str, ...] = (),
     ) -> None:
         super().__init__(config=config, rules=rules)
         self._cli = cli
         self._mailbox = mailbox
         self._journal = journal
         self._notice_id = notice_id
+        self._notice_ids = notice_ids or (notice_id,)
+        self._episode_id = episode_id
+        self._recommended_scope = normalize_scope(recommended_scope)
+        self._scope_hints = scope_hints
+        self._generic_scopes = frozenset(normalize_scope(value) for value in generic_scopes)
         self._allowed_trace_ids = frozenset(allowed_trace_ids)
         self._candidate_ids: list[str] = []
         self._resolution: str | None = None
         self._existing_rule_id: str | None = None
+        self._considered_rule_ids: list[str] = []
+        self._selected_scope: str | None = None
+        self._suppression_reason: str | None = None
         handlers = {
             "harness_notice_read": self.notice_read,
             "harness_trace_inspect": self.trace_inspect,
@@ -257,7 +283,6 @@ class RepairToolset(_RuleReads):
             "harness_rules_list": self.rules_list,
             "harness_rule_status": self.rule_status,
             "harness_rule_add": self.rule_add,
-            "harness_rule_retire": self.rule_retire,
             "harness_notice_ack": self.notice_ack,
             "harness_notice_resolve": self.notice_resolve,
         }
@@ -276,6 +301,18 @@ class RepairToolset(_RuleReads):
         return self._existing_rule_id
 
     @property
+    def considered_rule_ids(self) -> tuple[str, ...]:
+        return tuple(self._considered_rule_ids)
+
+    @property
+    def selected_scope(self) -> str | None:
+        return self._selected_scope
+
+    @property
+    def suppression_reason(self) -> str | None:
+        return self._suppression_reason
+
+    @property
     def resolved(self) -> bool:
         return self._resolution is not None
 
@@ -287,22 +324,53 @@ class RepairToolset(_RuleReads):
 
     def _assigned(self, args: Mapping[str, Any]) -> dict[str, Any] | None:
         supplied = str(args.get("notice_id", ""))
-        if supplied != self._notice_id:
-            return {"ok": False, "error": "repair may access only its assigned notice"}
+        if supplied not in self._notice_ids:
+            return {"ok": False, "error": "repair may access only its assigned episode"}
         return None
+
+    async def rules_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        result = await super().rules_search(args)
+        self._remember_considered(result)
+        return result
+
+    async def rules_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        result = await super().rules_read(args)
+        if result.get("ok"):
+            scope = str(result.get("scope") or "")
+            rules = await asyncio.to_thread(self._rules.by_scope, scope)
+            self._remember_ids(rule.id for rule in rules)
+        return result
+
+    def _remember_considered(self, result: Mapping[str, Any]) -> None:
+        raw_rules = result.get("rules")
+        if not isinstance(raw_rules, list):
+            return
+        self._remember_ids(
+            str(rule.get("id"))
+            for rule in raw_rules
+            if isinstance(rule, dict) and rule.get("id")
+        )
+
+    def _remember_ids(self, values: Any) -> None:
+        for value in values:
+            if value not in self._considered_rule_ids:
+                self._considered_rule_ids.append(value)
 
     async def notice_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if error := self._assigned(args):
             return error
-        notice = await asyncio.to_thread(self._mailbox.read, self._notice_id)
+        notice_id = str(args["notice_id"])
+        notice = await asyncio.to_thread(self._mailbox.read, notice_id)
         if notice is None:
-            return {"ok": False, "error": f"no notice {self._notice_id!r}"}
+            return {"ok": False, "error": f"no notice {notice_id!r}"}
         dump = None
         if notice.dump_path:
             dump = await asyncio.to_thread(load_json, Path(notice.dump_path))
         return {
             "ok": True,
             "notice": notice.to_json(),
+            "episode_id": self._episode_id,
+            "notice_ids": list(self._notice_ids),
             "dump": _bounded_evidence(dump, max_len=self._config.sanitize_max_len),
         }
 
@@ -334,48 +402,113 @@ class RepairToolset(_RuleReads):
             return None
 
     async def rule_add(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        before = {rule.id for rule in await asyncio.to_thread(self._rules.live)}
-        notice = await asyncio.to_thread(self._mailbox.read, self._notice_id)
+        if self._candidate_ids:
+            return {"ok": False, "error": "a repair episode may create at most one candidate"}
+        notices = [
+            notice
+            for notice in await asyncio.gather(
+                *(asyncio.to_thread(self._mailbox.read, value) for value in self._notice_ids)
+            )
+            if notice is not None
+        ]
         tags = (
             [str(tag) for tag in args.get("tags", [])]
             if isinstance(args.get("tags"), list)
             else []
         )
-        derived = derive_notice_tags(notice) if notice is not None else ()
-        scope = args.get("scope") or (notice.scope_hint if notice is not None else "global")
-        rule = await asyncio.to_thread(
-            self._rules.add,
+        derived = tuple(
+            dict.fromkeys(tag for notice in notices for tag in derive_notice_tags(notice))
+        )
+        failure_signatures = tuple(
+            dict.fromkeys(signature for notice in notices for signature in notice.signatures)
+        )
+        requested_scope = normalize_scope(
+            str(args.get("scope") or self._recommended_scope)
+        )
+        if (
+            requested_scope in self._generic_scopes
+            and self._recommended_scope not in {"global", "scoped"}
+        ):
+            requested_scope = self._recommended_scope
+        applicability = str(
+            args.get("applicability")
+            or (notices[0].applicability_hint if notices else "topical")
+        )
+        if applicability == "global":
+            requested_scope = "global"
+        self._selected_scope = requested_scope
+        scope_description = next(
+            (
+                str(hint.get("description") or "")
+                for hint in self._scope_hints
+                if normalize_scope(str(hint.get("key") or "")) == requested_scope
+            ),
+            None,
+        )
+        considered = await asyncio.to_thread(
+            self._rules.covering_rules,
+            str(args["rule"]),
+            scope=requested_scope,
+            tags=(*tags, *derived),
+            failure_signatures=failure_signatures,
+        )
+        self._remember_ids(rule.id for rule, _ in considered)
+        if considered:
+            existing, reason = considered[0]
+            self._existing_rule_id = existing.id
+            self._suppression_reason = reason
+            resolution = "already_covered" if existing.status == "candidate" else "duplicate"
+            return {
+                "ok": True,
+                "created": False,
+                "suppressed": True,
+                "suppression_reason": reason,
+                "recommended_resolution": resolution,
+                "existing_rule": {
+                    "id": existing.id,
+                    "scope": existing.scope,
+                    "status": existing.status,
+                },
+            }
+        rule, created = await asyncio.to_thread(
+            self._rules.add_with_result,
             str(args["rule"]),
             str(args["rationale"]),
             source_notice_id=self._notice_id,
             metric=str(args["metric"]) if args.get("metric") is not None else None,
             tags=(*tags, *derived),
-            scope=normalize_scope(str(scope)),
+            scope=requested_scope,
+            applicability=(
+                cast(
+                    Literal["global", "topical", "task"], applicability
+                )
+                if applicability in {"global", "topical", "task"}
+                else None
+            ),
+            failure_signatures=failure_signatures,
+            scope_description=scope_description,
+            suppress_similar=True,
         )
-        created = rule.id not in before
         if created and rule.id not in self._candidate_ids:
             self._candidate_ids.append(rule.id)
-        return {"ok": True, "created": created, "rule": rule.to_json()}
-
-    async def rule_retire(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        rule_id = str(args["rule_id"])
-        existing = next(
-            (rule for rule in await asyncio.to_thread(self._rules.all) if rule.id == rule_id),
-            None,
-        )
-        if existing is None or existing.status != "active":
-            return {"ok": False, "error": "managed repair may retire active rules only"}
-        try:
-            rule = await asyncio.to_thread(
-                self._rules.retire,
-                rule_id,
-                reason=sanitize_text(
-                    str(args["reason"]), max_len=self._config.sanitize_max_len
-                ),
-            )
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": True, "rule": rule.to_json()}
+        elif not created:
+            self._existing_rule_id = rule.id
+            self._suppression_reason = "concurrent_or_exact_duplicate"
+            self._remember_ids((rule.id,))
+            resolution = "already_covered" if rule.status == "candidate" else "duplicate"
+            return {
+                "ok": True,
+                "created": False,
+                "suppressed": True,
+                "suppression_reason": self._suppression_reason,
+                "recommended_resolution": resolution,
+                "existing_rule": {
+                    "id": rule.id,
+                    "scope": rule.scope,
+                    "status": rule.status,
+                },
+            }
+        return {"ok": True, "created": True, "rule": rule.to_json()}
 
     async def notice_ack(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if error := self._assigned(args):
@@ -389,12 +522,12 @@ class RepairToolset(_RuleReads):
         if error := self._assigned(args):
             return error
         resolution = str(args["resolution"])
-        if resolution not in {"duplicate", "no_proposal"}:
+        if resolution not in {"duplicate", "already_covered", "no_proposal", "unactionable"}:
             return {"ok": False, "error": "invalid repair resolution"}
         existing_rule_id = (
             str(args["existing_rule_id"]) if args.get("existing_rule_id") is not None else None
         )
-        if resolution == "duplicate":
+        if resolution in {"duplicate", "already_covered"}:
             if not existing_rule_id:
                 return {"ok": False, "error": "duplicate resolution requires existing_rule_id"}
             existing = next(
@@ -406,21 +539,30 @@ class RepairToolset(_RuleReads):
                 None,
             )
             if existing is None:
-                return {"ok": False, "error": "duplicate must reference a live rule"}
+                return {"ok": False, "error": "coverage resolution must reference a live rule"}
+            if resolution == "duplicate" and existing.status != "active":
+                return {"ok": False, "error": "duplicate must reference an active rule"}
+            if resolution == "already_covered" and existing.status != "candidate":
+                return {"ok": False, "error": "already_covered must reference a candidate"}
         self._existing_rule_id = existing_rule_id
-        kind = cast(Literal["duplicate", "no_proposal"], resolution)
+        kind = cast(
+            Literal["duplicate", "already_covered", "no_proposal", "unactionable"],
+            resolution,
+        )
         return await self._ack(kind, existing_rule_id, str(args["note"]))
 
     async def _ack(
         self,
-        kind: Literal["candidate", "duplicate", "no_proposal"],
+        kind: Literal[
+            "candidate", "duplicate", "already_covered", "no_proposal", "unactionable"
+        ],
         rule_id: str | None,
         note: str,
     ) -> dict[str, Any]:
         try:
-            notice = await asyncio.to_thread(
-                self._mailbox.acknowledge,
-                self._notice_id,
+            notices = await asyncio.to_thread(
+                self._mailbox.acknowledge_many,
+                self._notice_ids,
                 rule_id=rule_id,
                 note=sanitize_text(note, max_len=self._config.sanitize_max_len),
                 kind=kind,
@@ -432,13 +574,19 @@ class RepairToolset(_RuleReads):
             self._journal.record,
             {
                 "type": "repair_notice_resolved",
+                "repair_episode_id": self._episode_id,
                 "notice_id": self._notice_id,
-                "session_id": notice.session_id,
+                "notice_ids": list(self._notice_ids),
+                "session_id": notices[0].session_id,
                 "resolution": kind,
                 "rule_id": rule_id,
+                "recommended_scope": self._recommended_scope,
+                "selected_scope": self._selected_scope,
+                "considered_rule_ids": list(self._considered_rule_ids),
+                "candidate_suppression_reason": self._suppression_reason,
             },
         )
-        return {"ok": True, "notice": notice.to_json()}
+        return {"ok": True, "notices": [notice.to_json() for notice in notices]}
 
 
 def _specs(
@@ -485,3 +633,8 @@ def _bounded_evidence(value: Any, *, max_len: int) -> Any:
     scrubbed = scrub(value)
     encoded = json.dumps(scrubbed, sort_keys=True, default=str)
     return scrubbed if len(encoded) <= max_len else {"summary": encoded[:max_len]}
+
+
+def _snippet(value: str, *, limit: int = 240) -> str:
+    compact = " ".join(value.split())
+    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
