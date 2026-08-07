@@ -25,6 +25,17 @@ class HarnessKnobs:
     rule_regress_margin: float = 0.05
     replay_timeout_s: float = 180.0
     replay_max_turns: int = 15
+    # AppWorld serializes every task lifecycle behind one world lock, so a
+    # background replay can queue behind a live trial for minutes. This is the
+    # grace to reach the starting line; replay_timeout_s then bounds the run
+    # itself. Without the split, queueing consumes the run budget and the replay
+    # is scored as inconclusive evidence about a rule that never executed.
+    replay_env_wait_timeout_s: float = 900.0
+    # Wall-clock bound on replay work in one validation round. Past it, remaining
+    # candidates get the cheap forward-trial verdict instead of waiting for a
+    # replay slot — candidates accrue faster than sequential replays retire them,
+    # and a candidate with no verdict at the learning boundary is a wasted trial.
+    validation_round_budget_s: float = 600.0
     regression_sample: int = 0
     # Background eval poll budget (poll_interval_s * poll_max_attempts). Benchmark
     # trace evals are LLM-judged and can take 6-12 min, so this
@@ -124,6 +135,12 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
         rule_regress_margin=float(harness_raw.get("rule_regress_margin", 0.05)),
         replay_timeout_s=float(harness_raw.get("replay_timeout_s", 180.0)),
         replay_max_turns=int(harness_raw.get("replay_max_turns", 15)),
+        replay_env_wait_timeout_s=float(
+            harness_raw.get("replay_env_wait_timeout_s", 900.0)
+        ),
+        validation_round_budget_s=float(
+            harness_raw.get("validation_round_budget_s", 600.0)
+        ),
         regression_sample=int(harness_raw.get("regression_sample", 0)),
         poll_interval_s=float(harness_raw.get("poll_interval_s", 5.0)),
         poll_max_attempts=int(harness_raw.get("poll_max_attempts", 200)),
