@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -108,9 +109,17 @@ class DeveloperTaskAgent:
 
     def __init__(self) -> None:
         self.actions: list[str] = []
+        self.rule_calls: list[str] = []
 
-    async def turn(self, context: str) -> dict[str, Any]:
-        action = "check_status_then_charge" if GUIDANCE in context else "charge_twice"
+    async def turn(self, context: str, tools: Any) -> dict[str, Any]:
+        index = await tools.call("harness_rules_list", {})
+        self.rule_calls.append("harness_rules_list")
+        guidance = ""
+        if any(scope["scope"] == "payments" for scope in index["scopes"]):
+            read = await tools.call("harness_rules_read", {"scope": "payments"})
+            self.rule_calls.append("harness_rules_read")
+            guidance = str(read["content"])
+        action = "check_status_then_charge" if GUIDANCE in guidance else "charge_twice"
         self.actions.append(action)
         return {"action": action, "task": "charge transaction tx-1"}
 
@@ -132,7 +141,7 @@ async def test_managed_repair_reaches_same_session_next_turn(tmp_path: Path) -> 
     task_agent = DeveloperTaskAgent()
 
     first_context = harness.system_context(SESSION, task_hint="payment")
-    first_end_state = await task_agent.turn(first_context)
+    first_end_state = await task_agent.turn(first_context, harness.task_tools)
     for _ in range(2):
         cli.script_trace(
             SESSION,
@@ -147,7 +156,7 @@ async def test_managed_repair_reaches_same_session_next_turn(tmp_path: Path) -> 
     settled = await harness.settle(SESSION)
 
     assert settled.report is not None and settled.report.any_alert
-    assert settled.repair is not None and settled.repair.status == "completed"
+    assert settled.repair is not None and settled.repair.status == "candidate_added"
     assert len(settled.repair.candidate_rule_ids) == 1
     assert len(completion.calls) == 2
     assert all(call["model"] == config.repair_model for call in completion.calls)
@@ -157,9 +166,22 @@ async def test_managed_repair_reaches_same_session_next_turn(tmp_path: Path) -> 
 
     candidate = harness.rules.candidates()[0]
     second_context = harness.system_context(SESSION, task_hint="payment")
-    assert f"[candidate {candidate.id}, added after turn 1]" in second_context
-    assert GUIDANCE in second_context
-    second_end_state = await task_agent.turn(second_context)
+    assert candidate.id not in second_context
+    assert GUIDANCE not in second_context
+    index = await harness.task_tools.call("harness_rules_list", {})
+    assert index["scopes"] == [
+        {
+            "scope": "payments",
+            "path": "rules/payments.md",
+            "description": "Payments workflows.",
+            "active": 0,
+            "provisional": 1,
+        }
+    ]
+    scoped = await harness.task_tools.call("harness_rules_read", {"scope": "payments"})
+    assert GUIDANCE in scoped["content"]
+    assert "candidate" in scoped["content"].casefold()
+    second_end_state = await task_agent.turn(second_context, harness.task_tools)
     assert task_agent.actions == ["charge_twice", "check_status_then_charge"]
 
     cli.script_trace(
@@ -195,7 +217,11 @@ def test_persisted_workspace_is_reused_without_task_administration(tmp_path: Pat
     second = Harness.create(
         config, cli=FakeCliClient(), _repair_completion=CandidateRepairCompletion()
     )
-    assert rule.rule in second.system_context("new-session")
+    assert rule.rule not in second.system_context("new-session")
+    index = asyncio.run(second.task_tools.call("harness_rules_list", {}))
+    assert index["scopes"][0]["scope"] == "scoped"
+    scoped = asyncio.run(second.task_tools.call("harness_rules_read", {"scope": "scoped"}))
+    assert rule.rule in scoped["content"]
     assert {spec.name for spec in second.task_tools.specs()} == {
         "harness_rules_read",
         "harness_rules_search",
