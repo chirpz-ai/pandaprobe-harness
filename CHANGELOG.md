@@ -25,19 +25,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TaskToolset`, the only tool surface intended for developer task agents. It
   exposes bounded live-only read, search, compact-index list, and status
   operations over learned rules. Dispatch rejects every administrative call.
-- A generated, atomic task-facing `harness_guide.md` with SKILL-style frontmatter, stable
+- A generated, atomic task-facing `rules.md` with SKILL-style frontmatter, stable
   read-only usage instructions, a live-scope index with bounded persisted
   descriptions and active/provisional counts, plus host-provided
   `RuleScopeHint` metadata for topical repair assignments.
 - Bounded repair episodes that coalesce related same-turn notices, permit at
   most one candidate, and record duplicate/already-covered/no-proposal outcomes
   and scope/novelty telemetry.
-- `scoped` as the default for new granular guidance; `global` is an explicit
-  choice reserved for universal rules, while custom scope names remain free-form
-  apart from filename-safety normalization.
+- Model-driven rule scoping. Managed repair chooses a rule's scope from the failure
+  evidence as part of its existing repair call — no extra model round. `global` is
+  the default for broadly reusable rules; a concise contextual name (application,
+  workflow, domain) is preferred when the rule belongs to that context; `scoped` is
+  the fallback when no meaningful stable name can be determined. Custom names are an
+  open catalog, normalized only for filename safety. Host `RuleScopeHint` metadata
+  and a new bounded `task_summary` on `TurnContext` inform the decision but never
+  dictate it, and a generic host/integration label is rejected as a scope. Scope
+  identity is consolidated in `pandaprobe_harness.workspace.scopes`.
+- `Harness.settle_validation(timeout=...)`, `Harness.validation_pending`, and a
+  `timeout=` argument on `drain_validation()`, which now reports whether it actually
+  drained. Use them at a phase boundary so a candidate that has earned a verdict is
+  not recorded as permanently provisional.
+- Candidate validation now reaches every candidate: `validation_round_budget_s`
+  bounds replay work per round and falls back to the forward trial for the rest,
+  rounds rotate which candidate replays first, and `replay_env_wait_timeout_s` plus
+  `ReplayContext.mark_execution_started()` keep time spent queueing for a shared
+  environment out of the replay execution budget.
+- Attributable replay verdicts: a replay sees only the candidate under test (active
+  rules stay visible), and a replay that never read the candidate cannot produce a
+  conclusive verdict. On a failure case, only the candidate's own target metric or
+  the outcome score can retire it; a protected `win` case still retires on any
+  metric.
+- Structured validation telemetry (`validation_round_started`,
+  `validation_candidate_started`, `validation_replay_case`, `validation_verdict`,
+  `validation_round_finished`) with a closed-set `pending_reason`, and structured
+  evidence on `rule_retire`.
+
+### Changed
+
+- **BREAKING:** the generated task-facing guide is `<harness_root>/rules.md`, beside
+  the `rules.jsonl` store and `rules/` scope files it indexes (previously
+  `harness_guide.md`). `rules.md` is the only name: `HarnessConfig.legacy_rules_file`
+  is removed and provisioning performs no rename. The guide is regenerated from
+  `rules.jsonl`, so a workspace carried over from an unreleased build only leaves an
+  unused file behind — delete it.
+- **BREAKING:** the default scope for a new rule is `global` rather than `scoped`,
+  and a task-facing read with no `scope` argument defaults to `global`. Existing
+  `global`, `scoped`, and custom scope files keep working unchanged; no rule is
+  migrated, moved, or duplicated.
+- **BREAKING:** `DiagnosticNotice.recommended_scope` and
+  `RepairAssignment.recommended_scope` are `str | None`. `None` means "no host
+  recommendation", which is distinct from recommending the default.
+- Task-facing context and the `rules.md` template say "learned rules" rather
+  than "optional learned guidance", and state that PandaProbe does not automatically
+  insert rule contents. No behavior change: nothing was ever injected.
+- `harness_rule_add` rejects a path-shaped scope instead of slugifying it, and
+  validates `metric` against the evaluator's metric registry, so the repair model can
+  correct either rather than persisting a rule whose metric matches no signature.
 
 ### Removed
 
+- **BREAKING:** `HarnessConfig.concurrent_eval` and `HARNESS_CONCURRENT_EVAL`. One
+  eval run has covered every metric since 0.8; nothing read the flag.
+- **BREAKING:** the `"legacy"` `Resolution.kind`. Every resolution names what
+  happened; an absent or unrecognized kind now reads as `no_proposal`.
+- **BREAKING:** the pre-0.8 `severity: "relative"` alias. Unknown severities read as
+  `breach` rather than silently de-escalating to advisory.
 - **BREAKING:** the task-agent self-administration architecture. Task agents no
   longer receive mailbox, trace inspection, notice acknowledgement, rule write
   or retirement, validation, or regression capabilities.
