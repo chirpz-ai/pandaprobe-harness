@@ -1,7 +1,7 @@
 # PandaProbe Harness
 
 PandaProbe Harness evaluates any developer-owned, PandaProbe-instrumented task
-agent and maintains a shared learned-guidance workspace with a separate,
+agent and maintains a shared learned-rules workspace with a separate,
 package-owned repair agent.
 
 [![PyPI](https://img.shields.io/pypi/v/pandaprobe-harness)](https://pypi.org/project/pandaprobe-harness/)
@@ -23,26 +23,53 @@ developer task agent → task trace → evaluation/gate → notice
                                                 ↓
                                   PandaProbe managed repair
                                                 ↓
-                                      candidate guidance
+                                     candidate rule
                                                 ↓
-developer task agent ── optional read-only tools ──→ shared workspace
+developer task agent ── read-only tools ──→ shared workspace
 ```
 
 The task agent never reads notices, inspects diagnostic traces, acknowledges
-notices, writes or retires rules, or controls validation. Its optional harness
-tools are exactly `harness_rules_read`, `harness_rules_search`,
-`harness_rules_list`, and `harness_rule_status`.
+notices, writes or retires rules, or controls validation. Its harness tools are
+exactly `harness_rules_read`, `harness_rules_search`, `harness_rules_list`, and
+`harness_rule_status`, all read-only.
+
+### Learned rules are read on demand, never injected
 
 `system_context()` never includes rule bodies or an expanded rule-file index and
-does not perform an implicit rule read/search. It contains only a stable note that
-the optional tools exist. The task agent chooses whether to list scopes, search,
-or read one scope. Workspace `harness_guide.md` contains SKILL-style task-facing
-instructions and the compact generated scope index; each entry has a bounded
-description and active/provisional counts, never rule text. Scope names are not a
-fixed product catalog: `scoped` is the default, `global` is explicit and reserved
-for universal guidance, and hosts or managed repair may select any concise custom
-name. PandaProbe normalizes custom names only for filename safety and owns the
-resulting `rules/<scope>.md` path; it imposes no category-prefix convention.
+performs no implicit rule read or search. It contains only a stable note that
+learned rules are available through those four tools. The task agent decides
+whether and when to list scopes, search, or read one. Workspace
+`rules.md` holds SKILL-style task-facing instructions and the compact
+generated scope index; each entry carries a bounded description and
+active/provisional counts, never rule text.
+
+### Scope: where a rule is filed
+
+Managed repair decides, from the failure evidence it already has, whether a rule
+is broadly applicable or belongs to a specific context. That decision is part of
+the existing repair call — no extra model round.
+
+- `global` is the default: broadly reusable rules, not tied to one task,
+  workflow, application, tool, or domain.
+- A concise contextual name — an application, workflow, or domain drawn from the
+  evidence — is preferred whenever the rule really belongs to that context. The
+  catalog is open, and a new name simply creates its `rules/<scope>.md`.
+- `scoped` is the fallback: the rule is specific, but no meaningful stable name
+  could be determined.
+
+Scope naming is generic and not tied to any benchmark or integration; a host's
+own label for itself is rejected as a scope. Hosts may pass bounded
+`RuleScopeHint` metadata and a short `task_summary` to inform the decision, but
+neither dictates it. PandaProbe normalizes names only for filename safety, owns
+the resulting path, and imposes no prefix convention.
+
+### Validation decides promotion and retirement
+
+A new rule enters as a provisional candidate and only validation promotes or
+retires it — never the repair agent. Replay is the strong path; a cheap
+forward trial over live sessions decides candidates replay cannot reach, so every
+candidate reaches a verdict. Call `settle_validation()` at a phase boundary before
+snapshotting or reporting a ruleset.
 
 ## Installation
 
@@ -152,7 +179,7 @@ Managed repair fields and environment equivalents are:
 | `domain_policy` | `HARNESS_DOMAIN_POLICY` |
 
 `observe_only=True` remains non-mutating and does not require a repair model.
-Managed repair requires `rule_validation=True`, so repair-authored guidance can
+Managed repair requires `rule_validation=True`, so a repair-authored rule can
 never skip the candidate lifecycle. Task tracing is unchanged when repair
 tracing is disabled. When enabled, the
 PandaProbe SDK records repair completions under
