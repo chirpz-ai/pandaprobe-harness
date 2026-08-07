@@ -12,7 +12,7 @@ The wiring, in order:
    LangGraph adapter (turn detection via a LangChain callback).
 2. ``harness.adapter.make_callback()`` returns the handler; pass it in each
    invoke's ``config`` so the hook fires on every root chain end (one turn).
-3. ``harness.system_context(session_id)`` supplies bounded learned guidance.
+3. ``harness.system_context(session_id)`` supplies a stable capability note.
 4. ``as_langchain_tools(harness.task_tools)`` adds optional read-only rule tools.
 
 For the fully offline, credential-free version of this loop, see
