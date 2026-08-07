@@ -142,10 +142,18 @@ class ReplayContext(str):
     but the string never contains rule bodies or an expanded index. Updated hosts
     can attach ``task_tools`` and let the replayed task agent discover guidance
     through the same read-only boundary as a live task turn.
+
+    ``candidate_rule_id`` names the rule under evaluation, so a host can label
+    telemetry and the validator can check the candidate was actually read.
     """
 
     task_tools: ToolDispatcher
     candidate_rule_id: str | None
+    #: Set once the host signals that real work began. A plain flag rather than an
+    #: ``asyncio.Event``: a replay may signal from a worker thread (a blocking
+    #: environment driven via ``to_thread``), where setting an Event bound to the
+    #: validator's loop is not safe. The validator polls it instead.
+    _execution_started: bool
 
     def __new__(
         cls,
@@ -157,7 +165,28 @@ class ReplayContext(str):
         value = str.__new__(cls, system_context)
         value.task_tools = task_tools
         value.candidate_rule_id = candidate_rule_id
+        value._execution_started = False
         return value
+
+    def mark_execution_started(self) -> None:
+        """Signal that the replay has stopped waiting and is now running.
+
+        Optional, and only meaningful where a replay must first acquire a shared
+        resource — one environment server, one container, one device. Without it,
+        time spent queueing behind a live task counts against the replay's
+        execution budget, so a replay can "time out" having executed nothing and
+        be recorded as inconclusive evidence. Calling this restarts the execution
+        budget at the moment real work begins. Idempotent, and safe to call from
+        a worker thread.
+        """
+
+        self._execution_started = True
+
+    @property
+    def execution_started(self) -> bool:
+        """Whether the host has signalled that execution began."""
+
+        return self._execution_started
 
 
 #: Re-run an eval case with a capability-only context and return the NEW
