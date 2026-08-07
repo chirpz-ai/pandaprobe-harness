@@ -158,7 +158,10 @@ async def test_settle_does_not_wait_for_the_validation_replay_round(
     assert result.repair is not None
 
     release.set()
-    await harness.drain_validation()
+    # The drain now reports whether it finished, so a phase boundary can tell a
+    # completed round from one it merely stopped waiting for.
+    assert await harness.drain_validation(timeout=5.0) is True
+    assert harness.validation_pending == 0
 
 
 async def test_settle_with_nothing_in_flight_is_a_no_op(tmp_path: Path) -> None:
@@ -219,3 +222,71 @@ async def test_turn_scope_does_not_settle_by_default(tmp_path: Path) -> None:
     await harness.settle("s")
     assert harness.mailbox.pending() == []
     assert len(harness.journal.recent(types=("repair_no_proposal",))) == 1
+
+
+async def test_settle_validation_decides_candidates_at_a_phase_boundary(
+    tmp_path: Path,
+) -> None:
+    """The counterpart to the per-turn barrier: run validation out to a standstill.
+
+    A boundary that only waited on evaluations would snapshot while candidates were
+    still being decided, recording as permanently provisional a rule that had
+    already earned promotion.
+    """
+
+    cfg = _cfg(tmp_path, rule_validation=True, rule_trial_min_sessions=1)
+    harness = Harness.create(cfg, cli=FakeCliClient())
+    candidate = harness.rules.add("check first", "why", metric="tool_correctness")
+    # One clean session: the metric family never fired, so the trial can conclude.
+    harness.hook._validation.observe_report("s-clean", set())  # noqa: SLF001
+
+    settled = await harness.settle_validation(timeout=5.0)
+
+    assert settled is True
+    assert harness.validation_pending == 0
+    assert [rule.id for rule in harness.rules.active()] == [candidate.id]
+
+
+async def test_settle_validation_reports_failure_when_it_cannot_finish(
+    tmp_path: Path,
+) -> None:
+    """A boundary that runs out of budget must say so, not claim it settled."""
+
+    release = asyncio.Event()
+
+    async def replay(case: EvalCase, context: str) -> str:
+        del case, context
+        await release.wait()
+        return "s-replay"
+
+    cfg = _cfg(tmp_path, rule_validation=True, capture_eval_cases=True)
+    harness = Harness.create(cfg, cli=FakeCliClient(), replay=replay)
+    harness.rules.add("check first", "why", metric="tool_correctness")
+    harness.evalset.capture(
+        session_id="s-old",
+        signature=("breach:tool_correctness",),
+        baseline_scores={"tool_correctness": 0.1},
+        replay_input={"task": "t"},
+    )
+
+    settled = await harness.settle_validation(timeout=0.2)
+
+    assert settled is False
+    # Nothing was cancelled or lost; the candidate is still validatable.
+    assert [rule.status for rule in harness.rules.candidates()] == ["candidate"]
+    release.set()
+    await harness.drain_validation(timeout=5.0)
+
+
+async def test_settle_validation_is_idempotent(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, rule_validation=True, rule_trial_min_sessions=1)
+    harness = Harness.create(cfg, cli=FakeCliClient())
+    candidate = harness.rules.add("check first", "why", metric="tool_correctness")
+    harness.hook._validation.observe_report("s-clean", set())  # noqa: SLF001
+
+    assert await harness.settle_validation(timeout=5.0) is True
+    assert await harness.settle_validation(timeout=5.0) is True
+
+    assert [rule.id for rule in harness.rules.active()] == [candidate.id]
+    promotions = harness.journal.recent(limit=0, types=("rule_promote",))
+    assert len(promotions) == 1
