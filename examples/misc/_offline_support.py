@@ -148,8 +148,18 @@ class DeveloperTaskAgent:
     def __init__(self) -> None:
         self.actions: list[str] = []
 
-    async def run_turn(self, context: str) -> dict[str, str]:
-        action = "check_status_then_charge" if GUIDANCE in context else "charge_twice"
+    async def run_turn(self, context: str, task_tools: Any) -> dict[str, str]:
+        """Choose whether to discover and read optional learned guidance."""
+
+        assert GUIDANCE not in context
+        guidance = ""
+        index = await task_tools.call("harness_rules_list", {})
+        if any(scope["scope"] == "payments" for scope in index["scopes"]):
+            scoped = await task_tools.call(
+                "harness_rules_read", {"scope": "payments"}
+            )
+            guidance = str(scoped["content"])
+        action = "check_status_then_charge" if GUIDANCE in guidance else "charge_twice"
         self.actions.append(action)
         return {"task": "charge tx-1", "action": action}
 
