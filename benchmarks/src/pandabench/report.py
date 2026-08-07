@@ -64,8 +64,11 @@ def _flatten(rec: dict[str, Any]) -> dict[str, Any]:
     flat["cost_usd"] = usage.get("cost_usd", 0.0)
     flat["has_harness"] = bool(harness)
     for key in ("mode", "ruleset_hash", "breached", "gate_breached",
-                "rules_active", "rules_candidate", "rules_retired", "notices"):
+                "rules_active", "rules_candidate", "rules_retired", "notices",
+                "repair_episodes"):
         flat[f"h_{key}"] = harness.get(key)
+    flat["h_resolution_counts"] = json.dumps(harness.get("resolution_counts") or {})
+    flat["h_rules_by_scope"] = json.dumps(harness.get("rules_by_scope") or {})
     # Flatten each resolved trace metric into its own column.
     for name, value in (harness.get("scores") or {}).items():
         flat[f"h_score_{name}"] = value
@@ -176,6 +179,7 @@ def _telemetry(df: pd.DataFrame) -> pd.DataFrame:
                 "rules_candidate_max": _safe_max(group["h_rules_candidate"]),
                 "rules_retired_max": _safe_max(group["h_rules_retired"]),
                 "notices_total": _safe_sum(group["h_notices"]),
+                "repair_episodes_total": _safe_sum(group["h_repair_episodes"]),
                 "breach_rate": _safe_mean(group["h_breached"]),
             }
         )
@@ -306,6 +310,6 @@ def _md_table(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return "_(none)_"
     try:
-        return df.to_markdown(index=False)
+        return str(df.to_markdown(index=False))
     except Exception:  # noqa: BLE001 - tabulate may be absent
-        return "```\n" + df.to_string(index=False) + "\n```"
+        return "```\n" + str(df.to_string(index=False)) + "\n```"
