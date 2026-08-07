@@ -61,7 +61,7 @@ class _TurnScope:
     """Async context manager *and* decorator delimiting one agent turn.
 
     With ``settle=True`` the scope also waits for evaluation and managed repair
-    before returning, so a rule learned from this turn is in force for
+    before returning, so a rule learned from this turn is discoverable for
     the next one. Off by default: it adds per-turn latency, and every existing
     caller's semantics are fire-and-forget.
     """
@@ -430,7 +430,7 @@ class Harness:
         return self._adapter
 
     def system_context(self, session_id: str, *, task_hint: str | None = None) -> str:
-        """Read-only learned guidance to attach before one task-agent turn."""
+        """Stable capability-only preamble for one task-agent turn."""
 
         return self._hook.startup_context(session_id, task_hint=task_hint)
 
