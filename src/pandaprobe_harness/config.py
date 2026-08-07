@@ -59,7 +59,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class HarnessConfig:
     """Immutable harness configuration.
 
-    Path fields ``traces_dir``, ``rules_file``, ``rules_dir``,
+    Path fields ``traces_dir``, ``rules_file``, ``legacy_rules_file``, ``rules_dir``,
     ``latest_eval_file``, ``state_dir``, ``history_file`` and the
     mailbox/journal/rules-store paths are derived from ``harness_root`` in
     ``__post_init__`` and should not be passed explicitly.
@@ -70,6 +70,7 @@ class HarnessConfig:
     # Derived paths (init=False; computed from harness_root).
     traces_dir: Path = field(init=False)
     rules_file: Path = field(init=False)
+    legacy_rules_file: Path = field(init=False)
     rules_dir: Path = field(init=False)
     latest_eval_file: Path = field(init=False)
     state_dir: Path = field(init=False)
@@ -80,6 +81,7 @@ class HarnessConfig:
     mailbox_status_file: Path = field(init=False)
     journal_file: Path = field(init=False)
     rules_store_file: Path = field(init=False)
+    scope_metadata_file: Path = field(init=False)
     evalset_dir: Path = field(init=False)
 
     # CLI invocation.
@@ -155,7 +157,9 @@ class HarnessConfig:
 
     # -- learned rules ---------------------------------------------------------
     # Cap on concurrently-live structured rules.
-    max_active_rules: int = 50
+    # Optional operator safety bound. Zero means unlimited; novelty suppression,
+    # not an arbitrary global count, controls managed-repair proliferation.
+    max_active_rules: int = 0
     # Length cap applied when sanitizing eval-derived free text.
     sanitize_max_len: int = 2000
 
@@ -203,11 +207,11 @@ class HarnessConfig:
     # Cases replayed per regression run (0 = all).
     regression_sample: int = 0
 
-    # -- rule retrieval (relevance over volume) --------------------------------
-    # Inject only global rules + the top-k rules relevant to the current
-    # situation instead of every active rule. False restores v0.5 rendering.
+    # -- explicit rule rendering/retrieval (never automatic prompt injection) --
+    # Retained for backward-compatible host/operator calls to ``render_markdown``.
+    # Task-facing list/read/search tools do not use this to preselect guidance.
     rule_retrieval: bool = True
-    # How many tagged rules the retrieval keeps in the system context.
+    # Bound for those explicit legacy rendering calls.
     rules_context_topk: int = 8
 
     # -- robustness ------------------------------------------------------------
@@ -219,7 +223,8 @@ class HarnessConfig:
         # object.__setattr__ is required to populate fields on a frozen dataclass.
         object.__setattr__(self, "harness_root", root)
         object.__setattr__(self, "traces_dir", root / "traces")
-        object.__setattr__(self, "rules_file", root / "harness_rules.md")
+        object.__setattr__(self, "rules_file", root / "harness_guide.md")
+        object.__setattr__(self, "legacy_rules_file", root / "harness_rules.md")
         object.__setattr__(self, "rules_dir", root / "rules")
         object.__setattr__(self, "latest_eval_file", root / "traces" / "latest_eval.json")
         object.__setattr__(self, "state_dir", root / "state")
@@ -230,6 +235,7 @@ class HarnessConfig:
         object.__setattr__(self, "mailbox_status_file", root / "mailbox" / "status.json")
         object.__setattr__(self, "journal_file", root / "journal.jsonl")
         object.__setattr__(self, "rules_store_file", root / "rules.jsonl")
+        object.__setattr__(self, "scope_metadata_file", root / "scope_metadata.json")
         object.__setattr__(self, "evalset_dir", root / "evalset")
 
     # -- helpers --------------------------------------------------------------
@@ -312,7 +318,7 @@ class HarnessConfig:
             ),
             "max_concurrent_evals": _env_int("HARNESS_MAX_CONCURRENT_EVALS", 4),
             "max_evals_per_run": _env_int("HARNESS_MAX_EVALS_PER_RUN", 0),
-            "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 50),
+            "max_active_rules": _env_int("HARNESS_MAX_ACTIVE_RULES", 0),
             "sanitize_max_len": _env_int("HARNESS_SANITIZE_MAX_LEN", 2000),
             "repair_model": os.environ.get("HARNESS_REPAIR_MODEL") or None,
             "repair_timeout_s": _env_float("HARNESS_REPAIR_TIMEOUT_S", 60.0),
