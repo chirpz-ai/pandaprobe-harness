@@ -232,9 +232,8 @@ class TerminalBenchRunner(SingleTaskRunner):
         client: ChatClient,
         max_turns: int,
         wiring: AgentWiring | None,
-        preamble: str | None = None,
     ) -> TaskOutcome:
-        del task_id, session_id, model, client, max_turns, wiring, preamble
+        del task_id, session_id, model, client, max_turns, wiring
         raise RuntimeError("Terminal-Bench is bulk-driven through run_phase(), not run_once()")
 
     def outcome_for(self, task_id: str, session_id: str) -> float | None:
