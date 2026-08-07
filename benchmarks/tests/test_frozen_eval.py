@@ -165,7 +165,9 @@ async def test_frozen_wiring_is_read_only_and_keeps_live_rules_retrievable() -> 
     wiring = FrozenEvalWiring(snapshot)
 
     preamble = wiring.system_preamble().lower()
-    assert "frozen read-only" in preamble
+    assert "optional frozen learned guidance" in preamble
+    assert "rules/global.md" not in preamble
+    assert "Read the order" not in preamble
     assert "mailbox" not in preamble
     assert "diagnostic" not in preamble
     assert "acknowledge" not in preamble
@@ -194,6 +196,9 @@ async def test_frozen_wiring_is_read_only_and_keeps_live_rules_retrievable() -> 
     assert search["rules"][0]["id"] == "r-active"
     status = await wiring.dispatch("harness_rule_status", {"rule_id": "r-candidate"})
     assert status["lifecycle"]["status"] == "candidate"
+    index = await wiring.dispatch("harness_rules_list", {})
+    assert index["scopes"][0]["scope"] == "global"
+    assert "Read the order" not in index["content"]
     rejected = await wiring.dispatch(
         "harness_rule_add", {"rule": "mutate", "rationale": "should fail"}
     )
