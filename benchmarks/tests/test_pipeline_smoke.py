@@ -119,12 +119,21 @@ class FakeRule:
 
 
 class FakeLiveHarness:
-    def __init__(self, events: list[str]) -> None:
+    """A live harness whose validation takes two rounds to go quiet.
+
+    ``validation_pending`` starts non-zero so the settle barrier has to wait for
+    something other than evals; a barrier that only watched ``pending_sessions``
+    would snapshot straight through it.
+    """
+
+    def __init__(self, events: list[str], *, validation_rounds: int = 2) -> None:
         self.events = events
         self.on_turn_end_calls = 0
         self.settle_calls = 0
         self.refresh_calls = 0
         self.validation_drains = 0
+        self.validation_settles = 0
+        self._rounds_left = validation_rounds
         self.rule = FakeRule()
         self.task_tools = SimpleNamespace(specs=lambda: [], call=self._tool_call)
         self.hook = SimpleNamespace(pending_sessions=())
@@ -133,6 +142,10 @@ class FakeLiveHarness:
             active=lambda: [self.rule],
             candidates=lambda: [],
         )
+
+    @property
+    def validation_pending(self) -> int:
+        return self._rounds_left
 
     async def _tool_call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError(f"unexpected live harness tool call: {name} {args}")
@@ -160,9 +173,20 @@ class FakeLiveHarness:
         self.refresh_calls += 1
         self.events.append("refresh")
 
-    async def drain_validation(self) -> None:
+    async def drain_validation(self, *, timeout: float | None = None) -> bool:
+        del timeout
         self.validation_drains += 1
         self.events.append("validation-drain")
+        # One round finishes per drain, so the barrier must loop to reach quiet.
+        self._rounds_left = max(0, self._rounds_left - 1)
+        return self._rounds_left == 0
+
+    async def settle_validation(self, *, timeout: float) -> bool:
+        del timeout
+        self.validation_settles += 1
+        self.events.append("validation-settle")
+        self._rounds_left = 0
+        return True
 
 
 def _runner(
@@ -237,9 +261,15 @@ async def test_live_learning_freezes_once_and_eval_never_builds_or_settles(
 
     assert builds == ["learning"]
     assert live.on_turn_end_calls == live.settle_calls == 2
-    assert live.refresh_calls == 1
+    # The barrier loops until validation is quiet, not just until evals land: two
+    # rounds were outstanding, so it drained twice before settling.
+    assert live.refresh_calls == 2
     assert live.validation_drains == 2
-    assert max(i for i, event in enumerate(events) if event == "validation-drain") < max(
+    assert live.validation_settles == 1
+    # Validation settles BEFORE the snapshot reads the ruleset, so a candidate
+    # that earned a verdict is not frozen as provisional. (Earlier `rules-read`
+    # events are per-trial telemetry; the snapshot is the last one.)
+    assert max(i for i, event in enumerate(events) if event == "validation-settle") < max(
         i for i, event in enumerate(events) if event == "rules-read"
     )
     assert all(isinstance(wiring, HarnessWiring) for wiring in single.wirings[:2])
