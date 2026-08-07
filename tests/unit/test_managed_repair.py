@@ -26,11 +26,16 @@ from tests.fakes.fake_cli_client import FakeCliClient
 _REAL_REPAIR_COMPLETE = PandaProbeLiteLLMCompletion.complete
 
 
-def test_repair_prompt_allows_universal_bounded_scope_names() -> None:
-    assert "scope catalog is not fixed" in REPAIR_SYSTEM_PROMPT
-    assert "Custom names have no required category prefix" in REPAIR_SYSTEM_PROMPT
-    assert "`scoped` is the default" in REPAIR_SYSTEM_PROMPT
-    assert "never supply a path" in REPAIR_SYSTEM_PROMPT
+def test_repair_prompt_frames_scope_as_the_models_own_decision() -> None:
+    assert "You choose the scope" in REPAIR_SYSTEM_PROMPT
+    assert "open catalog, not a fixed list" in REPAIR_SYSTEM_PROMPT
+    assert "`global` is the default" in REPAIR_SYSTEM_PROMPT
+    assert "`scoped` is the last resort" in REPAIR_SYSTEM_PROMPT
+    assert "no required prefix or naming format" in REPAIR_SYSTEM_PROMPT
+    assert "Never supply a path" in REPAIR_SYSTEM_PROMPT
+    # The prompt must not reinstate the wording that taught the model to skip the
+    # decision entirely and let `scoped` absorb everything.
+    assert "`scoped` is the default" not in REPAIR_SYSTEM_PROMPT
 
 
 class TraceCaptureClient:
@@ -107,6 +112,7 @@ class ScriptedCompletion:
     def __init__(self, mode: str = "candidate") -> None:
         self.mode = mode
         self.calls: list[dict[str, Any]] = []
+        self.rejections: list[str] = []
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
@@ -262,6 +268,16 @@ class ScriptedCompletion:
                 candidate_args["scope"] = "appworld"
             if self.mode == "candidate_global":
                 candidate_args.update({"scope": "global", "applicability": "global"})
+            if self.mode.startswith("candidate_scope:"):
+                # The model names its own scope, with a rationale, from evidence.
+                candidate_args["scope"] = self.mode.split(":", 1)[1]
+                candidate_args["scope_rationale"] = "the failure is specific to it"
+            if self.mode == "candidate_no_scope":
+                candidate_args.pop("scope", None)
+            if self.mode == "candidate_bad_scope":
+                candidate_args["scope"] = "../../etc/passwd"
+            if self.mode == "candidate_bad_metric":
+                candidate_args["metric"] = "task_completion; tool_correctness"
             return NormalizedRepairMessage(
                 tool_calls=(
                     NormalizedToolCall(
@@ -281,11 +297,33 @@ class ScriptedCompletion:
                     ),
                 )
             )
-        added = next(
-            json.loads(str(message["content"]))["rule"]["id"]
+        adds = [
+            json.loads(str(message["content"]))
             for message in messages
             if message.get("role") == "tool" and message.get("name") == "harness_rule_add"
-        )
+        ]
+        if not adds[-1].get("ok"):
+            # The write boundary rejected the first attempt (an unsafe scope, an
+            # unknown metric). A real model sees the error and retries cleanly —
+            # that recoverability is the point of rejecting instead of rewriting.
+            self.rejections.append(str(adds[-1].get("error") or ""))
+            return NormalizedRepairMessage(
+                tool_calls=(
+                    NormalizedToolCall(
+                        "add-retry",
+                        "harness_rule_add",
+                        json.dumps(
+                            {
+                                "rule": "Verify payment status before retrying.",
+                                "rationale": "Avoid duplicate mutations.",
+                                "scope": "payments",
+                                "metric": "task_completion",
+                            }
+                        ),
+                    ),
+                )
+            )
+        added = adds[-1]["rule"]["id"]
         return NormalizedRepairMessage(
             tool_calls=(
                 NormalizedToolCall(
@@ -469,6 +507,239 @@ async def test_topical_and_cross_domain_repairs_choose_distinct_scopes(
     assert global_result.repair is not None
     assert global_result.repair.selected_scope == "global"
     assert cross_domain.rules.candidates()[0].applicability == "global"
+
+
+# -- scope selection is the repair model's decision ---------------------------------
+
+
+async def _settle_with(
+    tmp_path: Path, completion: ScriptedCompletion, **turn: Any
+) -> Any:
+    """One breached turn through managed repair, with no host scope hints."""
+
+    harness = Harness.create(
+        _config(tmp_path), cli=_failing_cli(), _repair_completion=completion
+    )
+    harness.on_turn_end({"session_id": "task", "turn_index": 1, **turn})
+    result = await harness.settle("task")
+    assert result.repair is not None
+    return harness, result.repair
+
+
+async def test_a_general_rule_defaults_to_global(tmp_path: Path) -> None:
+    """No expressed scope means "broadly applicable", not "unclassifiable"."""
+
+    harness, repair = await _settle_with(
+        tmp_path, ScriptedCompletion("candidate_no_scope"), end_state={"task_id": "t"}
+    )
+
+    assert repair.status == "candidate_added"
+    assert repair.recommended_scope is None  # nothing was recommended
+    assert repair.selected_scope == "global"
+    assert harness.rules.candidates()[0].scope == "global"
+    assert harness.config.rules_scope_file("global").is_file()
+
+
+async def test_a_specific_rule_can_use_scoped(tmp_path: Path) -> None:
+    """`scoped` remains reachable — as a deliberate choice, not a default."""
+
+    harness, repair = await _settle_with(
+        tmp_path,
+        ScriptedCompletion("candidate_scope:scoped"),
+        end_state={"task_id": "t"},
+    )
+
+    assert repair.selected_scope == "scoped"
+    assert harness.rules.candidates()[0].scope == "scoped"
+
+
+async def test_the_repair_model_can_choose_a_meaningful_custom_scope(
+    tmp_path: Path,
+) -> None:
+    harness, repair = await _settle_with(
+        tmp_path,
+        ScriptedCompletion("candidate_scope:venmo"),
+        end_state={"task_id": "t"},
+    )
+
+    assert repair.selected_scope == "venmo"
+    assert repair.scope_rationale == "the failure is specific to it"
+    assert harness.config.rules_scope_file("venmo").is_file()
+
+
+async def test_a_custom_scope_need_not_be_a_name_any_benchmark_knows(
+    tmp_path: Path,
+) -> None:
+    """Scope names are open: nothing consults a catalog of known applications."""
+
+    harness, repair = await _settle_with(
+        tmp_path,
+        ScriptedCompletion("candidate_scope:warehouse-picking"),
+        end_state={"task_id": "t"},
+    )
+
+    assert repair.selected_scope == "warehouse-picking"
+    assert harness.config.rules_scope_file("warehouse-picking").is_file()
+
+
+async def test_different_contexts_produce_different_scope_files(
+    tmp_path: Path,
+) -> None:
+    first, first_repair = await _settle_with(
+        tmp_path / "a",
+        ScriptedCompletion("candidate_scope:spotify"),
+        end_state={"task_id": "t"},
+    )
+    second, second_repair = await _settle_with(
+        tmp_path / "b",
+        ScriptedCompletion("candidate_scope:airline"),
+        end_state={"task_id": "t"},
+    )
+
+    assert first_repair.selected_scope == "spotify"
+    assert second_repair.selected_scope == "airline"
+    assert first.config.rules_scope_file("spotify").is_file()
+    assert not first.config.rules_scope_file("airline").exists()
+    assert second.config.rules_scope_file("airline").is_file()
+
+
+async def test_a_generic_host_label_cannot_become_a_scope(tmp_path: Path) -> None:
+    """With no precise hint to fall back on, a host label degrades to `scoped`.
+
+    The label names where the agent runs, not what failed, so `rules/appworld.md`
+    must not be creatable even when the model asks for it.
+    """
+
+    harness, repair = await _settle_with(
+        tmp_path,
+        ScriptedCompletion("candidate_appworld"),
+        end_state={"benchmark": "appworld", "task_id": "opaque-id"},
+    )
+
+    assert repair.selected_scope == "scoped"
+    assert not harness.config.rules_scope_file("appworld").exists()
+
+
+async def test_an_unsafe_scope_is_rejected_so_the_model_can_retry(
+    tmp_path: Path,
+) -> None:
+    """Rejected, not silently rewritten: the model sees the error and recovers."""
+
+    completion = ScriptedCompletion("candidate_bad_scope")
+    harness, repair = await _settle_with(
+        tmp_path, completion, end_state={"task_id": "t"}
+    )
+
+    assert completion.rejections and "invalid rule scope" in completion.rejections[0]
+    assert repair.status == "candidate_added"
+    assert repair.selected_scope == "payments"
+    for hostile in ("..", "etc", "passwd"):
+        assert not harness.config.rules_scope_file(hostile).exists()
+
+
+async def test_an_unknown_metric_is_rejected_so_the_model_can_retry(
+    tmp_path: Path,
+) -> None:
+    """A composite metric name matches no signature, so it must not persist.
+
+    A rule whose metric can never match reads as "never breached", which inverts
+    its forward-trial verdict into a false promotion.
+    """
+
+    completion = ScriptedCompletion("candidate_bad_metric")
+    harness, repair = await _settle_with(
+        tmp_path, completion, end_state={"task_id": "t"}
+    )
+
+    assert completion.rejections and "unknown metric" in completion.rejections[0]
+    assert repair.status == "candidate_added"
+    assert harness.rules.candidates()[0].metric == "task_completion"
+
+
+async def test_scope_selection_adds_no_extra_model_call(tmp_path: Path) -> None:
+    """The scope comes from the existing repair decision, not a second call."""
+
+    baseline = ScriptedCompletion("candidate_no_scope")
+    await _settle_with(tmp_path / "a", baseline, end_state={"task_id": "t"})
+
+    custom = ScriptedCompletion("candidate_scope:venmo")
+    await _settle_with(tmp_path / "b", custom, end_state={"task_id": "t"})
+
+    assert len(custom.calls) == len(baseline.calls)
+
+
+async def test_a_host_hint_informs_but_does_not_override_the_models_choice(
+    tmp_path: Path,
+) -> None:
+    """Hints are context. A model that names a real topic keeps it."""
+
+    completion = ScriptedCompletion("candidate_scope:spotify")
+    harness = Harness.create(
+        _config(tmp_path), cli=_failing_cli(), _repair_completion=completion
+    )
+    harness.on_turn_end(
+        {
+            "session_id": "task",
+            "turn_index": 1,
+            "end_state": {"benchmark": "appworld", "task_id": "opaque-id"},
+            "rule_scope_hints": [RuleScopeHint(key="venmo").to_json()],
+        }
+    )
+
+    result = await harness.settle("task")
+
+    assert result.repair is not None
+    assert result.repair.recommended_scope == "venmo"  # the hint was offered...
+    assert result.repair.selected_scope == "spotify"  # ...and not binding
+    assert harness.rules.candidates()[0].scope == "spotify"
+
+
+async def test_the_task_summary_reaches_the_repair_model(tmp_path: Path) -> None:
+    """The generic channel that lets a scope come from the task, not a task id."""
+
+    completion = ScriptedCompletion("candidate_scope:spotify")
+    harness = Harness.create(
+        _config(tmp_path), cli=_failing_cli(), _repair_completion=completion
+    )
+    harness.on_turn_end(
+        {
+            "session_id": "task",
+            "turn_index": 1,
+            "end_state": {
+                "task_id": "3ab5b8b_2",
+                "task_summary": "Download all my liked Spotify songs.",
+            },
+        }
+    )
+
+    await harness.settle("task")
+
+    assignment = json.loads(
+        str(completion.calls[0]["messages"][1]["content"]).split("\n", 1)[1]
+    )
+    assert assignment["task_summary"] == "Download all my liked Spotify songs."
+    # Not duplicated into the descriptor, which would spend prompt budget twice.
+    assert "task_summary" not in assignment["task_descriptor"]
+
+
+async def test_older_scope_files_remain_readable(tmp_path: Path) -> None:
+    """Existing global/scoped/custom workspaces keep working untouched."""
+
+    config = _config(tmp_path)
+    harness = Harness.create(
+        config, cli=_failing_cli(), _repair_completion=ScriptedCompletion()
+    )
+    for scope in ("global", "scoped", "venmo", "custom-scope"):
+        harness.rules.add(f"a {scope} rule", "x", scope=scope)
+
+    for scope in ("global", "scoped", "venmo", "custom-scope"):
+        result = await harness.task_tools.call("harness_rules_read", {"scope": scope})
+        assert result["ok"] is True
+        assert f"a {scope} rule" in result["content"]
+    listed = await harness.task_tools.call("harness_rules_list", {})
+    assert [entry["scope"] for entry in listed["scopes"]] == [
+        "global", "custom-scope", "scoped", "venmo",
+    ]
 
 
 async def test_related_notices_form_one_repair_episode(tmp_path: Path) -> None:
