@@ -201,7 +201,7 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
         {
             "scope": "global",
             "path": "rules/global.md",
-            "description": "Cross-domain execution and verification guidance.",
+            "description": "Broadly reusable execution and verification rules.",
             "active": 1,
             "provisional": 0,
         }
