@@ -67,8 +67,11 @@ async def test_tier1_only_fire_is_advisory_and_captures_no_eval_case(
     (notice,) = Mailbox(cfg).pending()
     assert notice.severity == "trend"
     assert "stall:task_completion" in notice.signatures
-    # Detection tier does not make the resulting lesson universally applicable.
-    assert notice.scope_hint == "scoped"
+    # The notice carries the default scope and no recommendation: detection tier
+    # says where a failure was found, not how widely its lesson applies, so the
+    # hook makes no scope claim and leaves the decision to managed repair.
+    assert notice.scope_hint == "global"
+    assert notice.recommended_scope is None
     assert EvalSet(cfg, journal=Journal(cfg)).cases() == []
 
 
@@ -85,8 +88,10 @@ async def test_tier2_breach_is_a_breach_notice_and_captures_a_failure_case(
     (notice,) = Mailbox(cfg).pending()
     assert notice.severity == "breach"
     assert "breach:tool_correctness" in notice.signatures
-    # A surgical step-level breach is scoped, not global.
-    assert notice.scope_hint == "scoped"
+    # Even a surgical step-level breach gets no mechanical scope: a Tier-2 fire
+    # can still teach a universally applicable lesson.
+    assert notice.scope_hint == "global"
+    assert notice.recommended_scope is None
 
     (case,) = EvalSet(cfg, journal=Journal(cfg)).cases()
     # The baseline is the trace metric that triggered — the signal promotion will
