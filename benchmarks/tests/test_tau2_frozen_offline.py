@@ -90,9 +90,14 @@ def test_tau2_frozen_context_skips_repair_and_settlement() -> None:
 
     assert assistant.content == "I can help with that."
     assert len(client.calls) == 1
-    assert client.tool_batches == [[]]
+    assert set(client.tool_batches[0]) == {
+        "harness_rules_list",
+        "harness_rules_read",
+        "harness_rules_search",
+        "harness_rule_status",
+    }
     assert wiring.pending_notice_ids() == ()
-    assert "Verify the reservation owner" in client.message_batches[0][0]["content"]
+    assert "Verify the reservation owner" not in client.message_batches[0][0]["content"]
 
 
 async def test_tau2_frozen_run_still_records_native_reward(
