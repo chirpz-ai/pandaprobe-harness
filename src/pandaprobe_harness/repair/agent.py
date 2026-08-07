@@ -359,6 +359,7 @@ class ManagedRepairAgent:
             existing_rule_id=tools.existing_rule_id,
             recommended_scope=assignment.recommended_scope,
             selected_scope=tools.selected_scope,
+            scope_rationale=tools.scope_rationale,
             considered_rule_ids=tools.considered_rule_ids,
             resolution_kind=tools.resolution or status,
             candidate_suppression_reason=tools.suppression_reason,
