@@ -149,7 +149,7 @@ class DeveloperTaskAgent:
         self.actions: list[str] = []
 
     async def run_turn(self, context: str, task_tools: Any) -> dict[str, str]:
-        """Choose whether to discover and read optional learned guidance."""
+        """Choose whether to discover and read learned rules."""
 
         assert GUIDANCE not in context
         guidance = ""
