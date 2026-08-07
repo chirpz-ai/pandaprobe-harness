@@ -63,7 +63,7 @@ class BaseSinkAdapter:
     # -- helpers -----------------------------------------------------------------
 
     def startup_context_text(self) -> str:
-        """Read-only learned guidance when the adapter can resolve a session."""
+        """Read-only learned rules when the adapter can resolve a session."""
 
         if self._hook is None:
             return ""
