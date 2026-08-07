@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -12,14 +13,14 @@ from pandabench.agents.frozen_wiring import FrozenEvalWiring
 from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
-from pandabench.runners.appworld import AppWorldRunner, _experiment_name
+from pandabench.runners.appworld import AppWorldRunner, _app_scope_hints, _experiment_name
 from pandabench.runners.appworld_env import (
     AppWorldServer,
     EvalResult,
     HttpAppWorldEnv,
     TaskInfo,
 )
-from pandabench.runners.tau2 import Tau2Runner
+from pandabench.runners.tau2 import Tau2Runner, _safe_task_workflow
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -175,6 +176,24 @@ def test_tau2_outcomes_are_session_scoped() -> None:
     assert runner.outcome_for("same-task", "session-b") == 1.0
     assert runner.outcome_for("same-task", "replay-session") == 0.75
     assert runner.outcome_for("same-task", "unknown") is None
+
+
+def test_appworld_and_tau2_expose_semantic_scope_hints_without_task_ids() -> None:
+    app_hints = _app_scope_hints(
+        "Send a Venmo reminder, then update my Spotify playlist.",
+        "- spotify: search, create_playlist\n- venmo: send_reminder\n- supervisor: show",
+    )
+    assert [hint.key for hint in app_hints] == ["venmo", "spotify"]
+    assert app_hints[0].recommended is True
+    assert all("workflows" in hint.description.casefold() for hint in app_hints)
+
+    tau = Tau2Runner(domain="airline")
+    domain_hint = tau.rule_scope_hints("opaque-task-id")
+    assert domain_hint[0].key == "airline"
+    assert domain_hint[0].recommended is True
+    assert _safe_task_workflow(
+        SimpleNamespace(metadata={"workflow": "change-flight"})
+    ) == "change-flight"
 
 
 def test_http_500_logs_bounded_response_body(caplog: pytest.LogCaptureFixture) -> None:
