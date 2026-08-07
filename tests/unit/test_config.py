@@ -11,7 +11,8 @@ from tests.fakes.fake_cli_client import FakeCliClient
 def test_derived_paths_from_root() -> None:
     cfg = HarnessConfig(harness_root=Path("/tmp/harness"))
     assert cfg.traces_dir == Path("/tmp/harness/traces")
-    assert cfg.rules_file == Path("/tmp/harness/harness_rules.md")
+    assert cfg.rules_file == Path("/tmp/harness/harness_guide.md")
+    assert cfg.legacy_rules_file == Path("/tmp/harness/harness_rules.md")
     assert cfg.rules_dir == Path("/tmp/harness/rules")
     assert cfg.rules_scope_file("payments") == Path("/tmp/harness/rules/payments.md")
     assert cfg.latest_eval_file == Path("/tmp/harness/traces/latest_eval.json")
@@ -63,7 +64,7 @@ def test_control_defaults() -> None:
     assert cfg.observe_only is False
     assert cfg.circuit_breaker_max_notices == 5
     assert cfg.circuit_breaker_window_s == 600.0
-    assert cfg.max_active_rules == 50
+    assert cfg.max_active_rules == 0
     assert cfg.health_check is True
 
 
