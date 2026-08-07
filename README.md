@@ -25,13 +25,24 @@ developer task agent → task trace → evaluation/gate → notice
                                                 ↓
                                       candidate guidance
                                                 ↓
-developer task agent ← read-only next-turn context ← shared workspace
+developer task agent ── optional read-only tools ──→ shared workspace
 ```
 
 The task agent never reads notices, inspects diagnostic traces, acknowledges
 notices, writes or retires rules, or controls validation. Its optional harness
 tools are exactly `harness_rules_read`, `harness_rules_search`,
 `harness_rules_list`, and `harness_rule_status`.
+
+`system_context()` never includes rule bodies or an expanded rule-file index and
+does not perform an implicit rule read/search. It contains only a stable note that
+the optional tools exist. The task agent chooses whether to list scopes, search,
+or read one scope. Workspace `harness_guide.md` contains SKILL-style task-facing
+instructions and the compact generated scope index; each entry has a bounded
+description and active/provisional counts, never rule text. Scope names are not a
+fixed product catalog: `scoped` is the default, `global` is explicit and reserved
+for universal guidance, and hosts or managed repair may select any concise custom
+name. PandaProbe normalizes custom names only for filename safety and owns the
+resulting `rules/<scope>.md` path; it imposes no category-prefix convention.
 
 ## Installation
 
@@ -57,7 +68,7 @@ settings follow LiteLLM conventions.
 ## Generic task-loop integration
 
 ```python
-from pandaprobe_harness import Harness, HarnessConfig
+from pandaprobe_harness import Harness, HarnessConfig, RuleScopeHint
 from pandaprobe_harness.agent_tools.native import as_anthropic_tools
 
 harness = Harness.create(
@@ -86,9 +97,17 @@ async def one_turn(session_id: str, user_input: str) -> str:
     )
 
     # Flush/export task tracing first, then register the completed task turn.
-    harness.on_turn_end(
-        {"session_id": session_id, "turn_index": next_index(), "end_state": end_state()}
-    )
+    harness.on_turn_end({
+        "session_id": session_id,
+        "turn_index": next_index(),
+        "end_state": end_state(),
+        "rule_scope_hints": [
+            RuleScopeHint(
+                key="payments",
+                description="Payment authorization and transaction workflows.",
+            ).to_json()
+        ],
+    })
     settlement = await harness.settle(session_id)
     return answer
 ```
@@ -96,12 +115,22 @@ async def one_turn(session_id: str, user_input: str) -> str:
 The host must settle before starting the next task turn when same-session repair
 is desired. Settlement waits for task evaluation, notice persistence, and one
 bounded managed repair attempt. It does not synchronously wait for domain replay
-validation, so a candidate may appear provisionally on the next turn and be
-promoted or retired later.
+validation. A candidate is immediately discoverable through list/read after
+settlement, but is never inserted into the next prompt; validation may promote or
+retire it later.
 
-`settlement.repair` exposes status, repair/task session IDs, notice ID, model
-turns, tool calls, candidate IDs, normalized token/cost usage when available,
-and error category. Repair failure or timeout never fails the developer task.
+Before a task turn, the host may attach the stable capability preamble and four
+read-only tools. The harness injects no learned content and makes no automatic
+rule-tool call. After the turn, tracing is flushed, evaluation/gating run, related
+notices are grouped into one bounded repair episode, and managed repair may add at
+most one provisional candidate or resolve without one. Successful settlement
+atomically refreshes the index/scope artifacts before the next task turn can query
+them; timeout or failure leaves every notice recoverable.
+
+`settlement.repair` exposes status, repair/task session IDs, repair episode and
+notice IDs, recommended/selected scope, considered/existing/candidate rule IDs,
+suppression reason, model turns/tool calls, normalized usage when available, and
+error category. Repair failure or timeout never fails the developer task.
 
 Framework turn detectors remain available through `Harness.for_langgraph()`,
 `for_langchain()`, `for_deepagents()`, `for_crewai()`,
@@ -127,7 +156,7 @@ Managed repair requires `rule_validation=True`, so repair-authored guidance can
 never skip the candidate lifecycle. Task tracing is unchanged when repair
 tracing is disabled. When enabled, the
 PandaProbe SDK records repair completions under
-`repair-<task-session>-<notice-id>` with repair-role metadata; exact-session
+`repair-<task-session>-<episode-id>` with repair-role metadata; exact-session
 task trace discovery excludes them.
 
 Each enabled repair run exports one trace named `pandaprobe`. Its `harness`
