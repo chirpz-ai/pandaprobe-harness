@@ -106,6 +106,18 @@ class SingleTaskRunner(Protocol):
         del task_id
         return ()
 
+    def task_summary(self, task_id: str) -> str:
+        """What this task asks for, in the benchmark's own words.
+
+        Managed repair reads it as untrusted evidence when diagnosing a failure
+        and choosing a rule scope, so a benchmark with only opaque task ids does
+        not force every rule into one undifferentiated file. Empty means "no
+        statement available"; the harness never requires one.
+        """
+
+        del task_id
+        return ""
+
     async def run_once(
         self,
         *,
@@ -362,6 +374,7 @@ class BenchmarkRunner:
                 # end — the precondition for the trajectory gate having a series.
                 session_id=session_id, flush=client.flush,
                 rule_scope_hints=self._single.rule_scope_hints(task_id),
+                task_summary=self._single.task_summary(task_id),
             )
         elif frozen_snapshot is not None and arm == "harness" and phase == "eval":
             wiring = FrozenEvalWiring(frozen_snapshot)
@@ -509,29 +522,50 @@ class BenchmarkRunner:
 
         Each session is scored in a detached background task that can take minutes
         (LLM-judged over many traces); ``refresh``/``on_turn_end`` don't block on it.
-        This barrier loops ``refresh_all`` + ``drain_validation`` until those tasks
-        drain or ``settle_timeout_s`` elapses. Completed trials may promote or
-        retire candidates; any unresolved candidate remains provisional in the
-        exact boundary snapshot.
+        This barrier loops until BOTH the evals and candidate validation are
+        quiet, or ``settle_timeout_s`` elapses.
+
+        Waiting on evals alone is not enough, and used to be the whole loop: it
+        exits as soon as scores have landed, leaving validation to a trailing
+        best-effort join bounded by ``drain_timeout_s`` (15s) — far less than one
+        replay-bound round needs. The snapshot below then froze candidates that
+        had already earned a verdict as permanently provisional.
         """
 
         deadline = time.monotonic() + self._study.harness.settle_timeout_s
         while time.monotonic() < deadline:
             try:
                 await harness.refresh_all()
-                await harness.drain_validation()
+                await harness.drain_validation(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
             except Exception as exc:  # noqa: BLE001 - never crash the run on settle
                 logger.warning("settle(%s): drain error: %s", label, exc)
                 return
             pending = harness.hook.pending_sessions
-            if not pending:
+            validating = harness.validation_pending
+            if not pending and not validating:
                 break
-            logger.info("settle(%s): %d turn eval(s) still pending...", label, len(pending))
+            logger.info(
+                "settle(%s): %d turn eval(s), %d validation round(s) still pending...",
+                label, len(pending), validating,
+            )
             await asyncio.sleep(self._study.harness.settle_poll_s)
+        # Evals are quiet, so every trial's evidence is in. Run validation out to a
+        # standstill on the remaining budget: this is the only point in the run
+        # where nothing holds the environment a replay needs.
         try:
-            await harness.drain_validation()
+            settled = await harness.settle_validation(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
+            if not settled:
+                logger.warning(
+                    "settle(%s): validation did not settle within settle_timeout_s; "
+                    "undecided candidates will be frozen as provisional",
+                    label,
+                )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("settle(%s): final drain_validation error: %s", label, exc)
+            logger.warning("settle(%s): settle_validation error: %s", label, exc)
 
     def _splits(self, dataset: str, seed: int, limit: int | None, benchmark: str) -> TaskSplits:
         cfg = self._study.benchmark(benchmark)
@@ -607,12 +641,19 @@ def _existing_learning_outcome(path: Path) -> str | None:
 
 
 def _checkpoint_two(snapshot: FrozenRulesSnapshot) -> str:
-    """Checkpoint 2: did the learning phase promote any rules? Stamp the outcome."""
+    """Checkpoint 2: did the learning phase promote any rules? Stamp the outcome.
+
+    "Learning produced nothing" and "learning produced N candidates that
+    validation never decided" are very different results, and reporting both as
+    ``no_rules`` hid the second one completely. Undecided candidates are named.
+    """
 
     active = snapshot.active_count
     candidate = snapshot.candidate_count
     logger.info("checkpoint-2: rules_active=%d rules_candidate=%d", active, candidate)
-    return "no_rules" if active == 0 else f"active={active}"
+    if active:
+        return f"active={active}" if not candidate else f"active={active},pending={candidate}"
+    return f"pending={candidate}" if candidate else "no_rules"
 
 
 # Timer helper reused by run_once implementations.
