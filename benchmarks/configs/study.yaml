@@ -15,6 +15,16 @@ harness:
   rule_regress_margin: 0.05
   replay_timeout_s: 180
   replay_max_turns: 15
+  # AppWorld holds ONE world behind a lock shared by live trials and background
+  # replays, so a replay can queue for minutes. This grace covers reaching the
+  # starting line; replay_timeout_s then bounds the run. Without the split, the
+  # wait consumes the run budget and the replay is recorded as inconclusive
+  # evidence about a candidate that never executed.
+  replay_env_wait_timeout_s: 900
+  # Replay work allowed in one validation round. Past it, remaining candidates
+  # still get a verdict — the cheap forward-trial one — instead of waiting for a
+  # sequential replay slot. Candidates accrue faster than replays decide them.
+  validation_round_budget_s: 600
   regression_sample: 0        # 0 = replay the whole eval-set
   # Background eval poll budget = poll_interval_s * poll_max_attempts. AppWorld/tau2
   # trace evals are LLM-judged and can take 6-12 min, so keep this
