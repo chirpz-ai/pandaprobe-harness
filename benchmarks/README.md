@@ -48,10 +48,10 @@ than sitting undecided. The learning/eval boundary waits for validation to settl
 before freezing the ruleset, and `records.jsonl` carries per-trial validation
 counts (rounds, promotions, retirements, replays, and pending reasons).
 
-Self-contained uv project currently locked to the locally built root wheel via
-`[tool.uv.sources]`. This validates the distributable managed-repair candidate
-without an editable import or a premature release. After publication, remove the
-source override and update the exact version pin. See `RUNNING.md` for the workflow.
+Self-contained uv project that installs `pandaprobe-harness==0.9.0` from PyPI —
+not an editable import of `../src`. A study run therefore measures the same
+artifact a user installs. Bump the pin and the lockfile together when moving to a
+new harness release. See `RUNNING.md` for the workflow.
 
 ## Prerequisites
 
@@ -64,12 +64,10 @@ source override and update the exact version pin. See `RUNNING.md` for the workf
   needs `PANDAPROBE_API_KEY`.
 - Docker running (Terminal-Bench only). Harbor is installed with this project.
 - AppWorld isolated env (`make setup` provisions it; ~183 MB data).
-- A current root wheel at `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl`.
 
 ## Setup
 
 ```bash
-cd .. && uv build --wheel && cd benchmarks
 cp .env.example .env      # fill in credentials
 make setup                # uv sync (including Harbor), isolated AppWorld env, preflight
 uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping

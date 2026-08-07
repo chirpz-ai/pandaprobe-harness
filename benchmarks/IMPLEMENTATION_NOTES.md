@@ -6,10 +6,9 @@ building. Read alongside `RUNNING.md`.
 
 ## Pinned versions (benchmarks/uv.lock)
 
-- `pandaprobe-harness==0.8.0` remains exact while the pre-release candidate is
-  resolved from `../dist/pandaprobe_harness-0.8.0-py3-none-any.whl` by
-  `[tool.uv.sources]`. This is a non-editable built artifact. Remove the source
-  override and update the pin after the managed-repair release is published.
+- `pandaprobe-harness==0.9.0`, resolved from PyPI. Exact-pinned so a recorded run
+  names the precise harness it measured, and non-editable so a study cannot
+  silently measure uncommitted local changes. Bump the pin and lockfile together.
 - `harbor==0.18.0` — installed in this project so its custom-agent import can resolve
   `pandabench`.
 - `pandaprobe>=0.5` (the SDK; native LiteLLM wrapper + session binding).

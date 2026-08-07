@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tomllib
-from importlib.metadata import distribution
+from importlib.metadata import distribution, version
 from pathlib import Path
 
 import pytest
@@ -78,13 +78,27 @@ def test_benchmark_gate_window_defaults_and_installed_package_default(tmp_path: 
     assert HarnessConfig().gate_window == 5
 
 
-def test_benchmark_installs_candidate_from_local_built_wheel() -> None:
-    project = tomllib.loads((BENCH_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    source = project["tool"]["uv"]["sources"]["pandaprobe-harness"]["path"]
-    assert source == "../dist/pandaprobe_harness-0.8.0-py3-none-any.whl"
+def test_benchmark_installs_the_released_harness_from_pypi() -> None:
+    """A study must measure the artifact users install, at a recorded version.
 
-    direct_url = json.loads(distribution("pandaprobe-harness").read_text("direct_url.json") or "{}")
-    assert direct_url["url"].endswith("/dist/pandaprobe_harness-0.8.0-py3-none-any.whl")
+    Two failure modes this guards: an editable/local install, which would let a
+    run silently measure uncommitted source; and a loosened pin, which would make
+    ``manifest.json``'s recorded version ambiguous across runs.
+    """
+
+    project = tomllib.loads((BENCH_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pins = [
+        dep
+        for dep in project["project"]["dependencies"]
+        if dep.startswith("pandaprobe-harness")
+    ]
+    assert pins == [f"pandaprobe-harness=={version('pandaprobe-harness')}"]
+    # No source override may redirect that pin to a path or a git ref.
+    assert "pandaprobe-harness" not in project.get("tool", {}).get("uv", {}).get(
+        "sources", {}
+    )
+    # A registry install has no direct_url.json; a path/VCS/editable one does.
+    assert distribution("pandaprobe-harness").read_text("direct_url.json") is None
 
 
 def test_study_can_select_a_dedicated_repair_model(tmp_path: Path) -> None:
