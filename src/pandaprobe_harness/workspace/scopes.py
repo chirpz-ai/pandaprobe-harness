@@ -106,8 +106,8 @@ def normalize_scope_description(value: str | None, *, scope: str) -> str:
     if text:
         return text if text.endswith((".", "!", "?")) else text + "."
     if scope == GLOBAL_SCOPE:
-        return "Cross-domain execution and verification guidance."
+        return "Broadly reusable execution and verification rules."
     if scope == SCOPED_SCOPE:
-        return "Narrow task-specific execution and verification guidance."
+        return "Specific rules with no more meaningful scope."
     label = scope.replace("_", " ").replace("-", " ").strip().title() or "Topical"
     return f"{label} workflows."
