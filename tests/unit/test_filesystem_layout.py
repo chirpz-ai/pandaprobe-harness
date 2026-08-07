@@ -14,8 +14,16 @@ def test_provision_creates_tree_and_rules(config: HarnessConfig) -> None:
     root = fs.read_rules()
     # The seeded root is the skill root: protocol + a References section, and no
     # rule bodies (those live under rules/).
-    assert "## References" in root
+    assert root.startswith("---\nname: pandaprobe-learned-rules")
+    assert "allowed-tools:" in root
+    assert "## Workflow" in root
     assert "harness_rules_read" in root
+    assert "## Lifecycle" in root
+    assert "## References" in root
+    assert "Custom names do not" in root
+    assert "spotify" not in root.casefold()
+    assert "venmo" not in root.casefold()
+    assert "No learned rules" in root
 
 
 def test_provision_idempotent_does_not_clobber(config: HarnessConfig) -> None:
@@ -29,6 +37,17 @@ def test_provision_idempotent_does_not_clobber(config: HarnessConfig) -> None:
     fs.provision()  # second call must not overwrite
     assert fs.read_rules() == before
     assert "a learned rule" in fs.read_rules()
+
+
+def test_provision_migrates_legacy_generated_root(config: HarnessConfig) -> None:
+    config.harness_root.mkdir(parents=True)
+    config.legacy_rules_file.write_text("legacy generated root\n", encoding="utf-8")
+
+    fs = HarnessFilesystem(config)
+    fs.provision()
+
+    assert config.rules_file.read_text(encoding="utf-8") == "legacy generated root\n"
+    assert not config.legacy_rules_file.exists()
 
 
 def test_write_latest_eval_atomic_roundtrip(config: HarnessConfig) -> None:
