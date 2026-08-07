@@ -22,7 +22,7 @@ from pandaprobe_harness import Harness, HarnessConfig
 from .config import StudyConfig
 
 if TYPE_CHECKING:
-    from pandaprobe_harness import EvalCase, ReplayFn, VerifierFn
+    from pandaprobe_harness import EvalCase, ReplayContext, ReplayFn, VerifierFn
 
 __all__ = [
     "OutcomeGrader",
@@ -37,10 +37,10 @@ __all__ = [
     "sanitize_component",
 ]
 
-# A benchmark's replay entry point: given a task id + the harness-rendered rules
-# context, re-run the task once (cheap, traced, no turn hooks) and return the
-# NEW session id the run produced.
-ReplayRunner = Callable[[str, str], Awaitable[str]]
+# A benchmark's replay entry point: given a task id plus a capability-only
+# ReplayContext carrying read-only rule tools, re-run the task once (cheap,
+# traced, no turn hooks) and return the NEW session id the run produced.
+ReplayRunner = Callable[[str, "ReplayContext"], Awaitable[str]]
 
 # A benchmark's own grader: task id + session id -> pass ratio in [0, 1], or
 # None when it has no verdict (no grader, or the session has not been graded).
@@ -198,12 +198,12 @@ def make_replay_fn(*, replay_runner: ReplayRunner) -> ReplayFn:
 
     The harness calls ``replay(case, context)`` during candidate validation and
     regression: we pull the task id from ``case.replay_input`` (the end_state we
-    stashed via ``on_turn_end``) and re-run that task under ``context`` (the
-    rendered rules string with the candidate in force), returning the new
-    session id for the harness to score.
+    stashed via ``on_turn_end``) and re-run that task under ``context``. The
+    context carries a stable capability preamble and read-only rule tools; it
+    never carries rule bodies. The replay returns a new session id to score.
     """
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: ReplayContext) -> str:
         payload = case.replay_input or {}
         task_id = payload.get("task_id") if isinstance(payload, dict) else None
         if not task_id:
