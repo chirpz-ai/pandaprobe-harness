@@ -48,6 +48,10 @@ _DOMAIN_SCOPE_DESCRIPTIONS = {
     "telecom": "Telecom account, service, device, billing, and plan workflows.",
 }
 
+#: Bound on the task statement carried to managed repair. The harness bounds it
+#: again; this keeps the in-process dict small for a whole domain of tasks.
+_TASK_SUMMARY_CHARS = 400
+
 _CONFIGS_HINT = (
     "tau2's data tree is not shipped. Clone it and export TAU2_DATA_DIR:\n"
     "  git clone --branch v0.2.0 https://github.com/sierra-research/tau2-bench.git\n"
@@ -80,6 +84,7 @@ class Tau2Runner(SingleTaskRunner):
         self._models: ModelRegistry | None = None
         self._domain = "retail"
         self._workflow_hints: dict[str, tuple[RuleScopeHint, ...]] = {}
+        self._task_summaries: dict[str, str] = {}
         self.configure_dataset(domain)
 
     def _registry(self) -> ModelRegistry:
@@ -103,6 +108,7 @@ class Tau2Runner(SingleTaskRunner):
             # survive a domain switch on a reused runner instance.
             self._outcomes.clear()
             self._workflow_hints.clear()
+            self._task_summaries.clear()
         self._domain = domain
 
     def list_tasks(self, dataset: str) -> list[str]:
@@ -112,6 +118,9 @@ class Tau2Runner(SingleTaskRunner):
 
         tasks = load_tasks(self._domain)
         for task in tasks:
+            self._task_summaries[str(task.id)] = _safe_task_summary(
+                task, domain=self._domain
+            )
             workflow = _safe_task_workflow(task)
             if workflow is not None:
                 self._workflow_hints[str(task.id)] = (
@@ -129,6 +138,11 @@ class Tau2Runner(SingleTaskRunner):
                     ),
                 )
         return [str(task.id) for task in tasks]
+
+    def task_summary(self, task_id: str) -> str:
+        # Falls back to the domain: even without a loaded scenario, "airline" is
+        # more than the opaque task id conveys.
+        return self._task_summaries.get(task_id, self._domain)
 
     def rule_scope_hints(self, task_id: str) -> tuple[RuleScopeHint, ...]:
         return self._workflow_hints.get(
@@ -325,6 +339,21 @@ def _safe_task_workflow(task: Any) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()[:48]
     return None
+
+
+def _safe_task_summary(task: Any, *, domain: str) -> str:
+    """One short line describing what this tau2 task asks for.
+
+    Built from the user scenario tau2 already hands the simulator, prefixed with
+    the domain so the repair model can tell a retail return from an airline
+    rebooking. Truncated here as well as in the harness: this crosses a process
+    boundary and the scenario can be several paragraphs.
+    """
+
+    scenario = " ".join(str(getattr(task, "user_scenario", "") or "").split())
+    if not scenario:
+        return domain
+    return f"{domain}: {scenario}"[:_TASK_SUMMARY_CHARS]
 
 
 def _agent_usage(simulation: Any) -> Usage:
