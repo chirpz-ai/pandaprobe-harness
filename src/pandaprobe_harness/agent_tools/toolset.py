@@ -12,28 +12,43 @@ from typing import Any, Literal, cast
 from ..cli.client import CliClient
 from ..cli.errors import CliError
 from ..config import HarnessConfig
+from ..evaluation.metrics import Metric
 from ..workspace._io import load_json
 from ..workspace.journal import Journal
-from ..workspace.mailbox import Mailbox
+from ..workspace.mailbox import Mailbox, ResolutionKind
 from ..workspace.rules import (
+    GLOBAL_SCOPE,
+    RESERVED_SCOPES,
+    SCOPED_SCOPE,
     RulesStore,
     derive_notice_tags,
-    normalize_scope,
     validate_scope,
 )
 from ..workspace.sanitize import is_sensitive_key, sanitize_text
+from ..workspace.scopes import normalize_scope_or_none
 from .spec import ToolSpec
 
 __all__ = ["REPAIR_OP_SCHEMAS", "TASK_OP_SCHEMAS", "RepairToolset", "TaskToolset"]
 
 logger = logging.getLogger("pandaprobe_harness.agent_tools")
 
+#: Bound on the repair model's one-sentence justification for its scope choice.
+_SCOPE_RATIONALE_MAX_LEN = 240
+
 TASK_OP_SCHEMAS: dict[str, dict[str, Any]] = {
     "harness_rules_read": {
-        "description": "Read one learned-rule scope. Defaults to scoped.",
+        "description": "Read the learned rules in one scope. Defaults to global.",
         "input_schema": {
             "type": "object",
-            "properties": {"scope": {"type": "string"}},
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "A scope identifier listed under References in "
+                        "rules.md. Defaults to 'global'."
+                    ),
+                }
+            },
             "required": [],
         },
     },
@@ -49,7 +64,7 @@ TASK_OP_SCHEMAS: dict[str, dict[str, Any]] = {
         },
     },
     "harness_rules_list": {
-        "description": "Load the canonical harness_guide.md and its compact live-scope index.",
+        "description": "Load the canonical rules.md guide and its compact live-scope index.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -85,15 +100,40 @@ REPAIR_OP_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     **TASK_OP_SCHEMAS,
     "harness_rule_add": {
-        "description": "Add concise guidance as a candidate linked to the assigned notice.",
+        "description": "Add one concise rule as a candidate linked to the assigned notice.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "rule": {"type": "string"},
                 "rationale": {"type": "string"},
-                "metric": {"type": "string"},
+                "metric": {
+                    "type": "string",
+                    "description": (
+                        "The single evaluator metric this rule targets, exactly as "
+                        "named in the notice signatures (for example "
+                        "'task_completion'). Omit it if no one metric is targeted; "
+                        "never combine names."
+                    ),
+                },
                 "tags": {"type": "array", "items": {"type": "string"}},
-                "scope": {"type": "string"},
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Which rule file this belongs in. Use 'global' (the "
+                        "default) for a rule that is broadly reusable and not tied "
+                        "to one task, workflow, application, tool, or domain. Use a "
+                        "concise stable name from the evidence — an application, "
+                        "workflow, or domain — when the rule really belongs to that "
+                        "context; any such name is allowed and the file is created "
+                        "for you. Use 'scoped' only when the rule is specific but "
+                        "no meaningful stable name can be determined. One safe path "
+                        "component: no prefixes, no directories, no paths."
+                    ),
+                },
+                "scope_rationale": {
+                    "type": "string",
+                    "description": "One short sentence on why that scope fits.",
+                },
                 "applicability": {
                     "type": "string",
                     "enum": ["global", "topical", "task"],
@@ -139,14 +179,31 @@ class _RuleReads:
     def __init__(self, *, config: HarnessConfig, rules: RulesStore) -> None:
         self._config = config
         self._rules = rules
+        self._surfaced_rule_ids: set[str] = set()
+
+    @property
+    def surfaced_rule_ids(self) -> frozenset[str]:
+        """Rule ids this toolset has actually handed back to its caller.
+
+        Candidate validation reads this to answer "did the replay ever see the
+        rule under test?". A replay that never looked is evidence of nothing, so
+        it must not produce a conclusive verdict — and without a ledger there is
+        no way to tell that case from a replay that read the rule and ignored it.
+        """
+
+        return frozenset(self._surfaced_rule_ids)
 
     async def rules_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
         scope = (
             validate_scope(args["scope"])
             if args.get("scope") is not None
-            else "scoped"
+            else GLOBAL_SCOPE
         )
-        content = await asyncio.to_thread(self._rules.read_scope, scope)
+        content, rules = await asyncio.gather(
+            asyncio.to_thread(self._rules.read_scope, scope),
+            asyncio.to_thread(self._rules.by_scope, scope),
+        )
+        self._surfaced_rule_ids.update(rule.id for rule in rules)
         return {"ok": True, "scope": scope, "path": f"rules/{scope}.md", "content": content}
 
     async def rules_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -159,6 +216,7 @@ class _RuleReads:
         results = await asyncio.to_thread(
             self._rules.search, query, limit=limit, statuses=("active", "candidate")
         )
+        self._surfaced_rule_ids.update(rule.id for rule, _ in results)
         return {
             "ok": True,
             "rules": [
@@ -181,7 +239,7 @@ class _RuleReads:
         )
         return {
             "ok": True,
-            "path": "harness_guide.md",
+            "path": "rules.md",
             "content": content,
             "scopes": scopes,
         }
@@ -192,6 +250,7 @@ class _RuleReads:
         for rule in rules:
             if rule.id != rule_id:
                 continue
+            self._surfaced_rule_ids.add(rule.id)
             lifecycle: dict[str, Any] = {"status": rule.status}
             if rule.trial is not None:
                 lifecycle.update(
@@ -254,7 +313,7 @@ class RepairToolset(_RuleReads):
         allowed_trace_ids: tuple[str, ...],
         notice_ids: tuple[str, ...] = (),
         episode_id: str = "",
-        recommended_scope: str = "scoped",
+        recommended_scope: str | None = None,
         scope_hints: tuple[dict[str, Any], ...] = (),
         generic_scopes: tuple[str, ...] = (),
     ) -> None:
@@ -265,15 +324,33 @@ class RepairToolset(_RuleReads):
         self._notice_id = notice_id
         self._notice_ids = notice_ids or (notice_id,)
         self._episode_id = episode_id
-        self._recommended_scope = normalize_scope(recommended_scope)
+        # None means the host recommended nothing, which must stay distinguishable
+        # from recommending the default: the former leaves the choice entirely to
+        # the repair model, the latter would look like an instruction.
+        self._recommended_scope = normalize_scope_or_none(recommended_scope)
         self._scope_hints = scope_hints
-        self._generic_scopes = frozenset(normalize_scope(value) for value in generic_scopes)
+        self._generic_scopes = frozenset(
+            scope
+            for scope in (normalize_scope_or_none(value) for value in generic_scopes)
+            if scope is not None
+        )
+        # A recommendation only counts as *precise* if it names a real topic:
+        # a reserved name adds nothing, and a generic host label is what the
+        # guard below exists to reject.
+        self._precise_recommendation = (
+            self._recommended_scope
+            if self._recommended_scope is not None
+            and self._recommended_scope not in RESERVED_SCOPES
+            and self._recommended_scope not in self._generic_scopes
+            else None
+        )
         self._allowed_trace_ids = frozenset(allowed_trace_ids)
         self._candidate_ids: list[str] = []
         self._resolution: str | None = None
         self._existing_rule_id: str | None = None
         self._considered_rule_ids: list[str] = []
         self._selected_scope: str | None = None
+        self._scope_rationale: str | None = None
         self._suppression_reason: str | None = None
         handlers = {
             "harness_notice_read": self.notice_read,
@@ -309,6 +386,10 @@ class RepairToolset(_RuleReads):
         return self._selected_scope
 
     @property
+    def scope_rationale(self) -> str | None:
+        return self._scope_rationale
+
+    @property
     def suppression_reason(self) -> str | None:
         return self._suppression_reason
 
@@ -336,9 +417,9 @@ class RepairToolset(_RuleReads):
     async def rules_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
         result = await super().rules_read(args)
         if result.get("ok"):
-            scope = str(result.get("scope") or "")
-            rules = await asyncio.to_thread(self._rules.by_scope, scope)
-            self._remember_ids(rule.id for rule in rules)
+            # The base read already recorded what it surfaced; novelty accounting
+            # only needs the same ids in call order.
+            self._remember_ids(sorted(self.surfaced_rule_ids))
         return result
 
     def _remember_considered(self, result: Mapping[str, Any]) -> None:
@@ -401,6 +482,52 @@ class RepairToolset(_RuleReads):
             logger.debug("repair CLI call %s degraded", argv, exc_info=True)
             return None
 
+    def _resolve_scope(self, args: Mapping[str, Any], *, applicability: str) -> str:
+        """Decide which ``rules/<scope>.md`` this candidate is filed under.
+
+        The scope is the repair model's call. This method only enforces the two
+        things a model cannot be trusted to guarantee — that the name is a safe
+        path component, and that a generic host label never displaces a real
+        topic — and supplies the default when no choice was expressed.
+
+        Raises ``ValueError`` for an unusable supplied name rather than quietly
+        rewriting it, so the model sees the rejection and can pick a clean name.
+        """
+
+        if applicability == "global":
+            # Applicability and scope are separate axes, but "this rule applies
+            # everywhere" and "file it anywhere narrower" cannot both hold.
+            return GLOBAL_SCOPE
+
+        raw = args.get("scope")
+        supplied = str(raw) if raw is not None and str(raw).strip() else None
+        if supplied is None:
+            # No expressed choice: take a precise host recommendation if one
+            # exists, else the default. Never `scoped` — that is a considered
+            # verdict ("specific, but unnameable"), not a fallback for silence.
+            return self._precise_recommendation or GLOBAL_SCOPE
+
+        # Reject anything path-shaped rather than slugifying it. Normalization
+        # would turn "../../etc/passwd" into the perfectly safe "etc-passwd" —
+        # safe, but a rule silently filed under a name nobody chose. The model
+        # should be told instead.
+        if any(part in supplied for part in ("/", "\\", "..")):
+            raise ValueError(
+                "invalid rule scope: supply one plain name, not a path"
+            )
+        chosen = normalize_scope_or_none(supplied)
+        if chosen is None:
+            raise ValueError(
+                "invalid rule scope: use one safe name (letters, digits, '.', "
+                "'-', '_'), not a path"
+            )
+        if chosen in self._generic_scopes:
+            # A host label like a benchmark or integration name says nothing about
+            # the failure. Prefer a real topic; fall back to `scoped`, which at
+            # least states the rule is specific.
+            return self._precise_recommendation or SCOPED_SCOPE
+        return chosen
+
     async def rule_add(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if self._candidate_ids:
             return {"ok": False, "error": "a repair episode may create at most one candidate"}
@@ -422,26 +549,37 @@ class RepairToolset(_RuleReads):
         failure_signatures = tuple(
             dict.fromkeys(signature for notice in notices for signature in notice.signatures)
         )
-        requested_scope = normalize_scope(
-            str(args.get("scope") or self._recommended_scope)
-        )
-        if (
-            requested_scope in self._generic_scopes
-            and self._recommended_scope not in {"global", "scoped"}
-        ):
-            requested_scope = self._recommended_scope
-        applicability = str(
-            args.get("applicability")
-            or (notices[0].applicability_hint if notices else "topical")
-        )
-        if applicability == "global":
-            requested_scope = "global"
+        # Only the model's own explicit claim forces `global` — a notice's
+        # applicability hint is a default, and letting it override a precise
+        # scope would put topical rules back in global.md.
+        try:
+            requested_scope = self._resolve_scope(
+                args, applicability=str(args.get("applicability") or "")
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            metric = _validated_metric(args.get("metric"))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        # Applicability is a separate axis, but it must not contradict the scope:
+        # anything filed under a topic is at most topical. With no claim from the
+        # model, the store derives it from the resolved scope.
+        applicability = str(args.get("applicability") or "")
+        if applicability == "global" and requested_scope != GLOBAL_SCOPE:
+            applicability = "topical"
         self._selected_scope = requested_scope
+        self._scope_rationale = (
+            sanitize_text(str(args["scope_rationale"]), max_len=_SCOPE_RATIONALE_MAX_LEN).strip()
+            or None
+            if args.get("scope_rationale") is not None
+            else None
+        )
         scope_description = next(
             (
                 str(hint.get("description") or "")
                 for hint in self._scope_hints
-                if normalize_scope(str(hint.get("key") or "")) == requested_scope
+                if normalize_scope_or_none(str(hint.get("key") or "")) == requested_scope
             ),
             None,
         )
@@ -475,7 +613,7 @@ class RepairToolset(_RuleReads):
             str(args["rule"]),
             str(args["rationale"]),
             source_notice_id=self._notice_id,
-            metric=str(args["metric"]) if args.get("metric") is not None else None,
+            metric=metric,
             tags=(*tags, *derived),
             scope=requested_scope,
             applicability=(
@@ -545,17 +683,13 @@ class RepairToolset(_RuleReads):
             if resolution == "already_covered" and existing.status != "candidate":
                 return {"ok": False, "error": "already_covered must reference a candidate"}
         self._existing_rule_id = existing_rule_id
-        kind = cast(
-            Literal["duplicate", "already_covered", "no_proposal", "unactionable"],
-            resolution,
+        return await self._ack(
+            cast(ResolutionKind, resolution), existing_rule_id, str(args["note"])
         )
-        return await self._ack(kind, existing_rule_id, str(args["note"]))
 
     async def _ack(
         self,
-        kind: Literal[
-            "candidate", "duplicate", "already_covered", "no_proposal", "unactionable"
-        ],
+        kind: ResolutionKind,
         rule_id: str | None,
         note: str,
     ) -> dict[str, Any]:
@@ -582,6 +716,7 @@ class RepairToolset(_RuleReads):
                 "rule_id": rule_id,
                 "recommended_scope": self._recommended_scope,
                 "selected_scope": self._selected_scope,
+                "scope_rationale": self._scope_rationale,
                 "considered_rule_ids": list(self._considered_rule_ids),
                 "candidate_suppression_reason": self._suppression_reason,
             },
@@ -633,6 +768,31 @@ def _bounded_evidence(value: Any, *, max_len: int) -> Any:
     scrubbed = scrub(value)
     encoded = json.dumps(scrubbed, sort_keys=True, default=str)
     return scrubbed if len(encoded) <= max_len else {"summary": encoded[:max_len]}
+
+
+def _validated_metric(value: object) -> str | None:
+    """The single metric a rule targets, or ``None``; anything else is rejected.
+
+    A rule's ``metric`` is not a label — validation matches it against evaluator
+    signatures (``breach:<metric>``) to decide which sessions and replay cases
+    count as evidence. A name that is not a real metric therefore matches nothing,
+    which silently reads as "this candidate never breached" and can invert its
+    verdict. Rejecting it here, where the model can see the error and retry, is
+    the only place that failure mode is recoverable.
+    """
+
+    if value is None:
+        return None
+    name = str(value).strip()
+    if not name:
+        return None
+    known = {str(metric) for metric in Metric}
+    if name not in known:
+        raise ValueError(
+            f"unknown metric {name!r}: pass exactly one of "
+            f"{', '.join(sorted(known))}, or omit it"
+        )
+    return name
 
 
 def _snippet(value: str, *, limit: int = 240) -> str:
