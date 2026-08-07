@@ -75,11 +75,12 @@ def test_retire_excludes_rule_and_latest_record_wins(
 
     assert rules.active() == []
     # The scope file is rewritten empty rather than left holding a retired rule.
-    scope_file = config.rules_scope_file("scoped").read_text(encoding="utf-8")
+    scope_file = config.rules_scope_file(rule.scope).read_text(encoding="utf-8")
     assert "Prefer reads before writes" not in scope_file
     assert "_No learned rules yet._" in scope_file
-    # With nothing live, the root's References says so.
-    assert "No learned guidance is available yet" in config.rules_file.read_text(
+    # With nothing live, the root's References says so — in the same words the
+    # packaged template uses, so a seeded and a regenerated guide read alike.
+    assert "No learned rules are available yet" in config.rules_file.read_text(
         encoding="utf-8"
     )
 
