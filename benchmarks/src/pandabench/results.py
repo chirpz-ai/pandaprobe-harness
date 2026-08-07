@@ -58,6 +58,9 @@ class HarnessTelemetry:
     """The trajectory gate fired (a stall or a regression) on this turn."""
     repair: dict[str, Any] | None = None
     """Package-owned managed-repair outcome returned by settlement, when any."""
+    repair_episodes: int = 0
+    resolution_counts: dict[str, int] = field(default_factory=dict)
+    rules_by_scope: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -185,8 +188,9 @@ class RecordWriter:
 # atomic-write temp files (*.tmp) are skipped.
 _ARCHIVE_ENTRIES = (
     "rules.jsonl",
+    "scope_metadata.json",
     "journal.jsonl",
-    "harness_rules.md",
+    "harness_guide.md",
     "rules",  # the agent-facing rule files (global.md, scoped.md, topics)
     "evalset",
     "mailbox",
@@ -242,12 +246,19 @@ def collect_harness_telemetry(
             logger.debug("telemetry: report parse failed: %s", exc)
 
     active = candidate = retired = 0
+    rules_by_scope: dict[str, dict[str, int]] = {}
     try:
         for rule in harness.rules.all():
             status = getattr(rule, "status", "")
             active += status == "active"
             candidate += status == "candidate"
             retired += status == "retired"
+            scope = str(getattr(rule, "scope", "global") or "global")
+            counts = rules_by_scope.setdefault(
+                scope, {"active": 0, "candidate": 0, "retired": 0}
+            )
+            if status in counts:
+                counts[status] += 1
     except Exception as exc:  # noqa: BLE001
         logger.debug("telemetry: rules read failed: %s", exc)
 
@@ -261,6 +272,27 @@ def collect_harness_telemetry(
         except Exception as exc:  # noqa: BLE001
             logger.debug("telemetry: repair result parse failed: %s", exc)
 
+    episode_ids: set[str] = set()
+    resolution_counts: dict[str, int] = {}
+    try:
+        for event in harness.journal.recent(
+            limit=10_000,
+            types=(
+                "repair_completed", "repair_duplicate", "repair_already_covered",
+                "repair_no_proposal", "repair_unactionable", "repair_failed",
+                "repair_timed_out",
+            ),
+        ):
+            if event.get("task_session_id") != session_id:
+                continue
+            episode_id = str(event.get("repair_episode_id") or event.get("notice_id") or "")
+            if episode_id:
+                episode_ids.add(episode_id)
+            resolution = str(event.get("resolution_kind") or event.get("status") or "unknown")
+            resolution_counts[resolution] = resolution_counts.get(resolution, 0) + 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("telemetry: repair episode read failed: %s", exc)
+
     return HarnessTelemetry(
         session_id=session_id,
         breached=breached,
@@ -271,6 +303,9 @@ def collect_harness_telemetry(
         scores=scores,
         gate_breached=gate_breached,
         repair=repair_payload,
+        repair_episodes=len(episode_ids),
+        resolution_counts=resolution_counts,
+        rules_by_scope=rules_by_scope,
     )
 
 
@@ -288,7 +323,19 @@ def frozen_harness_telemetry(snapshot: Any, session_id: str) -> HarnessTelemetry
         ruleset_hash=str(snapshot.sha256),
         scores={},
         gate_breached=False,
+        rules_by_scope=_snapshot_scope_counts(snapshot),
     )
+
+
+def _snapshot_scope_counts(snapshot: Any) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    for rule in snapshot.rules:
+        scope = str(rule.get("scope") or "global")
+        bucket = counts.setdefault(scope, {"active": 0, "candidate": 0, "retired": 0})
+        status = str(rule.get("status") or "active")
+        if status in bucket:
+            bucket[status] += 1
+    return counts
 
 
 def _count_session_notices(harness: Any, session_id: str) -> int:
