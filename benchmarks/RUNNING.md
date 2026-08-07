@@ -46,8 +46,11 @@ Harness learning uses package-owned managed repair. By default PandaBench reuses
 the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
 which current OpenAI reasoning models require when using function tools through
 the PandaProbe-wrapped LiteLLM chat-completions API. Choose another current
-LiteLLM model deliberately when needed. The task agent sees learned guidance and
-four read-only rule tools only.
+LiteLLM model deliberately when needed. The task agent sees only a stable
+capability note and four read-only rule tools. Rule bodies and the expanded scope
+index are never force-injected; list/read/search/status happen only if the task
+model chooses them. Listing returns the canonical `harness_guide.md` and generated
+scope references.
 
 
 
