@@ -20,9 +20,11 @@ from typing import Any, Literal, cast
 
 from ..config import HarnessConfig
 from ._io import atomic_write_json, load_json
+from .scopes import GLOBAL_SCOPE, normalize_scope_or_none
 
 __all__ = [
     "DiagnosticNotice",
+    "ResolutionKind",
     "Mailbox",
     "MailboxStatus",
     "NoticeMetric",
@@ -31,6 +33,15 @@ __all__ = [
 ]
 
 Severity = Literal["breach", "trend", "needs_human"]
+
+#: How managed repair closed out a notice. Every resolution names what happened;
+#: there is no catch-all.
+ResolutionKind = Literal[
+    "candidate", "duplicate", "already_covered", "no_proposal", "unactionable"
+]
+_RESOLUTION_KINDS = frozenset(
+    ("candidate", "duplicate", "already_covered", "no_proposal", "unactionable")
+)
 
 _SEVERITY_RANK: dict[str, int] = {
     "trend": 0,
@@ -51,11 +62,15 @@ def _safe_notice_id(notice_id: str) -> bool:
 def _as_severity(value: object) -> Severity:
     """Forgiving severity parse; unknown values degrade to ``breach``."""
 
-    if value == "relative":
-        return "trend"  # Pre-0.8 advisory notices must not silently escalate.
     if isinstance(value, str) and value in _SEVERITY_RANK:
         return cast(Severity, value)
     return "breach"
+
+
+def _opt_str(value: object) -> str | None:
+    """A non-empty string, or ``None`` — so absent and empty read alike."""
+
+    return str(value) if isinstance(value, str) and value.strip() else None
 
 
 def _now_iso() -> str:
@@ -112,14 +127,7 @@ class Resolution:
     acked_at: str
     rule_id: str | None = None
     note: str | None = None
-    kind: Literal[
-        "candidate",
-        "duplicate",
-        "already_covered",
-        "no_proposal",
-        "unactionable",
-        "legacy",
-    ] = "legacy"
+    kind: ResolutionKind = "no_proposal"
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -136,17 +144,9 @@ class Resolution:
             rule_id=str(data["rule_id"]) if data.get("rule_id") is not None else None,
             note=str(data["note"]) if data.get("note") is not None else None,
             kind=(
-                data["kind"]
-                if data.get("kind")
-                in {
-                    "candidate",
-                    "duplicate",
-                    "already_covered",
-                    "no_proposal",
-                    "unactionable",
-                    "legacy",
-                }
-                else "legacy"
+                cast(ResolutionKind, data["kind"])
+                if data.get("kind") in _RESOLUTION_KINDS
+                else "no_proposal"
             ),
         )
 
@@ -166,13 +166,16 @@ class DiagnosticNotice:
     dump_path: str = ""
     summary: str = ""
     signatures: tuple[str, ...] = ()
-    #: Default location for granular guidance. A precise host hint or managed
-    #: repair may select any safe custom scope; ``global`` must be explicit.
-    scope_hint: str = "scoped"
+    #: The baseline scope when nothing narrower is known. Managed repair decides
+    #: the final scope from the evidence; this is not a mechanical assignment.
+    scope_hint: str = GLOBAL_SCOPE
     #: Host-provided bounded topic metadata, persisted without task payloads.
     scope_hints: tuple[dict[str, Any], ...] = ()
-    recommended_scope: str = "scoped"
-    applicability_hint: Literal["global", "topical", "task"] = "task"
+    #: A precise host-recommended scope, or ``None`` when no host hint applied.
+    #: ``None`` means "no recommendation", which is distinct from recommending
+    #: the default — repair must be free to choose.
+    recommended_scope: str | None = None
+    applicability_hint: Literal["global", "topical", "task"] = "global"
     status: Literal["pending", "acknowledged"] = "pending"
     resolution: Resolution | None = None
 
@@ -241,15 +244,19 @@ class DiagnosticNotice:
             dump_path=str(data.get("dump_path", "")),
             summary=str(data.get("summary", "")),
             signatures=tuple(str(s) for s in signatures) if isinstance(signatures, list) else (),
-            scope_hint=str(data.get("scope_hint") or "global"),
+            # Defaults match the dataclass exactly: an older record that predates
+            # these fields must read back as "no narrower scope known", never as
+            # a recommendation nobody made.
+            scope_hint=normalize_scope_or_none(_opt_str(data.get("scope_hint")))
+            or GLOBAL_SCOPE,
             scope_hints=scope_hints,
-            recommended_scope=str(
-                data.get("recommended_scope") or data.get("scope_hint") or "global"
+            recommended_scope=normalize_scope_or_none(
+                _opt_str(data.get("recommended_scope"))
             ),
             applicability_hint=(
                 applicability
                 if applicability in {"global", "topical", "task"}
-                else ("global" if data.get("scope_hint") == "global" else "task")
+                else "global"
             ),
             status="acknowledged" if status == "acknowledged" else "pending",
             resolution=(
@@ -336,14 +343,7 @@ class Mailbox:
         *,
         rule_id: str | None = None,
         note: str | None = None,
-        kind: Literal[
-            "candidate",
-            "duplicate",
-            "already_covered",
-            "no_proposal",
-            "unactionable",
-            "legacy",
-        ] = "legacy",
+        kind: ResolutionKind = "no_proposal",
     ) -> DiagnosticNotice:
         """Move a pending notice to ``processed/`` with its resolution.
 
@@ -379,9 +379,7 @@ class Mailbox:
         *,
         rule_id: str | None = None,
         note: str | None = None,
-        kind: Literal[
-            "candidate", "duplicate", "already_covered", "no_proposal", "unactionable"
-        ],
+        kind: ResolutionKind,
     ) -> list[DiagnosticNotice]:
         """Resolve one repair episode only after every notice is still pending."""
 
