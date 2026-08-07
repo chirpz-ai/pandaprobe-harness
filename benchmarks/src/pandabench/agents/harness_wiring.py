@@ -83,6 +83,7 @@ class HarnessWiring:
         flush: Callable[[], None] | None = None,
         settle_each_turn: bool = True,
         rule_scope_hints: tuple[RuleScopeHint, ...] = (),
+        task_summary: str = "",
     ) -> None:
         self.harness = harness
         self.benchmark = benchmark
@@ -91,6 +92,7 @@ class HarnessWiring:
         self.replay_descriptor = replay_descriptor
         self.session_id = session_id
         self._flush = flush
+        self._task_summary = task_summary
         # A replay must not recurse into the barrier: it re-runs a task purely to
         # be scored, and hooking its turns would spawn evals inside an eval.
         self._settle_each_turn = settle_each_turn
@@ -117,6 +119,16 @@ class HarnessWiring:
         """Attach safe semantic metadata discovered during task initialization."""
 
         self._rule_scope_hints = hints
+
+    def set_task_summary(self, summary: str) -> None:
+        """Attach what this task asks for, once the environment reveals it.
+
+        Benchmarks learn the task statement at initialize time, after the wiring
+        is built. Managed repair reads it as untrusted evidence when diagnosing a
+        failure and choosing a rule scope.
+        """
+
+        self._task_summary = summary
 
     def harness_tools(self) -> list[dict[str, Any]]:
         return self._tools
@@ -201,6 +213,11 @@ class HarnessWiring:
         """
 
         state: dict[str, Any] = {"benchmark": self.benchmark, "task_id": self.task_id}
+        if self._task_summary:
+            # Read by managed repair (sanitized and bounded by the harness) so a
+            # rule's scope can come from what the task actually asked for rather
+            # than from an opaque id like "3ab5b8b_2".
+            state["task_summary"] = self._task_summary
         if self.capture:
             state["replay"] = self.replay_descriptor
         return state
@@ -212,6 +229,18 @@ class ReplayRuleWiring:
     def __init__(self, context: ReplayContext) -> None:
         self._context = context
         self._tools = specs_to_openai(context.task_tools.specs())
+
+    def mark_environment_ready(self) -> None:
+        """Tell the harness this replay has stopped queueing and is now running.
+
+        AppWorld serializes every task lifecycle behind one world lock, so a
+        background replay can sit behind a live trial for minutes. Without this
+        signal that wait is charged to the replay's execution budget, and the
+        resulting timeout is indistinguishable from a hung agent — recorded as
+        inconclusive evidence about a rule that never actually ran.
+        """
+
+        self._context.mark_execution_started()
 
     @property
     def settles_turns(self) -> bool:
