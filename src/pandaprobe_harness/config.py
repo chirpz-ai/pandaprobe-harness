@@ -59,7 +59,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class HarnessConfig:
     """Immutable harness configuration.
 
-    Path fields ``traces_dir``, ``rules_file``, ``legacy_rules_file``, ``rules_dir``,
+    Path fields ``traces_dir``, ``rules_file``, ``rules_dir``,
     ``latest_eval_file``, ``state_dir``, ``history_file`` and the
     mailbox/journal/rules-store paths are derived from ``harness_root`` in
     ``__post_init__`` and should not be passed explicitly.
@@ -70,7 +70,6 @@ class HarnessConfig:
     # Derived paths (init=False; computed from harness_root).
     traces_dir: Path = field(init=False)
     rules_file: Path = field(init=False)
-    legacy_rules_file: Path = field(init=False)
     rules_dir: Path = field(init=False)
     latest_eval_file: Path = field(init=False)
     state_dir: Path = field(init=False)
@@ -129,7 +128,6 @@ class HarnessConfig:
     # -- metrics & thresholds -------------------------------------------------
     # Per-metric absolute thresholds (overrides the scalar defaults below).
     thresholds: dict[str, float] = field(default_factory=dict)
-    concurrent_eval: bool = True  # retained for back-compat; one run now covers all metrics
 
     # -- diagnostic noticing --------------------------------------------------
     # Suppress re-posting an identical notice signature for this many turns.
@@ -184,8 +182,8 @@ class HarnessConfig:
     # -- rule validation (evidence before trust) -------------------------------
     # New rules start as candidates and are promoted to active only after a
     # validator (replay or forward trial) shows they help. Managed Harness
-    # construction requires this; False remains only for low-level persisted
-    # store migration and operator tooling.
+    # construction requires this; False exists only for direct RulesStore use in
+    # operator tooling and tests, where the lifecycle is not the subject.
     rule_validation: bool = True
     # Forward trial: distinct sessions to observe before a verdict.
     rule_trial_min_sessions: int = 5
@@ -197,6 +195,18 @@ class HarnessConfig:
     # Hard bound on one developer replay invocation; a hung replay degrades to
     # an inconclusive case instead of wedging validation/regression forever.
     replay_timeout_s: float = 300.0
+    # Extra grace for a replay that must first acquire a shared environment (a
+    # world, a container, a device). A host signals via
+    # ``ReplayContext.mark_execution_started()`` and the execution budget above
+    # then starts fresh, so queueing behind a live task cannot consume the whole
+    # budget and report an inconclusive replay that never ran. Zero preserves the
+    # single-budget behavior for hosts that do not signal.
+    replay_env_wait_timeout_s: float = 0.0
+    # Wall-clock bound on the replay work in ONE candidate-validation round.
+    # Candidates past the bound still get a verdict, from the cheap forward
+    # trial, rather than waiting for a replay slot that may never come. Zero is
+    # unlimited: every candidate is offered replay however long the round takes.
+    validation_round_budget_s: float = 0.0
 
     # -- regression eval-set ---------------------------------------------------
     # Capture breaching sessions as replayable eval cases (opt-in: stores
@@ -207,11 +217,12 @@ class HarnessConfig:
     # Cases replayed per regression run (0 = all).
     regression_sample: int = 0
 
-    # -- explicit rule rendering/retrieval (never automatic prompt injection) --
-    # Retained for backward-compatible host/operator calls to ``render_markdown``.
-    # Task-facing list/read/search tools do not use this to preselect guidance.
+    # -- query-narrowed rendering (never automatic prompt injection) -----------
+    # When a caller renders a scope WITH a query, keep only the top-k relevant
+    # active rules. Off renders every active rule. Neither setting affects the
+    # task-facing read/search/list tools, which never preselect on the agent's
+    # behalf, and neither causes a rule to enter a prompt on its own.
     rule_retrieval: bool = True
-    # Bound for those explicit legacy rendering calls.
     rules_context_topk: int = 8
 
     # -- robustness ------------------------------------------------------------
@@ -223,8 +234,8 @@ class HarnessConfig:
         # object.__setattr__ is required to populate fields on a frozen dataclass.
         object.__setattr__(self, "harness_root", root)
         object.__setattr__(self, "traces_dir", root / "traces")
-        object.__setattr__(self, "rules_file", root / "harness_guide.md")
-        object.__setattr__(self, "legacy_rules_file", root / "harness_rules.md")
+        # Sits beside rules.jsonl and rules/, which is what it indexes.
+        object.__setattr__(self, "rules_file", root / "rules.md")
         object.__setattr__(self, "rules_dir", root / "rules")
         object.__setattr__(self, "latest_eval_file", root / "traces" / "latest_eval.json")
         object.__setattr__(self, "state_dir", root / "state")
@@ -306,7 +317,6 @@ class HarnessConfig:
             "barrier_timeout_s": _env_float("HARNESS_BARRIER_TIMEOUT_S", 180.0),
             "gate_window": _env_int("HARNESS_GATE_WINDOW", 5),
             "enable_tier3": _env_bool("HARNESS_ENABLE_TIER3", False),
-            "concurrent_eval": _env_bool("HARNESS_CONCURRENT_EVAL", True),
             "alert_cooldown_turns": _env_int("HARNESS_ALERT_COOLDOWN_TURNS", 0),
             "enrich_flagged_traces": _env_bool("HARNESS_ENRICH_FLAGGED_TRACES", False),
             "observe_only": _env_bool("HARNESS_OBSERVE_ONLY", False),
@@ -339,6 +349,12 @@ class HarnessConfig:
             "rule_promote_margin": _env_float("HARNESS_RULE_PROMOTE_MARGIN", 0.05),
             "rule_regress_margin": _env_float("HARNESS_RULE_REGRESS_MARGIN", 0.05),
             "replay_timeout_s": _env_float("HARNESS_REPLAY_TIMEOUT_S", 300.0),
+            "replay_env_wait_timeout_s": _env_float(
+                "HARNESS_REPLAY_ENV_WAIT_TIMEOUT_S", 0.0
+            ),
+            "validation_round_budget_s": _env_float(
+                "HARNESS_VALIDATION_ROUND_BUDGET_S", 0.0
+            ),
             "capture_eval_cases": _env_bool("HARNESS_CAPTURE_EVAL_CASES", False),
             "eval_case_max": _env_int("HARNESS_EVAL_CASE_MAX", 200),
             "regression_sample": _env_int("HARNESS_REGRESSION_SAMPLE", 0),
