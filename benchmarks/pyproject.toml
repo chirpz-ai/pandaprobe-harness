@@ -2,10 +2,9 @@
 # PandaBench — the benchmark A/B study suite for the PandaProbe Harness.
 #
 # This is a SELF-CONTAINED uv project, deliberately NOT a workspace member of
-# the parent `pandaprobe-harness` repo. Before the breaking managed-repair
-# release exists on PyPI, uv resolves the exact pin from the locally built wheel
-# below. This tests the distributable artifact without an editable source tree;
-# remove the source override after publishing and update the exact pin.
+# the parent `pandaprobe-harness` repo. It resolves the harness from PyPI at an
+# exact pin, so a study run measures the same artifact a user installs — not an
+# editable source tree, and not a local build that could drift from the release.
 # =============================================================================
 [project]
 name = "pandabench"
@@ -15,9 +14,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 dependencies = [
-    # The harness version remains exact-pinned; [tool.uv.sources] selects the
-    # locally built candidate artifact during pre-release validation.
-    "pandaprobe-harness==0.8.0",
+    # Exact-pinned so a recorded run names the precise harness it measured. Bump
+    # deliberately, together with the lockfile.
+    "pandaprobe-harness==0.9.0",
     # The PandaProbe SDK: session binding + the native LiteLLM wrapper (>=0.5)
     # that auto-traces every litellm call so sessions are scoreable.
     "pandaprobe>=0.5",
@@ -86,9 +85,6 @@ packages = ["src/pandabench"]
 # The `tau2` extra is a git reference (tau2 is not on PyPI under a verified name).
 [tool.hatch.metadata]
 allow-direct-references = true
-
-[tool.uv.sources]
-pandaprobe-harness = { path = "../dist/pandaprobe_harness-0.8.0-py3-none-any.whl" }
 
 # -- Tooling: independent of the parent repo's config -------------------------
 [tool.ruff]
