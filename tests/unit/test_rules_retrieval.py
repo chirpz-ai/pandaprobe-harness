@@ -196,12 +196,12 @@ async def test_toolset_search_and_list_ops(tmp_path: Path) -> None:
     assert found["rules"][0]["score"] == pytest.approx(2.0)
 
     everything = await toolset.call("harness_rules_list", {})
-    assert everything["path"] == "harness_guide.md"
+    assert everything["path"] == "rules.md"
     assert everything["scopes"] == [
         {
-            "scope": "scoped",
-            "path": "rules/scoped.md",
-            "description": "Narrow task-specific execution and verification guidance.",
+            "scope": "global",
+            "path": "rules/global.md",
+            "description": "Cross-domain execution and verification guidance.",
             "active": 1,
             "provisional": 0,
         }
@@ -235,7 +235,7 @@ def test_notice_signature_tokens_still_rank_the_matching_rule(tmp_path: Path) ->
 
 
 def test_candidates_render_even_when_a_query_filters_actives(tmp_path: Path) -> None:
-    """Explicit legacy rendering retains all provisional candidates."""
+    """A query narrows the actives but never hides a provisional candidate."""
 
     from pandaprobe_harness.workspace.rules import PROVISIONAL_HEADING
 
