@@ -25,14 +25,28 @@ not put rule bodies or the expanded index in the prompt and performs no rule
 lookup before the task model chooses one. After a learning turn, related notices
 form one repair episode; managed repair may add at most one provisional
 candidate, and the next turn can discover it on demand.
-`harness_rules_list` returns the canonical task-facing `harness_guide.md`: SKILL-style
+`harness_rules_list` returns the canonical task-facing `rules.md`: SKILL-style
 frontmatter and a stable pull workflow followed by generated scope references.
 
-Hosts supply deterministic semantic scopes without another model call:
-AppWorld derives application names from its safe API/task metadata; tau2 supplies
-its domain plus available workflow metadata; Terminal-Bench uses Harbor category
-or task-family metadata when present. The generic root package contains no
-benchmark-specific application mapping.
+Managed repair chooses each rule's scope from the failure evidence, as part of the
+repair call it already makes — no extra model round, and no benchmark-specific
+application mapping in the root package. `global` is the default for broadly
+reusable rules; a contextual name (application, workflow, domain) is preferred when
+the rule belongs to that context; `scoped` is the fallback when no meaningful name
+can be determined.
+
+The benchmarks feed that decision deterministic context, never a naming rule:
+AppWorld passes the task instruction plus application names from its safe API/task
+metadata; tau2 passes its domain plus the user scenario; Terminal-Bench passes the
+Harbor task statement plus category/task-family metadata when present. A benchmark's
+own label for itself is rejected as a scope.
+
+Validation, never repair, promotes or retires a candidate. Replay is the strong
+path and sees only the candidate under test; a bounded per-round replay budget
+falls back to the cheap forward trial so every candidate reaches a verdict rather
+than sitting undecided. The learning/eval boundary waits for validation to settle
+before freezing the ruleset, and `records.jsonl` carries per-trial validation
+counts (rounds, promotions, retirements, replays, and pending reasons).
 
 Self-contained uv project currently locked to the locally built root wheel via
 `[tool.uv.sources]`. This validates the distributable managed-repair candidate
