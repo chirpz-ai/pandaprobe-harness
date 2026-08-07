@@ -462,19 +462,19 @@ agent has learned should not become growth in what it must read every turn.
 \end{equation}
 where $c_0$ explains only active/candidate lifecycle labels and read-only inspection, $s$ is task
 session identity, and $q$ is an optional task hint. Current-session candidates are prioritized so a
-rule written after turn $t$ can affect turn $t{+}1$; retired rules are excluded, duplicates are
-removed, and the configured top-$k$ bounds prompt growth. The generated References index and four
-read-only tools preserve on-demand access without routinely injecting the whole corpus. No mailbox
+a rule written after turn $t$ is discoverable on turn $t{+}1$; retired rules are excluded,
+duplicates are removed, and list/search results remain bounded. The generated References index and
+four read-only tools preserve strictly on-demand access without injecting rule bodies. No mailbox
 banner or repair instruction enters task context.
 
 \paragraph{Scopes.}
 The rule set is partitioned by a free-form \emph{scope} that is also the file a rule lives in:
-\texttt{global} for whole-trajectory lessons that always apply, \texttt{scoped} as the step-level
-default, and any topic selected by managed repair. Each notice proposes a scope
-(\texttt{global} for a trajectory finding, \texttt{scoped} for a step-level one) as a default the
-repair agent may override. Scope is explicit
-rather than inferred, which corrects an earlier design that derived it from whether a rule happened
-to carry retrieval tags and so silently made any rule authored outside a notice a permanent global.
+\texttt{scoped} is the default for granular guidance, \texttt{global} is an explicit choice for
+genuinely universal guidance, and managed repair may select any safe task-relevant name. Notices
+default to \texttt{scoped}; a precise host hint may refine that name, while evaluation tier alone
+never implies global applicability. Scope is explicit rather than inferred, which corrects an
+earlier design that derived it from whether a rule happened to carry retrieval tags and so silently
+made any rule authored outside a notice a permanent global.
 
 \paragraph{Relevance ranking.}
 Ranking supports both bounded context selection and on-demand read-only search. With $Q$ the case-folded query token set, $T_r$ the
@@ -672,7 +672,7 @@ The workspace is intentionally ordinary and inspectable. Note that
 index but no rule text; rule bodies live in the package-managed \texttt{rules/} tree:
 \begin{lstlisting}[language={}]
 HARNESS_ROOT/
-  harness_rules.md   <- skill root (no rule text)
+  harness_guide.md   <- SKILL-style task guide + scope index (no rule text)
   rules/             <- global.md, scoped.md, <topic>.md
   mailbox/{pending,processed}/
   traces/       evalset/
