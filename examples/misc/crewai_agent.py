@@ -31,7 +31,7 @@ async def main() -> None:
     ):
         analyst = Agent(
             role="payments support analyst",
-            goal="Resolve the request while honoring learned guidance.",
+            goal="Resolve the request while honoring learned rules.",
             backstory=harness.system_context(SESSION_ID, task_hint=request)
             + "\n"
             + BASE_BACKSTORY,
