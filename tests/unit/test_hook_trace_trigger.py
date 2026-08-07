@@ -67,7 +67,8 @@ async def test_tier1_only_fire_is_advisory_and_captures_no_eval_case(
     (notice,) = Mailbox(cfg).pending()
     assert notice.severity == "trend"
     assert "stall:task_completion" in notice.signatures
-    assert notice.scope_hint == "global"
+    # Detection tier does not make the resulting lesson universally applicable.
+    assert notice.scope_hint == "scoped"
     assert EvalSet(cfg, journal=Journal(cfg)).cases() == []
 
 
