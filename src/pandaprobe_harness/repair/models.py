@@ -15,9 +15,11 @@ __all__ = [
 ]
 
 RepairStatus = Literal[
-    "completed",
+    "candidate_added",
     "duplicate",
+    "already_covered",
     "no_proposal",
+    "unactionable",
     "timed_out",
     "failed",
     "cancelled",
@@ -59,6 +61,11 @@ class RepairAssignment:
     repair_session_id: str
     turn_index: int
     notice: DiagnosticNotice
+    episode_id: str = ""
+    notices: tuple[DiagnosticNotice, ...] = ()
+    scope_hints: tuple[dict[str, Any], ...] = ()
+    recommended_scope: str = "scoped"
+    generic_scopes: tuple[str, ...] = ()
     task_descriptor: dict[str, Any] = field(default_factory=dict)
     domain_policy: str | None = None
 
@@ -66,18 +73,42 @@ class RepairAssignment:
     def notice_id(self) -> str:
         return self.notice.id
 
+    @property
+    def all_notices(self) -> tuple[DiagnosticNotice, ...]:
+        return self.notices or (self.notice,)
+
+    @property
+    def notice_ids(self) -> tuple[str, ...]:
+        return tuple(notice.id for notice in self.all_notices)
+
     def summary(self) -> dict[str, Any]:
         return {
             "task_session_id": self.task_session_id,
             "repair_session_id": self.repair_session_id,
+            "repair_episode_id": self.episode_id,
             "turn_index": self.turn_index,
             "notice_id": self.notice.id,
+            "notice_ids": list(self.notice_ids),
             "severity": self.notice.severity,
             "summary": self.notice.summary,
             "signatures": list(self.notice.signatures),
             "metrics": [metric.to_json() for metric in self.notice.metrics],
             "flagged_traces": list(self.notice.flagged_traces),
             "diagnostic_dump": self.notice.dump_path,
+            "notices": [
+                {
+                    "notice_id": notice.id,
+                    "severity": notice.severity,
+                    "summary": notice.summary,
+                    "signatures": list(notice.signatures),
+                    "metrics": [metric.to_json() for metric in notice.metrics],
+                    "flagged_traces": list(notice.flagged_traces),
+                    "diagnostic_dump": notice.dump_path,
+                }
+                for notice in self.all_notices
+            ],
+            "scope_hints": [dict(hint) for hint in self.scope_hints],
+            "recommended_scope": self.recommended_scope,
             "task_descriptor": self.task_descriptor,
             "domain_policy": self.domain_policy,
         }
@@ -95,10 +126,17 @@ class RepairResult:
     ended_at: str
     model: str
     provider: str
+    episode_id: str = ""
+    notice_ids: tuple[str, ...] = ()
     turns: int = 0
     tool_calls: int = 0
     candidate_rule_ids: tuple[str, ...] = ()
     existing_rule_id: str | None = None
+    recommended_scope: str | None = None
+    selected_scope: str | None = None
+    considered_rule_ids: tuple[str, ...] = ()
+    resolution_kind: str | None = None
+    candidate_suppression_reason: str | None = None
     usage: RepairUsage = RepairUsage()
     error_category: str | None = None
     message: str | None = None
@@ -106,13 +144,18 @@ class RepairResult:
 
     @property
     def succeeded(self) -> bool:
-        return self.status in {"completed", "duplicate", "no_proposal"}
+        return self.status in {
+            "candidate_added", "duplicate", "already_covered", "no_proposal",
+            "unactionable",
+        }
 
     def to_json(self) -> dict[str, Any]:
         return {
             "task_session_id": self.task_session_id,
             "repair_session_id": self.repair_session_id,
             "notice_id": self.notice_id,
+            "repair_episode_id": self.episode_id,
+            "notice_ids": list(self.notice_ids or (self.notice_id,)),
             "status": self.status,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
@@ -122,6 +165,11 @@ class RepairResult:
             "tool_calls": self.tool_calls,
             "candidate_rule_ids": list(self.candidate_rule_ids),
             "existing_rule_id": self.existing_rule_id,
+            "recommended_scope": self.recommended_scope,
+            "selected_scope": self.selected_scope,
+            "considered_rule_ids": list(self.considered_rule_ids),
+            "resolution_kind": self.resolution_kind or self.status,
+            "candidate_suppression_reason": self.candidate_suppression_reason,
             "usage": self.usage.to_json(),
             "error_category": self.error_category,
             "message": self.message,
