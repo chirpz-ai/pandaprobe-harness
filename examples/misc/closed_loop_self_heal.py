@@ -13,7 +13,7 @@ from _offline_support import (
     OfflineRepairCompletion,
 )
 
-from pandaprobe_harness import Harness, HarnessConfig
+from pandaprobe_harness import Harness, HarnessConfig, ReplayContext
 from pandaprobe_harness.workspace.evalset import EvalCase
 
 
@@ -24,9 +24,13 @@ async def main() -> None:
         cli = OfflineCli()
         repair = OfflineRepairCompletion()
 
-        async def replay(case: EvalCase, guidance: str) -> str:
+        async def replay(case: EvalCase, context: ReplayContext) -> str:
             assert case.replayable
-            assert GUIDANCE in guidance
+            assert GUIDANCE not in context
+            scoped = await context.task_tools.call(
+                "harness_rules_read", {"scope": "payments"}
+            )
+            assert GUIDANCE in scoped["content"]
             return replay_session
 
         harness = Harness.create(
@@ -45,7 +49,9 @@ async def main() -> None:
         )
         task_agent = DeveloperTaskAgent()
 
-        first = await task_agent.run_turn(harness.system_context(session_id))
+        first = await task_agent.run_turn(
+            harness.system_context(session_id), harness.task_tools
+        )
         for _ in range(2):
             cli.script_trace(
                 session_id,
@@ -68,7 +74,9 @@ async def main() -> None:
             tool_correctness=0.95,
             argument_correctness=0.95,
         )
-        second = await task_agent.run_turn(harness.system_context(session_id))
+        second = await task_agent.run_turn(
+            harness.system_context(session_id), harness.task_tools
+        )
         cli.script_trace(
             session_id,
             task_completion=0.9,
