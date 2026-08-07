@@ -6,9 +6,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from ..workspace.rules import normalize_scope, normalize_scope_description
+from ..workspace.sanitize import sanitize_text
+from ..workspace.scopes import normalize_scope, normalize_scope_description
 
-__all__ = ["RuleScopeHint", "TurnContext", "parse_turn_payload"]
+__all__ = [
+    "TASK_SUMMARY_MAX_LEN",
+    "RuleScopeHint",
+    "TurnContext",
+    "clean_task_summary",
+    "parse_turn_payload",
+]
 
 RuleApplicabilityHint = Literal["global", "topical", "task"]
 
@@ -64,6 +71,11 @@ class RuleScopeHint:
         )
 
 
+#: Upper bound on a host-supplied task summary. Long enough for a real task
+#: statement, short enough that it cannot crowd out the repair evidence.
+TASK_SUMMARY_MAX_LEN = 600
+
+
 @dataclass(frozen=True, slots=True)
 class TurnContext:
     """Normalized turn end-state, produced by an adapter or the facade.
@@ -71,12 +83,35 @@ class TurnContext:
     ``session_id`` groups the conversation; ``turn_index`` orders turns within
     it; ``end_state`` carries any framework-specific payload (messages, tool
     calls) that the evaluator may inspect.
+
+    ``task_summary`` is an optional short statement of what the turn was trying
+    to do. Any host may supply it; managed repair reads it as untrusted evidence
+    when diagnosing a failure and choosing a rule scope. It is the generic
+    alternative to the harness guessing a topic from an opaque task id.
     """
 
     session_id: str
     turn_index: int
     end_state: Mapping[str, Any] = field(default_factory=dict)
     rule_scope_hints: tuple[RuleScopeHint, ...] = ()
+    task_summary: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "task_summary", clean_task_summary(self.task_summary))
+
+
+def clean_task_summary(value: object) -> str:
+    """Bound and sanitize a host-supplied task summary.
+
+    Passes through the same prompt-injection boundary as every other
+    externally-authored string, so a task statement cannot forge harness framing
+    in the repair prompt.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    collapsed = " ".join(value.split())
+    return sanitize_text(collapsed, max_len=TASK_SUMMARY_MAX_LEN).strip()
 
 
 def parse_turn_payload(raw_turn: object) -> TurnContext:
@@ -101,9 +136,15 @@ def parse_turn_payload(raw_turn: object) -> TurnContext:
             hint = RuleScopeHint.from_json(value)
             if hint is not None and hint.key not in {item.key for item in hints}:
                 hints.append(hint)
+    # Accepted at the top level or inside end_state: adapters that already build
+    # an end_state payload can carry it there without a signature change.
+    summary = raw_turn.get("task_summary")
+    if not isinstance(summary, str) or not summary.strip():
+        summary = end_state.get("task_summary")
     return TurnContext(
         session_id=str(session_id),
         turn_index=int(raw_turn.get("turn_index", 0)),
         end_state=end_state,
         rule_scope_hints=tuple(hints),
+        task_summary=clean_task_summary(summary),
     )
