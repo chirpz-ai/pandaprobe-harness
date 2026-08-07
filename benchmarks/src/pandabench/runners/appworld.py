@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 from pandaprobe_harness import RuleScopeHint
 
-from ..agents.harness_wiring import AgentWiring, HarnessWiring
+from ..agents.harness_wiring import AgentWiring, HarnessWiring, ReplayRuleWiring
 from ..agents.loop import run_agent_loop
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
@@ -100,12 +100,16 @@ class AppWorldRunner(SingleTaskRunner):
         # mid-task would cost a full test run every turn for a partial answer.
         self._outcomes: dict[str, float] = {}
         self._scope_hints: dict[str, tuple[RuleScopeHint, ...]] = {}
+        self._task_summaries: dict[str, str] = {}
 
     def list_tasks(self, dataset: str) -> list[str]:
         return self._env.list_task_ids(dataset or "dev")
 
     def rule_scope_hints(self, task_id: str) -> tuple[RuleScopeHint, ...]:
         return self._scope_hints.get(task_id, ())
+
+    def task_summary(self, task_id: str) -> str:
+        return self._task_summaries.get(task_id, "")
 
     def outcome_for(self, task_id: str, session_id: str) -> float | None:
         """AppWorld's verdict for ``session_id`` as a pass ratio, if one exists.
@@ -132,6 +136,11 @@ class AppWorldRunner(SingleTaskRunner):
         # Serialize the whole lifecycle against the single-world server so a
         # background replay can't interleave with a live trial on the same world.
         async with self._server_lock:
+            # Past the lock, this run is no longer queueing. A validation replay
+            # tells the harness so its execution budget starts here rather than
+            # having been consumed by the wait.
+            if isinstance(wiring, ReplayRuleWiring):
+                wiring.mark_environment_ready()
             return await self._run_once_locked(
                 task_id=task_id, session_id=session_id, model=model, client=client,
                 max_turns=max_turns, wiring=wiring,
@@ -156,8 +165,13 @@ class AppWorldRunner(SingleTaskRunner):
             api_docs = await asyncio.to_thread(self._env.api_docs)
             hints = _app_scope_hints(info.instruction, api_docs)
             self._scope_hints[task_id] = hints
+            self._task_summaries[task_id] = info.instruction
             if isinstance(wiring, HarnessWiring):
                 wiring.set_rule_scope_hints(hints)
+                # The instruction is the only place the task's actual subject
+                # appears; the task id is opaque. The harness sanitizes and
+                # bounds it before managed repair ever sees it.
+                wiring.set_task_summary(info.instruction)
         except Exception as exc:  # noqa: BLE001 - env failure is a trial error, not a crash
             logger.warning("appworld init failed for %s: %s", task_id, exc)
             return _errored(str(exc), time.monotonic() - start)
