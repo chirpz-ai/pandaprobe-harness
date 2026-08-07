@@ -1,8 +1,8 @@
 """CrewAI task ownership with PandaProbe-managed repair.
 
 Requires the CrewAI extra, provider credentials, PandaProbe CLI auth, and an
-explicit ``HARNESS_REPAIR_MODEL``. The task agent receives guidance, not
-administrative shell or mailbox capabilities.
+explicit ``HARNESS_REPAIR_MODEL``. The task agent receives a capability note,
+not rule bodies, administrative shell, or mailbox capabilities.
 """
 
 from __future__ import annotations
