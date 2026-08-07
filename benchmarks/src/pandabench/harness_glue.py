@@ -142,6 +142,8 @@ def build_harness_config(
         rule_promote_margin=study.harness.rule_promote_margin,
         rule_regress_margin=study.harness.rule_regress_margin,
         replay_timeout_s=study.harness.replay_timeout_s,
+        replay_env_wait_timeout_s=study.harness.replay_env_wait_timeout_s,
+        validation_round_budget_s=study.harness.validation_round_budget_s,
         regression_sample=study.harness.regression_sample,
         # Bound how long a barrier waits for platform scores per turn
         # (poll_interval_s * poll_max_attempts); generous because trace-heavy
