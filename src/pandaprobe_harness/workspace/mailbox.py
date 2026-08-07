@@ -112,7 +112,14 @@ class Resolution:
     acked_at: str
     rule_id: str | None = None
     note: str | None = None
-    kind: Literal["candidate", "duplicate", "no_proposal", "legacy"] = "legacy"
+    kind: Literal[
+        "candidate",
+        "duplicate",
+        "already_covered",
+        "no_proposal",
+        "unactionable",
+        "legacy",
+    ] = "legacy"
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -130,7 +137,15 @@ class Resolution:
             note=str(data["note"]) if data.get("note") is not None else None,
             kind=(
                 data["kind"]
-                if data.get("kind") in {"candidate", "duplicate", "no_proposal", "legacy"}
+                if data.get("kind")
+                in {
+                    "candidate",
+                    "duplicate",
+                    "already_covered",
+                    "no_proposal",
+                    "unactionable",
+                    "legacy",
+                }
                 else "legacy"
             ),
         )
@@ -151,11 +166,13 @@ class DiagnosticNotice:
     dump_path: str = ""
     summary: str = ""
     signatures: tuple[str, ...] = ()
-    #: Coarse, tier-derived hint for where a mitigation rule belongs:
-    #: ``"global"`` for a Tier-1 trajectory fire, ``"scoped"`` for a surgical
-    #: Tier-2/3 breach. It is only the default for ``harness_rule_add`` — the
-    #: repair agent may file the rule under any scope it prefers.
-    scope_hint: str = "global"
+    #: Default location for granular guidance. A precise host hint or managed
+    #: repair may select any safe custom scope; ``global`` must be explicit.
+    scope_hint: str = "scoped"
+    #: Host-provided bounded topic metadata, persisted without task payloads.
+    scope_hints: tuple[dict[str, Any], ...] = ()
+    recommended_scope: str = "scoped"
+    applicability_hint: Literal["global", "topical", "task"] = "task"
     status: Literal["pending", "acknowledged"] = "pending"
     resolution: Resolution | None = None
 
@@ -180,6 +197,9 @@ class DiagnosticNotice:
             "summary": self.summary,
             "signatures": list(self.signatures),
             "scope_hint": self.scope_hint,
+            "scope_hints": [dict(hint) for hint in self.scope_hints],
+            "recommended_scope": self.recommended_scope,
+            "applicability_hint": self.applicability_hint,
             "status": self.status,
             "resolution": self.resolution.to_json() if self.resolution else None,
         }
@@ -202,6 +222,13 @@ class DiagnosticNotice:
                     breakdown[str(trace_id)] = dict(signals)
         resolution_raw = data.get("resolution")
         status = data.get("status")
+        scope_hints_raw = data.get("scope_hints")
+        scope_hints = (
+            tuple(dict(item) for item in scope_hints_raw[:16] if isinstance(item, dict))
+            if isinstance(scope_hints_raw, list)
+            else ()
+        )
+        applicability = data.get("applicability_hint")
         return cls(
             id=str(data.get("id", "")),
             created_at=str(data.get("created_at", "")),
@@ -215,6 +242,15 @@ class DiagnosticNotice:
             summary=str(data.get("summary", "")),
             signatures=tuple(str(s) for s in signatures) if isinstance(signatures, list) else (),
             scope_hint=str(data.get("scope_hint") or "global"),
+            scope_hints=scope_hints,
+            recommended_scope=str(
+                data.get("recommended_scope") or data.get("scope_hint") or "global"
+            ),
+            applicability_hint=(
+                applicability
+                if applicability in {"global", "topical", "task"}
+                else ("global" if data.get("scope_hint") == "global" else "task")
+            ),
             status="acknowledged" if status == "acknowledged" else "pending",
             resolution=(
                 Resolution.from_json(resolution_raw) if isinstance(resolution_raw, dict) else None
@@ -300,7 +336,14 @@ class Mailbox:
         *,
         rule_id: str | None = None,
         note: str | None = None,
-        kind: Literal["candidate", "duplicate", "no_proposal", "legacy"] = "legacy",
+        kind: Literal[
+            "candidate",
+            "duplicate",
+            "already_covered",
+            "no_proposal",
+            "unactionable",
+            "legacy",
+        ] = "legacy",
     ) -> DiagnosticNotice:
         """Move a pending notice to ``processed/`` with its resolution.
 
@@ -327,6 +370,48 @@ class Mailbox:
                 acknowledged.to_json(),
             )
             pending_path.unlink(missing_ok=True)
+            self._refresh_status()
+            return acknowledged
+
+    def acknowledge_many(
+        self,
+        notice_ids: tuple[str, ...],
+        *,
+        rule_id: str | None = None,
+        note: str | None = None,
+        kind: Literal[
+            "candidate", "duplicate", "already_covered", "no_proposal", "unactionable"
+        ],
+    ) -> list[DiagnosticNotice]:
+        """Resolve one repair episode only after every notice is still pending."""
+
+        if not notice_ids or any(not _safe_notice_id(value) for value in notice_ids):
+            raise KeyError("invalid repair episode notice ids")
+        with self._lock:
+            pending: list[tuple[DiagnosticNotice, Any]] = []
+            for notice_id in notice_ids:
+                path = self._config.mailbox_pending_dir / f"{notice_id}.json"
+                data = load_json(path)
+                if data is None:
+                    raise KeyError(f"notice {notice_id!r} is not pending")
+                pending.append((DiagnosticNotice.from_json(data), path))
+            acknowledged = [
+                replace(
+                    notice,
+                    status="acknowledged",
+                    resolution=Resolution(
+                        acked_at=_now_iso(), rule_id=rule_id, note=note, kind=kind
+                    ),
+                )
+                for notice, _ in pending
+            ]
+            for notice in acknowledged:
+                atomic_write_json(
+                    self._config.mailbox_processed_dir / f"{notice.id}.json",
+                    notice.to_json(),
+                )
+            for _, path in pending:
+                path.unlink(missing_ok=True)
             self._refresh_status()
             return acknowledged
 
