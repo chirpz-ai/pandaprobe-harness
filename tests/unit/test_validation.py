@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -125,9 +126,14 @@ async def test_replay_promotes_when_metric_improves(tmp_path: Path) -> None:
     fake = FakeCliClient()
     fake.script_trace("s-replayed", task_completion=0.92, coherence=0.88)
     contexts: list[str] = []
+    replay_rule_text: list[str] = []
 
-    async def replay(case: EvalCase, context: str) -> str:
+    async def replay(case: EvalCase, context: Any) -> str:
         contexts.append(context)
+        index = await context.task_tools.call("harness_rules_list", {})
+        assert index["scopes"][0]["scope"] == "scoped"
+        read = await context.task_tools.call("harness_rules_read", {"scope": "scoped"})
+        replay_rule_text.append(read["content"])
         return "s-replayed"
 
     validator = ReplayValidator(
@@ -141,13 +147,13 @@ async def test_replay_promotes_when_metric_improves(tmp_path: Path) -> None:
 
     assert verdict.outcome == "promote"
     assert verdict.validator == "replay"
-    # The candidate was in force during the replay: the provisional SECTION
-    # rendered (the template merely mentions the phrase in prose, so the
-    # "###" heading is the meaningful check).
+    # The candidate was discoverable on demand during replay, not injected.
     from pandaprobe_harness.workspace.rules import PROVISIONAL_HEADING
 
-    assert PROVISIONAL_HEADING in contexts[0]
-    assert "verify before retrying" in contexts[0]
+    assert PROVISIONAL_HEADING not in contexts[0]
+    assert PROVISIONAL_HEADING in replay_rule_text[0]
+    assert "verify before retrying" not in contexts[0]
+    assert "verify before retrying" in replay_rule_text[0]
 
 
 async def test_replay_retires_without_improvement(tmp_path: Path) -> None:
