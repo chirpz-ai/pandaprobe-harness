@@ -6,7 +6,8 @@ produce the evidence that promotes (or retires) it:
 * :class:`ReplayValidator` — the strong path. Replays the failing scenario(s)
   whose signature matches the candidate (plus a small sample of protected
   ``win`` cases) through the developer-supplied ``ReplayFn`` with the
-  candidate in force, scores the new sessions via the ``MetricEvaluator``,
+  candidate discoverable through read-only tools, scores the new sessions via
+  the ``MetricEvaluator``,
   and promotes iff the targeted metric improves past ``rule_promote_margin``
   with no case regressing past ``rule_regress_margin``.
 * :class:`ForwardTrialValidator` — the automatic fallback when no replay
@@ -30,11 +31,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
+from ..agent_tools.toolset import TaskToolset
 from ..config import HarnessConfig
 from ..evaluation.evaluator import MetricEvaluator
 from ..evaluation.metrics import Metric
+from ..hook.context import compose_system_preamble
 from ..hook.tiers import VerifierFn, run_verifier
-from ..workspace.evalset import EvalCase, EvalSet, ReplayFn
+from ..workspace.evalset import EvalCase, EvalSet, ReplayContext, ReplayFn
 from ..workspace.journal import Journal
 from ..workspace.rules import Rule, RulesStore, TrialState
 
@@ -170,7 +173,7 @@ class ForwardTrialValidator:
 
 
 class ReplayValidator:
-    """The strong path: replay matching eval cases with the candidate in force."""
+    """Replay cases with the candidate available through read-only task tools."""
 
     def __init__(
         self,
@@ -203,9 +206,13 @@ class ReplayValidator:
         wins_all = await asyncio.to_thread(lambda: self._evalset.cases(kind="win"))
         wins = [case for case in reversed(wins_all) if case.replayable][:_MAX_WIN_CASES]
 
-        # The full render includes the candidate (provisional section), so the
-        # replayed run executes with the rule in force.
-        context = await asyncio.to_thread(self._rules.render_markdown)
+        # Replay exposes the same on-demand rule tools as a live task turn. The
+        # candidate is discoverable immediately but never forced into context.
+        context = ReplayContext(
+            compose_system_preamble(),
+            task_tools=TaskToolset(config=self._config, rules=self._rules),
+            candidate_rule_id=rule.id,
+        )
         # Trust order, most authoritative first. Resolved per case against the
         # deltas that actually arrived (see `_target_for`) rather than up front:
         # a verifier may legitimately have no verdict for a given task, and
@@ -298,7 +305,7 @@ class ReplayValidator:
         return any(delta >= margin for delta in deltas.values())
 
     async def _replay_scores(
-        self, case: EvalCase, context: str
+        self, case: EvalCase, context: ReplayContext
     ) -> tuple[str, dict[str, float]] | None:
         """Replay + score one case; ``None`` means inconclusive (never raises).
 
