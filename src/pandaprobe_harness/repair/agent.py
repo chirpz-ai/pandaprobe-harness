@@ -351,19 +351,28 @@ class ManagedRepairAgent:
             ended_at=_now(),
             model=self._config.repair_model or "",
             provider=_provider(self._config.repair_model),
+            episode_id=assignment.episode_id,
+            notice_ids=assignment.notice_ids,
             turns=turns,
             tool_calls=tool_calls,
             candidate_rule_ids=tools.candidate_ids,
             existing_rule_id=tools.existing_rule_id,
+            recommended_scope=assignment.recommended_scope,
+            selected_scope=tools.selected_scope,
+            considered_rule_ids=tools.considered_rule_ids,
+            resolution_kind=tools.resolution or status,
+            candidate_suppression_reason=tools.suppression_reason,
             usage=usage,
             error_category=error_category,
             message=message,
             tracing_enabled=self._config.trace_repair_agent,
         )
         event = {
-            "completed": "repair_completed",
+            "candidate_added": "repair_completed",
             "duplicate": "repair_duplicate",
+            "already_covered": "repair_already_covered",
             "no_proposal": "repair_no_proposal",
+            "unactionable": "repair_unactionable",
             "timed_out": "repair_timed_out",
             "failed": "repair_failed",
             "cancelled": "repair_failed",
@@ -380,7 +389,10 @@ class ManagedRepairAgent:
                 "type": event_type,
                 "task_session_id": assignment.task_session_id,
                 "repair_session_id": assignment.repair_session_id,
+                "repair_episode_id": assignment.episode_id,
                 "notice_id": assignment.notice_id,
+                "notice_ids": list(assignment.notice_ids),
+                "recommended_scope": assignment.recommended_scope,
                 **fields,
             },
         )
@@ -408,7 +420,7 @@ class ManagedRepairAgent:
         ) as tool_span:
             tool_span.set_input(args)
             result = await tools.call(name, args)
-            tool_span.set_output(result)
+            tool_span.set_output(_safe_tool_result(name, result))
             ok = result.get("ok") is True
             tool_span.set_metadata({"ok": ok})
             if not ok:
@@ -428,6 +440,8 @@ class ManagedRepairAgent:
                 "role": "repair",
                 "task_session_id": assignment.task_session_id,
                 "notice_id": assignment.notice_id,
+                "repair_episode_id": assignment.episode_id,
+                "notice_ids": list(assignment.notice_ids),
                 "model": self._config.repair_model,
             },
         }
@@ -444,9 +458,13 @@ class ManagedRepairAgent:
 def _status(tools: RepairToolset) -> RepairStatus:
     if tools.resolution == "duplicate":
         return "duplicate"
+    if tools.resolution == "already_covered":
+        return "already_covered"
     if tools.resolution == "no_proposal":
         return "no_proposal"
-    return "completed"
+    if tools.resolution == "unactionable":
+        return "unactionable"
+    return "candidate_added"
 
 
 def _provider(model: str | None) -> str:
@@ -471,7 +489,7 @@ def _repair_progress(completed_tools: set[str], tools: RepairToolset) -> str | N
             "Evidence review and the required existing-rule search are complete. "
             "Do not call another read, inspect, list, status, or search tool. On the "
             "next round, either add one candidate with harness_rule_add, resolve as "
-            "duplicate, or resolve as no_proposal."
+            "duplicate/already_covered, or resolve as no_proposal/unactionable."
         )
     return None
 
@@ -485,6 +503,8 @@ def _trace_assignment(
         "task_session_id": assignment.task_session_id,
         "repair_session_id": assignment.repair_session_id,
         "notice_id": assignment.notice_id,
+        "repair_episode_id": assignment.episode_id,
+        "notice_ids": list(assignment.notice_ids),
         "turn_index": assignment.turn_index,
         "severity": assignment.notice.severity,
         "signatures": list(assignment.notice.signatures),
@@ -515,6 +535,9 @@ def _trace_result_message(result: RepairResult) -> dict[str, list[dict[str, str]
         "tool_calls": result.tool_calls,
         "candidate_rule_ids": list(result.candidate_rule_ids),
         "existing_rule_id": result.existing_rule_id,
+        "recommended_scope": result.recommended_scope,
+        "selected_scope": result.selected_scope,
+        "resolution_kind": result.resolution_kind,
         "error_category": result.error_category,
     }
     return {
@@ -525,6 +548,33 @@ def _trace_result_message(result: RepairResult) -> dict[str, list[dict[str, str]
             }
         ]
     }
+
+
+def _safe_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Trace tool outcomes without diagnostic payloads or complete rule bodies."""
+
+    summary: dict[str, Any] = {"ok": result.get("ok") is True, "tool": name}
+    for key in (
+        "created", "suppressed", "suppression_reason", "recommended_resolution",
+        "scope", "path", "episode_id", "notice_ids",
+    ):
+        if key in result:
+            summary[key] = result[key]
+    rule = result.get("rule")
+    if isinstance(rule, dict):
+        summary["rule_id"] = rule.get("id")
+        summary["rule_status"] = rule.get("status")
+    existing = result.get("existing_rule")
+    if isinstance(existing, dict):
+        summary["existing_rule_id"] = existing.get("id")
+    rules = result.get("rules")
+    if isinstance(rules, list):
+        summary["rule_ids"] = [
+            item.get("id") for item in rules if isinstance(item, dict) and item.get("id")
+        ]
+    if result.get("ok") is not True:
+        summary["error"] = str(result.get("error") or "tool failed")[:240]
+    return summary
 
 
 def _completion_tools(tools: RepairToolset) -> list[dict[str, Any]]:
