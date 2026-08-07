@@ -11,8 +11,10 @@ from tests.fakes.fake_cli_client import FakeCliClient
 def test_derived_paths_from_root() -> None:
     cfg = HarnessConfig(harness_root=Path("/tmp/harness"))
     assert cfg.traces_dir == Path("/tmp/harness/traces")
-    assert cfg.rules_file == Path("/tmp/harness/harness_guide.md")
-    assert cfg.legacy_rules_file == Path("/tmp/harness/harness_rules.md")
+    # One name for the generated guide, beside the store and scope files it
+    # indexes. There is no alternate or fallback filename.
+    assert cfg.rules_file == Path("/tmp/harness/rules.md")
+    assert cfg.rules_store_file == Path("/tmp/harness/rules.jsonl")
     assert cfg.rules_dir == Path("/tmp/harness/rules")
     assert cfg.rules_scope_file("payments") == Path("/tmp/harness/rules/payments.md")
     assert cfg.latest_eval_file == Path("/tmp/harness/traces/latest_eval.json")
@@ -21,7 +23,8 @@ def test_derived_paths_from_root() -> None:
 def test_defaults() -> None:
     cfg = HarnessConfig()
     assert cfg.cli_binary == "pandaprobe"
-    assert cfg.concurrent_eval
+    assert cfg.rule_validation
+    assert not cfg.observe_only
 
 
 def test_from_env_reads_overrides(monkeypatch) -> None:
