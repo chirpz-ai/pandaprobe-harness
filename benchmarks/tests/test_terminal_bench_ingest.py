@@ -64,6 +64,17 @@ def _payload(
     }
 
 
+def test_terminal_scope_hint_uses_safe_harbor_metadata_not_task_id() -> None:
+    hints = harbor_agent._terminal_scope_hints(
+        SimpleNamespace(metadata={"task_family": "package-build"})
+    )
+    assert len(hints) == 1
+    assert hints[0].key == "package-build"
+    assert hints[0].recommended is True
+    assert "terminal workflows" in hints[0].description
+    assert harbor_agent._terminal_scope_hints(SimpleNamespace(metadata={})) == ()
+
+
 def _write_result(job_dir: Path, dirname: str, payload: dict[str, Any]) -> None:
     target = job_dir / dirname
     target.mkdir(parents=True)
