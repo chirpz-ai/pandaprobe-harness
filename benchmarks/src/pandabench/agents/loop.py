@@ -6,7 +6,7 @@ call-model / run-tools / repeat loop. Arm B additionally prepends the harness
 preamble each turn and exposes only read-only learned-rule tools alongside the
 benchmark's tools. The runner owns final settlement and phase validation; the
 loop settles continuing turns so package-owned repair can update next-turn
-guidance in-session.
+on-demand discovery in-session.
 """
 
 from __future__ import annotations
@@ -124,8 +124,8 @@ async def run_agent_loop(
             )
 
         # The per-turn barrier: block until the harness has evaluated this turn and
-        # completed package-owned repair, so the next iteration's preamble and
-        # rule set already reflect any provisional guidance. This is what makes
+        # completed package-owned repair, so the next iteration's read-only rule
+        # tools already reflect any provisional guidance. This is what makes
         # healing take effect *within* a session rather than after it.
         #
         # Only when another turn will actually follow. At the cap the next
