@@ -56,7 +56,7 @@ build-backend = "hatchling.build"
 path = "src/pandaprobe_harness/_version.py"
 
 [tool.hatch.build.targets.wheel]
-# Non-Python package data (the harness_rules.md template) is included by
+# Non-Python package data (the harness_guide.md template) is included by
 # default because it lives inside the package directory.
 packages = ["src/pandaprobe_harness"]
 
