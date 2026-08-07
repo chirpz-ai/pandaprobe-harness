@@ -2,8 +2,8 @@
 
 These examples use the new ownership boundary: the developer owns the task
 agent and its domain loop, while PandaProbe evaluates task traces and runs the
-separate managed repair agent. The task agent receives bounded guidance and,
-optionally, four read-only rule tools.
+separate managed repair agent. The task agent receives a stable capability note
+and, optionally, four read-only rule tools; no rule body is injected.
 
 | Example | Purpose | Credentials |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ The required host sequence is visible in each example:
 2. flush/export its task trace;
 3. call `on_turn_end` with the task session and end-state descriptor;
 4. await `settle(session_id)` before another task turn;
-5. rebuild task context with `system_context(session_id, task_hint=...)`;
+5. let the task agent choose list/search/read/status when guidance may help;
 6. keep replay validation outside any non-reentrant task environment lock.
 
 The managed repair model is configured through `HarnessConfig.repair_model` or
