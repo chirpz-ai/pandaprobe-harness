@@ -49,8 +49,21 @@ the PandaProbe-wrapped LiteLLM chat-completions API. Choose another current
 LiteLLM model deliberately when needed. The task agent sees only a stable
 capability note and four read-only rule tools. Rule bodies and the expanded scope
 index are never force-injected; list/read/search/status happen only if the task
-model chooses them. Listing returns the canonical `harness_guide.md` and generated
+model chooses them. Listing returns the canonical `rules.md` and generated
 scope references.
+
+Managed repair chooses each rule's scope from the failure evidence, inside the
+repair call it already makes: `global` for broadly reusable rules, a contextual name
+(application, workflow, domain) when the rule belongs to that context, `scoped` when
+no meaningful name can be determined. Benchmarks pass the task statement and safe
+metadata as context; they do not name the file.
+
+Validation promotes or retires candidates — repair cannot. `validation_round_budget_s`
+bounds replay work per round and the remaining candidates get the cheap forward-trial
+verdict, and `replay_env_wait_timeout_s` keeps time spent queueing for AppWorld's
+single world out of the replay execution budget. The learning boundary now waits for
+validation to settle (within `settle_timeout_s`) before freezing the ruleset, and
+logs a warning if it could not.
 
 
 
