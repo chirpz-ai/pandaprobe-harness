@@ -50,7 +50,10 @@ building. Read alongside `RUNNING.md`.
    for task evaluation plus package-owned managed repair before the next prompt. The
    task agent receives only `harness_rules_read/search/list/status`; mailbox,
    diagnostic, acknowledgement, and rule-mutation capabilities remain private to the
-   package repair agent. The runner performs an idempotent final-turn settle and the
+   package repair agent. Its preamble is capability-only: neither live nor frozen
+   wiring inserts rules or an expanded index, and neither performs an automatic
+   rule lookup. `harness_rules_list` returns the canonical task-facing `harness_guide.md`
+   guide plus generated scope references. The runner performs an idempotent final-turn settle and the
    learning boundary drains outstanding validation. tau2
    crosses its synchronous worker-thread boundary with `run_coroutine_threadsafe`;
    Terminal-Bench performs the same learning barrier inside Harbor's custom agent.
@@ -68,8 +71,9 @@ building. Read alongside `RUNNING.md`.
    recorded SHA-256. AppWorld and tau2 use `FrozenEvalWiring` directly; Harbor receives
    an explicit `phase=eval`, `frozen_eval=true`, and absolute snapshot path. Frozen
    wiring exposes only list/search/read/status operations, reports no pending notices,
-   and never constructs a `Harness` or enters settlement. Native `/evaluate`, tau2
-   reward evaluation, and Harbor verification remain unchanged.
+   uses the same capability-only preamble, and never constructs a `Harness` or
+   enters settlement. Native `/evaluate`, tau2 reward evaluation, and Harbor
+   verification remain unchanged.
 
 7. **The benchmark Tier-1 stall window is 10.** `study.yaml` propagates this through
    `build_harness_config`; it delays only learning-phase STALL detection. The locally
@@ -80,14 +84,23 @@ building. Read alongside `RUNNING.md`.
    study explicitly sets `repair_reasoning_effort: "none"` so current OpenAI models
    accept function tools through the PandaProbe-wrapped LiteLLM chat-completions
    contract. The manifest records the effective model and limits, and live telemetry
-   stores the structured `RepairResult`. Repair tracing remains under the distinct
-   `repair-<task-session>-<notice>` identity owned by the package.
+   stores the structured `RepairResult`, including episode/group, scope, novelty,
+   and resolution telemetry. Repair tracing remains under the distinct
+   `repair-<task-session>-<episode>` identity owned by the package.
 
-9. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
+9. **Scope hints come from benchmark metadata, not classification.** AppWorld
+   matches safe application names already exposed by its task/API descriptions;
+   tau2 supplies the selected airline/retail/telecom domain and optional workflow
+   metadata; Terminal-Bench passes safe Harbor category/task-family/workflow
+   metadata when available. These hints travel on `TurnContext` into notices and
+   repair assignments. A precise hint wins over `appworld`, `tau2`, or
+   `terminal_bench`; `global` remains an explicit cross-domain applicability.
+
+10. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
    separate later pass, because the vertical slice's acceptance gate is
    run → records → report end-to-end.
 
-10. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
+11. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
    the deterministic pipeline gate. Real per-benchmark smokes are separate targets
    that need each harness provisioned + live creds (see below). This matches the
    brief's `--dry-run` requirement and gives a dependency-free acceptance check.
@@ -160,7 +173,8 @@ paid live-model smokes for tau2 and Terminal-Bench.
   as the `tau2` extra (`uv sync --extra tau2`); no isolated interpreter. Custom agent = subclass `tau2.agent.llm_agent.LLMAgent`,
   override `generate_next_message` to route through our wrapper (done). tau2's
   `run_task` hardcodes the `LLMAgent(tools, domain_policy, llm, llm_args)` constructor,
-  so to inject the harness we drive `tau2.orchestrator.Orchestrator` per (task×trial),
+  so to attach the harness wiring we drive `tau2.orchestrator.Orchestrator` per
+  (task×trial),
   keeping the user simulator on tau2's stock `generate()` (fixed model, arm-independent).
   Reward: `Orchestrator.run()` does NOT grade (it returns `reward_info=None`) — call
   `tau2.evaluator.evaluator.evaluate_simulation(..., evaluation_type=EvaluationType.ALL)`
@@ -175,10 +189,10 @@ paid live-model smokes for tau2 and Terminal-Bench.
   back to the runner's loop. The package-owned repair agent consumes any notice during
   settlement through its own PandaProbe LiteLLM wrapper and distinct repair session;
   tau2's adapter contains no mailbox or rule-authoring model loop. The next tau2 turn
-  receives session-aware guidance from `Harness.system_context`. Frozen eval reads the
-  immutable active/candidate rules through the benchmark's read-only list path and
-  embeds them in the domain prompt. Every tau2 model call exposes only domain tools, so
-  workspace administration cannot contaminate the domain transcript or grading.
+  receives a capability-only `Harness.system_context` plus the four read-only tools.
+  Live and frozen agents choose whether to list/search/read the immutable live rules;
+  nothing embeds them in the domain prompt. Administrative calls are rejected at
+  dispatch and cannot contaminate the domain transcript or grading.
   GATES: `uv sync --extra tau2` + `TAU2_DATA_DIR` + live creds (incl. Vertex ADC for
   the user simulator).
 
@@ -202,7 +216,7 @@ paid live-model smokes for tau2 and Terminal-Bench.
   `result.json` supplied `{"reward": ...}` dictionaries, turns ranged 5–15, and all
   four sessions have 2–14 trace samples. The journal shows `trend`/`stall` escalation
   and Tier-2 breaches; both global and scoped provisional rule files are populated and
-  indexed from `harness_rules.md`. The two-task-per-phase smoke did not supply the three
+  indexed from `harness_guide.md`. The two-task-per-phase smoke did not supply the three
   subsequent live sessions required for a forward-only candidate to promote or retire,
   which is the documented Terminal-Bench validation deviation.
 - **AppWorld real integration**: `AppWorldServer` + `HttpAppWorldEnv` + `AppWorldRunner`
