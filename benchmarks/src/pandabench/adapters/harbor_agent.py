@@ -28,6 +28,7 @@ from typing import Any
 # Harbor is only importable inside Harbor's own environment at run time; the rest
 # of the pandabench suite never imports this module, so a top-level import is safe.
 from harbor.agents.base import BaseAgent
+from pandaprobe_harness import RuleScopeHint
 
 from ..agents.frozen_wiring import FrozenEvalWiring
 from ..agents.harness_wiring import AgentWiring, HarnessWiring
@@ -158,6 +159,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
 
         wiring: AgentWiring | None = None
         if self._harness is not None:
+            scope_hints = _terminal_scope_hints(context)
             descriptor = {"benchmark": "terminal_bench", "task_id": self._task_id,
                           "arm": self._arm, "model_key": self._model.key, "seed": self._seed}
             wiring = HarnessWiring(
@@ -166,6 +168,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
                 # The loop settles each turn through this wiring; see
                 # HarnessWiring.settle_turn for why per-turn rather than per-trial.
                 session_id=session_id, flush=self._client.flush,
+                rule_scope_hints=scope_hints,
             )
         elif self._frozen_snapshot is not None:
             wiring = FrozenEvalWiring(self._frozen_snapshot)
@@ -218,3 +221,27 @@ def _load_study() -> Any:
     from ..config import load_study
 
     return load_study(_CONFIGS / "study.yaml")
+
+
+def _terminal_scope_hints(context: Any) -> tuple[RuleScopeHint, ...]:
+    """Use explicit Harbor category/task-family metadata when the task provides it."""
+
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return ()
+    for key in ("category", "task_family", "task-family", "workflow"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            label = value.strip()[:48]
+            return (
+                RuleScopeHint(
+                    key=label,
+                    description=(
+                        f"{label.replace('_', ' ').replace('-', ' ').title()} "
+                        "terminal workflows."
+                    ),
+                    applicability="topical",
+                    recommended=True,
+                ),
+            )
+    return ()
