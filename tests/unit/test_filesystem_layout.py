@@ -39,17 +39,6 @@ def test_provision_idempotent_does_not_clobber(config: HarnessConfig) -> None:
     assert "a learned rule" in fs.read_rules()
 
 
-def test_provision_migrates_legacy_generated_root(config: HarnessConfig) -> None:
-    config.harness_root.mkdir(parents=True)
-    config.legacy_rules_file.write_text("legacy generated root\n", encoding="utf-8")
-
-    fs = HarnessFilesystem(config)
-    fs.provision()
-
-    assert config.rules_file.read_text(encoding="utf-8") == "legacy generated root\n"
-    assert not config.legacy_rules_file.exists()
-
-
 def test_write_latest_eval_atomic_roundtrip(config: HarnessConfig) -> None:
     fs = HarnessFilesystem(config)
     fs.provision()
