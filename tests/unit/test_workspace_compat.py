@@ -47,7 +47,7 @@ def test_representative_080_workspace_loads(tmp_path: Path) -> None:
                 "resolution": {
                     "acked_at": "2026-07-31T00:01:00+00:00",
                     "rule_id": "r-080",
-                    "note": "legacy acknowledgement",
+                    "note": "acknowledged without a recorded kind",
                 },
             }
         ),
@@ -94,7 +94,9 @@ def test_representative_080_workspace_loads(tmp_path: Path) -> None:
     assert rule.id == "r-080" and rule.status == "candidate"
     notice = Mailbox(config).read("n-080")
     assert notice is not None and notice.resolution is not None
-    assert notice.resolution.kind == "legacy"
+    # An absent or unrecognized kind reads as no_proposal — a real resolution,
+    # not a compat sentinel.
+    assert notice.resolution.kind == "no_proposal"
     assert EvalSet(config).cases()[0].id == "c-080"
     assert Journal(config).recent()[0]["session_id"] == "old-session"
     assert ScoreHistoryStore(config).values("old-session", "task_completion") == [0.2]
