@@ -5,22 +5,32 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
-from pandaprobe_harness import Harness, HarnessConfig
+from pandaprobe_harness import Harness, HarnessConfig, RuleScopeHint
 from pandaprobe_harness.repair.completion import (
     NormalizedRepairMessage,
     NormalizedToolCall,
     PandaProbeLiteLLMCompletion,
 )
 from pandaprobe_harness.repair.models import RepairUsage
+from pandaprobe_harness.repair.prompt import REPAIR_SYSTEM_PROMPT
+from pandaprobe_harness.workspace.mailbox import DiagnosticNotice
 from tests.fakes.fake_cli_client import FakeCliClient
 
 _REAL_REPAIR_COMPLETE = PandaProbeLiteLLMCompletion.complete
+
+
+def test_repair_prompt_allows_universal_bounded_scope_names() -> None:
+    assert "scope catalog is not fixed" in REPAIR_SYSTEM_PROMPT
+    assert "Custom names have no required category prefix" in REPAIR_SYSTEM_PROMPT
+    assert "`scoped` is the default" in REPAIR_SYSTEM_PROMPT
+    assert "never supply a path" in REPAIR_SYSTEM_PROMPT
 
 
 class TraceCaptureClient:
@@ -244,6 +254,14 @@ class ScriptedCompletion:
                 )
             )
         if len(self.calls) == 1:
+            candidate_args: dict[str, Any] = {
+                "rule": "Verify payment status before retrying.",
+                "rationale": "Avoid duplicate mutations.",
+            }
+            if self.mode == "candidate_appworld":
+                candidate_args["scope"] = "appworld"
+            if self.mode == "candidate_global":
+                candidate_args.update({"scope": "global", "applicability": "global"})
             return NormalizedRepairMessage(
                 tool_calls=(
                     NormalizedToolCall(
@@ -259,12 +277,7 @@ class ScriptedCompletion:
                     NormalizedToolCall(
                         "add",
                         "harness_rule_add",
-                        json.dumps(
-                            {
-                                "rule": "Verify payment status before retrying.",
-                                "rationale": "Avoid duplicate mutations.",
-                            }
-                        ),
+                        json.dumps(candidate_args),
                     ),
                 )
             )
@@ -368,7 +381,7 @@ async def test_candidate_repair_is_single_flight_and_cached(tmp_path: Path) -> N
         harness.settle("task"), harness.settle("task")
     )
     repeated = await harness.settle("task")
-    assert first.repair is not None and first.repair.status == "completed"
+    assert first.repair is not None and first.repair.status == "candidate_added"
     assert concurrent.repair == first.repair == repeated.repair
     assert len(completion.calls) == 2  # two model turns, one repair run
     assert len(harness.journal.recent(types=("repair_started",))) == 1
@@ -383,6 +396,147 @@ async def test_candidate_repair_is_single_flight_and_cached(tmp_path: Path) -> N
     assert assignment["task_descriptor"]["authToken"] == "[redacted]"
 
 
+async def test_precise_host_scope_overrides_generic_benchmark_scope(tmp_path: Path) -> None:
+    completion = ScriptedCompletion("candidate_appworld")
+    harness = Harness.create(
+        _config(tmp_path), cli=_failing_cli(), _repair_completion=completion
+    )
+    hint = RuleScopeHint(
+        key="spotify",
+        description="Spotify search, playlist, library, and playback workflows.",
+    )
+    harness.on_turn_end(
+        {
+            "session_id": "task",
+            "turn_index": 1,
+            "end_state": {"benchmark": "appworld", "task_id": "opaque-id"},
+            "rule_scope_hints": [hint.to_json()],
+        }
+    )
+
+    result = await harness.settle("task")
+
+    assert result.repair is not None and result.repair.status == "candidate_added"
+    assert result.repair.recommended_scope == "spotify"
+    assert result.repair.selected_scope == "spotify"
+    assert harness.rules.candidates()[0].scope == "spotify"
+    assignment = json.loads(
+        str(completion.calls[0]["messages"][1]["content"]).split("\n", 1)[1]
+    )
+    assert assignment["scope_hints"][0]["key"] == "spotify"
+    assert assignment["recommended_scope"] == "spotify"
+
+
+async def test_topical_and_cross_domain_repairs_choose_distinct_scopes(
+    tmp_path: Path,
+) -> None:
+    venmo = Harness.create(
+        _config(tmp_path / "venmo"),
+        cli=_failing_cli(),
+        _repair_completion=ScriptedCompletion(),
+    )
+    venmo_hint = RuleScopeHint(
+        key="venmo",
+        description="Venmo authentication, payment, reminder, and transaction workflows.",
+    )
+    venmo.on_turn_end(
+        {
+            "session_id": "task",
+            "turn_index": 1,
+            "end_state": {"benchmark": "appworld", "task_id": "opaque-id"},
+            "rule_scope_hints": [venmo_hint.to_json()],
+        }
+    )
+    venmo_result = await venmo.settle("task")
+    assert venmo_result.repair is not None
+    assert venmo_result.repair.selected_scope == "venmo"
+    assert venmo.config.rules_scope_file("venmo").is_file()
+
+    cross_domain = Harness.create(
+        _config(tmp_path / "global"),
+        cli=_failing_cli(),
+        _repair_completion=ScriptedCompletion("candidate_global"),
+    )
+    cross_domain.on_turn_end(
+        {
+            "session_id": "task",
+            "turn_index": 1,
+            "end_state": {"benchmark": "appworld", "task_id": "opaque-id"},
+            "rule_scope_hints": [venmo_hint.to_json()],
+        }
+    )
+    global_result = await cross_domain.settle("task")
+    assert global_result.repair is not None
+    assert global_result.repair.selected_scope == "global"
+    assert cross_domain.rules.candidates()[0].applicability == "global"
+
+
+async def test_related_notices_form_one_repair_episode(tmp_path: Path) -> None:
+    completion = ScriptedCompletion()
+    harness = Harness.create(
+        _config(tmp_path), cli=_failing_cli(), _repair_completion=completion
+    )
+    _turn(harness)
+    await harness.refresh("task")
+    first = harness.mailbox.pending()[0]
+    second = replace(
+        first,
+        id=DiagnosticNotice.new_id(),
+        summary="the outcome verifier observed the same failure",
+    )
+    harness.mailbox.post(second)
+
+    result = await harness.settle("task")
+
+    assert result.repair is not None and result.repair.status == "candidate_added"
+    assert set(result.repair.notice_ids) == {first.id, second.id}
+    assert len(result.repair.candidate_rule_ids) == 1
+    assert len(harness.rules.candidates()) == 1
+    assert harness.mailbox.pending() == []
+    assert len(harness.journal.recent(types=("repair_started",))) == 1
+
+
+async def test_distinct_failures_in_one_session_are_not_coalesced(tmp_path: Path) -> None:
+    completion = ScriptedCompletion("no_proposal")
+    harness = Harness.create(
+        _config(tmp_path), cli=FakeCliClient(), _repair_completion=completion
+    )
+    notices = (
+        DiagnosticNotice.from_json(
+            {
+                "id": "n-payment",
+                "created_at": "2026-08-06T00:00:00+00:00",
+                "session_id": "task",
+                "turn_index": 1,
+                "severity": "breach",
+                "signatures": ["breach:tool_correctness"],
+                "flagged_traces": ["trace-payment"],
+            }
+        ),
+        DiagnosticNotice.from_json(
+            {
+                "id": "n-auth",
+                "created_at": "2026-08-06T00:00:01+00:00",
+                "session_id": "task",
+                "turn_index": 1,
+                "severity": "breach",
+                "signatures": ["breach:argument_correctness"],
+                "flagged_traces": ["trace-auth"],
+            }
+        ),
+    )
+    for notice in notices:
+        harness.mailbox.post(notice)
+
+    first = await harness.settle("task")
+    second = await harness.settle("task")
+
+    assert first.repair is not None and second.repair is not None
+    assert first.repair.notice_ids != second.repair.notice_ids
+    assert len(completion.calls) == 2
+    assert harness.mailbox.pending() == []
+
+
 async def test_duplicate_and_no_proposal_need_no_new_rule(tmp_path: Path) -> None:
     duplicate = ScriptedCompletion("duplicate")
     duplicate_harness = Harness.create(
@@ -391,6 +545,7 @@ async def test_duplicate_and_no_proposal_need_no_new_rule(tmp_path: Path) -> Non
     existing = duplicate_harness.rules.add(
         "Verify payment status before retrying.", "existing guidance"
     )
+    duplicate_harness.rules.promote(existing.id, reason="fixture", validator="test")
     _turn(duplicate_harness)
     duplicate_result = await duplicate_harness.settle("task")
     assert duplicate_result.repair is not None
@@ -430,7 +585,7 @@ async def test_exception_and_malformed_response_leave_notice_recoverable(
         assert "do-not-log" not in journal_text
 
 
-async def test_timeout_does_not_fail_task_and_is_not_retried(tmp_path: Path) -> None:
+async def test_timeout_does_not_fail_task_and_remains_recoverable(tmp_path: Path) -> None:
     completion = ScriptedCompletion("block")
     harness = Harness.create(
         _config(tmp_path, repair_timeout_s=0.01),
@@ -442,8 +597,8 @@ async def test_timeout_does_not_fail_task_and_is_not_retried(tmp_path: Path) -> 
     repeated = await harness.settle("task")
     assert result.report is not None
     assert result.repair is not None and result.repair.status == "timed_out"
-    assert repeated.repair == result.repair
-    assert len(completion.calls) == 1
+    assert repeated.repair is not None and repeated.repair.status == "timed_out"
+    assert len(completion.calls) == 2
     assert len(harness.mailbox.pending()) == 1
 
 
