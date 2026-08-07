@@ -69,6 +69,15 @@ def _flatten(rec: dict[str, Any]) -> dict[str, Any]:
         flat[f"h_{key}"] = harness.get(key)
     flat["h_resolution_counts"] = json.dumps(harness.get("resolution_counts") or {})
     flat["h_rules_by_scope"] = json.dumps(harness.get("rules_by_scope") or {})
+    validation = harness.get("validation") or {}
+    for key in (
+        "rounds", "promoted", "retired", "replays",
+        "candidate_not_exercised", "env_wait_timeouts", "budget_exhausted_rounds",
+    ):
+        flat[f"h_validation_{key}"] = validation.get(key)
+    flat["h_validation_pending_reasons"] = json.dumps(
+        validation.get("pending_reasons") or {}
+    )
     # Flatten each resolved trace metric into its own column.
     for name, value in (harness.get("scores") or {}).items():
         flat[f"h_score_{name}"] = value
@@ -181,6 +190,17 @@ def _telemetry(df: pd.DataFrame) -> pd.DataFrame:
                 "notices_total": _safe_sum(group["h_notices"]),
                 "repair_episodes_total": _safe_sum(group["h_repair_episodes"]),
                 "breach_rate": _safe_mean(group["h_breached"]),
+                # Promotions and retirements are counted from validation verdicts,
+                # not inferred from status high-water marks: a status count cannot
+                # say whether validation ever reached a candidate.
+                "validation_rounds_max": _safe_max(group["h_validation_rounds"]),
+                "promotions_max": _safe_max(group["h_validation_promoted"]),
+                "retirements_max": _safe_max(group["h_validation_retired"]),
+                "replays_max": _safe_max(group["h_validation_replays"]),
+                "unexercised_replays_max": _safe_max(
+                    group["h_validation_candidate_not_exercised"]
+                ),
+                "env_wait_timeouts_max": _safe_max(group["h_validation_env_wait_timeouts"]),
             }
         )
     return pd.DataFrame(rows)
