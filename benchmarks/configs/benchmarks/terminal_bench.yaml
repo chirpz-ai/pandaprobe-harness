@@ -4,7 +4,6 @@
 # (environment.exec). See IMPLEMENTATION_NOTES.md for prerequisites (Docker + co-install).
 dataset: terminal-bench-sample@2.0
 max_turns: 100
-learning_fraction: 0.35
 domain_policy: >-
   The task agent is authorized to use the provided sandbox bash tool to inspect and
   modify only the Terminal-Bench task environment. Judge completion against the
