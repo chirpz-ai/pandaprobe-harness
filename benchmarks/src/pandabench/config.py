@@ -1,9 +1,11 @@
-"""Study configuration: arms, seeds, k, splits, thresholds, harness knobs.
+"""Study configuration: arms, seeds, k, datasets, thresholds, harness knobs.
 
 Loaded from ``configs/study.yaml``; nothing study-relevant is hardcoded. The
 same threshold is used for every arm/seed of a benchmark (set once by
-Checkpoint 1). Per-benchmark task universes/subset rules live in
+Checkpoint 1). Per-benchmark task universes live in
 ``configs/benchmarks/*.yaml`` and are merged in on load.
+
+A benchmark's dataset is run whole, so nothing here subdivides a task set.
 """
 
 from __future__ import annotations
@@ -42,9 +44,9 @@ class HarnessKnobs:
     # must exceed that or scores/notices never land.
     poll_interval_s: float = 5.0
     poll_max_attempts: int = 200
-    # Settle barrier: after the learning phase (and before archiving) wait for
-    # outstanding turn evals + candidate-rule validation to drain, so the eval
-    # phase snapshots a settled boundary ruleset. Bounded; breaks early.
+    # Settle barrier: once at the end of a run (before archiving) wait for
+    # outstanding turn evals + candidate-rule validation to drain, so a candidate
+    # that earned a verdict gets one. Bounded; breaks early.
     settle_timeout_s: float = 1080.0
     settle_poll_s: float = 10.0
     gate_window: int = 10
@@ -72,9 +74,7 @@ class BenchmarkConfig:
     name: str
     max_turns: int
     dataset: str  # e.g. appworld 'dev', tau2 'retail'
-    learning_fraction: float
-    learning_split: tuple[str, ...]  # explicit ids override the seeded partition
-    eval_split: tuple[str, ...]
+    pass_tolerance: int = 1
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -109,14 +109,12 @@ class StudyConfig:
 
 
 def _benchmark_from(name: str, raw: Mapping[str, Any]) -> BenchmarkConfig:
-    known = {"max_turns", "dataset", "learning_fraction", "learning_split", "eval_split"}
+    known = {"max_turns", "dataset", "pass_tolerance"}
     return BenchmarkConfig(
         name=name,
         max_turns=int(raw.get("max_turns", 30)),
         dataset=str(raw.get("dataset", "")),
-        learning_fraction=float(raw.get("learning_fraction", 0.35)),
-        learning_split=tuple(str(t) for t in raw.get("learning_split", []) or []),
-        eval_split=tuple(str(t) for t in raw.get("eval_split", []) or []),
+        pass_tolerance=int(raw.get("pass_tolerance", 1)),
         extra={k: v for k, v in raw.items() if k not in known},
     )
 
