@@ -40,7 +40,12 @@ effect on it. To move to a newer harness release, bump the pin in `pyproject.tom
 and run `uv lock && uv sync --all-extras --group dev`, then re-record affected
 runs — `manifest.json` stamps `pandaprobe_harness_version` per run.
 
-Harness learning uses package-owned managed repair. By default PandaBench reuses
+The `harness` arm is **live for the benchmark's whole dataset** — one continuous
+pass, no learning/eval split, no frozen ruleset. Task order is a pure function of
+`(dataset, seed)` and identical in both arms, and it is load-bearing: it decides
+what has been learned by the time task N runs.
+
+Harness runs use package-owned managed repair. By default PandaBench reuses
 the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
 which current OpenAI reasoning models require when using function tools through
 the PandaProbe-wrapped LiteLLM chat-completions API. Choose another current
@@ -59,16 +64,17 @@ metadata as context; they do not name the file.
 Validation promotes or retires candidates — repair cannot. `validation_round_budget_s`
 bounds replay work per round and the remaining candidates get the cheap forward-trial
 verdict, and `replay_env_wait_timeout_s` keeps time spent queueing for AppWorld's
-single world out of the replay execution budget. The learning boundary now waits for
-validation to settle (within `settle_timeout_s`) before freezing the ruleset, and
-logs a warning if it could not.
+single world out of the replay execution budget. Validation runs *during* the pass,
+so a rule can be promoted mid-run; a single settlement at the **end of the run**
+then waits (within `settle_timeout_s`) for outstanding evals and in-flight
+validation before the workspace is archived, and logs a warning if it could not.
 
 
 
 ## 2. Smoke test (pipeline check, no external harnesses)
 
 ```bash
-make smoke        # 2 tasks/phase x 1 trial x both arms, all benchmarks, dry-run (mock model)
+make smoke        # 2 tasks x 1 trial x both arms, all benchmarks, dry-run (mock model)
 make report       # regenerate results/summary/
 ```
 
@@ -87,24 +93,24 @@ Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
 | ---------- | ------------------------------------------------------------------------------------ | ------------------------------------------------- |
 | `ARM`      | `baseline` (no harness) or `harness`                                                 | `baseline`                                        |
 | `MODEL`    | a model key from the list above                                                      | `gemini-3.1-flash-lite`                           |
-| `SEED`     | shuffles task order; run several (1, 2, 3) as replicates for statistics              | `1`                                               |
+| `SEED`     | shuffles task order (same order in both arms); run several (1, 2, 3) as replicates   | `1`                                               |
 | `K`        | trials per task — `pass@1` = first trial passed, `pass^k` = all K passed             | `4`                                               |
 | `DATASET`  | override the configured task universe (for example, Terminal-Bench's 10-task sample) | benchmark config                                  |
-| `LIMIT`    | max **tasks per phase**; **omit to run the whole split**                             | unset (all)                                       |
+| `LIMIT`    | run only the **first N tasks** of the dataset; **omit to run all of it**              | unset (all)                                       |
 | `MAXTURNS` | per-task **agent-turn cap** (how long the agent works on one task)                   | `study.yaml` `max_turns` (100 for all benchmarks) |
 | `BACKEND`  | **Claude only**: `bedrock` or `anthropic`                                            | `bedrock`                                         |
 
 
 - Omitting `DATASET` selects that benchmark's single configured default from
 `configs/study.yaml`; it does **not** run every available dataset.
-- `LIMIT` **controls the number of tasks.** It is applied independently after the
-seeded learning/eval split: `LIMIT=5` with both phases runs up to 5 learning + 5 eval
-tasks (10 total), and `K=4` makes that up to 40 trials per arm. On the raw CLI, use
-the equivalent `--limit 5`.
+- `LIMIT` **controls the number of tasks.** It truncates the run to the first N
+tasks of the seeded order: `LIMIT=5` runs 5 tasks, and `K=4` makes that 20 trials
+per arm. On the raw CLI, use the equivalent `--limit 5`.
 - `LIMIT` **≠ task length.** To make each task run longer, raise `MAXTURNS`, e.g.
 `MAXTURNS=60`, or bump `max_turns` in `configs/study.yaml` for that benchmark.
 - For a paired A/B comparison, keep `MODEL`, `DATASET`, `SEED`, `K`, `LIMIT`, and
-`MAXTURNS` identical; change only `ARM`.
+`MAXTURNS` identical; change only `ARM`. Both arms then run the same tasks in the
+same order, which the paired statistics require.
 - **OpenAI / Gemini route automatically** by their `models.yaml` prefix
 (`openai/…` → OpenAI API via `OPENAI_API_KEY`; `vertex_ai/…` → Vertex). Claude
 defaults to Bedrock; use `BACKEND=anthropic` only when intentionally falling back
@@ -119,8 +125,8 @@ reject on-demand invocation; the profile IDs are the callable on-demand targets.
 - The third configured model is Claude **Haiku 4.5**, not 4.6; both its official
 Anthropic ID and the supplied Bedrock catalog ID identify it as 4.5.
 
-The examples below are paired medium-pilot runs: 5 learning + 5 evaluation tasks,
-once per arm.
+The examples below are paired medium-pilot runs: the first 5 tasks of the dataset,
+once per arm. Drop `LIMIT` to run the dataset whole, which is what a real study does.
 
 ### AppWorld
 
@@ -138,6 +144,11 @@ make appworld ARM=harness MODEL=gpt-5.6-terra DATASET=dev SEED=1 K=1 LIMIT=5
 | `dev`            | 57    | Configured default      |
 | `test_normal`    | 168   | Normal test split       |
 | `test_challenge` | 417   | Challenge test split    |
+
+The selected split is run **whole** — PandaBench never re-partitions one, so results
+for a split stay comparable to published AppWorld numbers for it. `dev` is the
+default; `test_normal` gives ~3× the tasks, hence more in-session learning runway and
+more statistical power, at ~3× the spend.
 
 
 
@@ -160,8 +171,8 @@ make terminal ARM=harness MODEL=gpt-5.6-terra DATASET=terminal-bench@2.0 SEED=1 
 
 
 Omitting `DATASET` uses the 10-task sample. Select `DATASET=terminal-bench@2.0` for
-the full benchmark. With the sample's 50/50 split, `LIMIT=5` runs all 5 learning and
-all 5 evaluation tasks.
+the full benchmark. `LIMIT=5` runs the first 5 of the sample's 10 tasks; drop it to
+run all 10.
 
 ### τ²-bench
 
@@ -207,12 +218,25 @@ make report
 Produces in `results/summary/`:
 
 - `all_records.csv` — every task-trial row, flattened.
-- `headline.csv` — benchmark × dataset × model × arm: `pass@1`, `pass^k`, mean cost,
-tokens.
+- `headline.csv` — benchmark × dataset × model × arm over the **whole run**, with three
+metrics side by side: strict `pass@1`/`pass^k` (the **benchmark's own** verdict, the
+only publishable one), `pass_at_1_relaxed`/`pass_hat_k_relaxed` and `mean_pass_ratio`
+(**ours**), the `pass_tolerance` each arm was scored at, plus mean cost and tokens.
 - `harness_telemetry.csv` — rules active/candidate/retired, notices, breach rate (arm B).
-- `report.md` — headline table + harness-vs-baseline paired delta (bootstrap CI + McNemar
-p) + cost/overhead + methodology notes.
-- `learning_curve.png` — arm-B pass rate across the learning phase.
+- `report.md` — headline table + harness-vs-baseline paired delta on **both** the strict
+and the relaxed metric (bootstrap CI + McNemar p) + cost/overhead + methodology notes.
+- `learning_curve.png` — arm-B cumulative pass rate across the run in task order. With
+the harness live throughout, this is a genuine in-session learning curve.
+
+Why a relaxed metric exists: in a measured 456-trial AppWorld run, 72% of trials failed
+by exactly one test, so the strict all-or-nothing verdict was floored and could not
+move. It applies to the **harness arm only** — the baseline is always scored by the
+benchmark's own criteria (tolerance 0). The `relaxed` paired row is therefore an
+intentionally asymmetric comparison (harness at tolerance N vs baseline at 0), which is
+the intended read: how the harness does under a given tolerance against an unrelaxed
+baseline. It is **not** comparable to published numbers, and the headline's
+`pass_tolerance` column names the definition each arm used. Benchmarks with no
+partial-credit signal (τ², Terminal-Bench) report it equal to the strict verdict.
 
 With no records yet it writes an empty summary — that's expected before any run.
 
@@ -220,7 +244,7 @@ With no records yet it writes an empty summary — that's expected before any ru
 
 `make calibrate BENCH=<name>` verifies that the PandaProbe metrics actually correlate
 with *this benchmark's* task failures before you trust the harness arm. It finds the
-**latest** `harness`**-arm run** for the benchmark, turns its **learning-phase** records
+**latest** `harness`**-arm run** for the benchmark, turns its records
 into labels (`failed = not passed`), and runs the `pandaprobe-harness-calibrate` CLI
 against that run's archived workspace, appending precision/recall/F1 to
 `IMPLEMENTATION_NOTES.md`.
@@ -232,7 +256,7 @@ make calibrate BENCH=appworld
 - **Prereqs:** a completed **real** `ARM=harness` run (with `PANDAPROBE_API_KEY`), so an
 archived workspace + platform scores exist. Dry-run and baseline-only runs produce
 nothing to calibrate.
-- **When:** right after the first harness learning run of a benchmark, and *before*
+- **When:** right after the first harness-arm run of a benchmark, and *before*
 launching the full study. If the metrics don't separate pass/fail (low F1), the harness
 arm would be inert — adjust the breach threshold in `study.yaml` (per the CLI's sweep)
 and re-run, or record the null result and stop. See `IMPLEMENTATION_NOTES.md`.
