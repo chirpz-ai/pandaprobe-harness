@@ -1,4 +1,9 @@
-% Figure 1: PandaProbe Harness architecture and managed-repair loop.
+% Figure 1: PandaProbe Harness architecture and repair loop.
+%
+% Stage layout is a crossing-free rectangular circuit: Detect (top-left) ->
+% Notice (top-right) -> Repair (bottom-right) -> Validate (bottom-left) ->
+% Detect. Store order under the stages is chosen so each stage's dotted write
+% arrow runs (near-)vertically instead of crossing a sibling's.
 
 \begin{tikzpicture}[
     font=\small,
@@ -15,38 +20,45 @@
 
 % --- Agent side (left) ---
 \node[agent] (agent) {\textbf{Developer task agent}\\[2pt]\footnotesize policy $\pi$\\[2pt]
-                      \footnotesize context $c(R,q)$};
+                      \footnotesize context $c_0$ (constant)};
 
-% --- Four stages of the loop (right), arranged in a cycle ---
+% --- Four stages of the loop (right), arranged as a cycle ---
 \node[stage, right=26mm of agent, yshift=15mm] (detect)  {\textbf{Detect}\\[1pt]\scriptsize $E$ scores\\[-1pt]\scriptsize session $s$};
-\node[stage, right=8mm of detect]              (notice)  {\textbf{Notice}\\[1pt]\scriptsize post to\\[-1pt]\scriptsize mailbox};
-\node[stage, below=14mm of notice]             (validate){\textbf{Validate}\\[1pt]\scriptsize gate rule\\[-1pt]\scriptsize (evidence)};
-\node[stage, below=14mm of detect]             (heal)    {\textbf{Managed repair}\\[1pt]\scriptsize package agent\\[-1pt]\scriptsize proposes rule};
+\node[stage, right=10mm of detect]             (notice)  {\textbf{Notice}\\[1pt]\scriptsize post to\\[-1pt]\scriptsize mailbox};
+\node[stage, below=15mm of notice]             (repair)  {\textbf{Repair}\\[1pt]\scriptsize package agent\\[-1pt]\scriptsize proposes rule};
+\node[stage, below=15mm of detect]             (validate){\textbf{Validate}\\[1pt]\scriptsize gate rule\\[-1pt]\scriptsize (evidence)};
 
-% cyclic arrows Detect -> Notice -> Heal -> Validate -> Detect
-\draw[->, thick] (detect) -- (notice);
-\draw[->, thick] (notice) -- (heal);
-\draw[->, thick] (heal) -- (validate);
+% Cyclic arrows: Detect -> Notice -> Repair -> Validate -> Detect.
+% A rectangular circuit, so no two stage arrows cross.
+\draw[->, thick] (detect)   -- (notice);
+\draw[->, thick] (notice)   -- (repair);
+\draw[->, thick] (repair)   -- (validate);
 \draw[->, thick] (validate) -- (detect);
 
 % --- Workspace substrate (bottom) ---
-\node[store, below=20mm of heal, xshift=-4mm] (mailbox) {mailbox};
-\node[store, right=5mm of mailbox]            (rules)   {rules store};
-\node[store, right=5mm of rules]              (evalset) {eval-set};
-\node[store, right=5mm of evalset]            (journal) {journal};
+% Ordered eval-set, rules store, mailbox, journal so that Validate (bottom-left)
+% and Repair (bottom-right) write straight down and Notice's arrow can pass
+% clear of the Repair node on the right.
+\node[store, below=22mm of validate, xshift=-4mm] (evalset) {eval-set};
+\node[store, right=5mm of evalset]                (rules)   {rules store};
+\node[store, right=5mm of rules]                  (mailbox) {mailbox};
+\node[store, right=5mm of mailbox]                (journal) {journal};
 \begin{scope}[on background layer]
-  \node[draw, dashed, rounded corners, fit=(mailbox)(journal),
+  \node[draw, dashed, rounded corners, fit=(evalset)(journal),
         inner sep=3mm, label={[font=\footnotesize\bfseries]below:Workspace (append-only, on disk)}] (ws) {};
 \end{scope}
 
-% --- Evidence gate state machine (candidate -> active -> retired) ---
-\node[store, right=16mm of validate, yshift=6mm]  (cand)  {candidate};
-\node[store, above=3mm of cand]                   (act)   {active};
-\node[store, below=3mm of cand]                   (ret)   {retired};
+% --- Evidence gate state machine (candidate -> active | retired) ---
+% Anchored between the two stage rows rather than beside one stage: only
+% Validate drives these transitions, so sitting flush against Repair would
+% wrongly suggest the repair agent can promote or retire.
+\node[store, right=18mm of notice, yshift=-15mm] (cand)  {candidate};
+\node[store, above=3mm of cand]                  (act)   {active};
+\node[store, below=3mm of cand]                  (ret)   {retired};
 \draw[->] (cand) -- node[lbl,right]{promote} (act);
 \draw[->] (cand) -- node[lbl,right]{retire}  (ret);
 \draw[->] (act.east) to[out=0,in=0] node[lbl,right]{regress} (ret.east);
-\node[lbl, above=1pt of act] {Evidence gate};
+\node[lbl, above=1pt of act] {Evidence gate\\\scriptsize(Validate only)};
 
 % --- Capability boundary (dashed vertical line between task and harness) ---
 \coordinate (btop) at ($(agent.north east)!0.5!(detect.north west) + (0,10mm)$);
@@ -54,12 +66,13 @@
 \draw[dashed, gray] (btop) -- (bbot)
       node[midway, sloped, above, font=\scriptsize\bfseries, gray] {capability boundary};
 
-% task agent receives only read-only guidance from the workspace
-\draw[->, dashed] (ws.west) to[out=180,in=270] node[lbl,below left]{bounded guidance\\+ read-only rules} (agent.south);
-% the loop's stages read/write the workspace (harness side only)
-\draw[->, dotted] (notice.south) to[out=270,in=90] (mailbox.north);
-\draw[->, dotted] (heal.south)   to[out=270,in=90] (rules.north);
-\draw[->, dotted] (validate.south) to[out=270,in=90] (evalset.north);
+% The task agent pulls rules from the workspace; nothing is pushed to it.
+\draw[->, dashed] (ws.west) to[out=180,in=270] node[lbl,below left]{pull: four\\read-only rule tools} (agent.south);
+
+% The loop's stages read/write the workspace (harness side only).
+\draw[->, dotted] (validate.south) -- (evalset.north);
+\draw[->, dotted] (repair.south) to[out=270,in=90] (rules.north);
+\draw[->, dotted] (notice.east) to[out=0,in=90] (mailbox.north);
 
 % Detect reads the agent's session (the only arrow crossing toward the harness)
 \draw[->] (agent.north) to[out=90,in=180] node[lbl,above]{task trace $s$} (detect.west);
