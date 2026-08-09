@@ -136,9 +136,11 @@ fraction of tasks solved on \emph{all} $k$ independent trials, exposes it. We pr
 that wraps an arbitrary developer-owned LLM agent loop and, with no human in the loop,
 (i) \emph{detects} quality degradations from PandaProbe's trace-level evaluation layer,
 (ii) posts structured diagnostic notices to an inspectable workspace, (iii) assigns each notice
-to a separate package-owned managed repair agent that authors corrective operating \emph{rules},
+to a separate package-owned repair agent that authors corrective operating \emph{rules},
 and (iv) admits each rule only after an empirical \emph{evidence gate}: replay of the captured failure or a forward
-trial over subsequent live sessions, with a regression guard for past wins. Detection is
+trial over subsequent live sessions, with a regression guard for past wins. Validated rules reach
+the task agent only by \emph{pull}: its prompt carries one constant capability sentence and four
+read-only tools, and no rule text is ever injected. Detection is
 deliberately structured, because a gate is only as good as the signal that invokes it. \Harness
 scores every \emph{trace} of a session with cheap always-on metrics and judges the
 \emph{trajectory} they trace out, so an unfinished task is not mistaken for a failing one; it
@@ -176,14 +178,14 @@ matched to it.
 runs four stages across episodes: \textbf{Detect}, \textbf{Notice}, \textbf{Heal}, and
 \textbf{Validate} (Figure~\ref{fig:overview}). PandaProbe scores completed sessions. Diagnostic
 notices are persisted in a filesystem workspace consumed by a package-owned repair agent; the
-developer's task agent never receives diagnostic or administrative capabilities. Managed repair
+developer's task agent never receives diagnostic or administrative capabilities. The repair agent
 authors a corrective rule, but that rule enters as a provisional candidate and becomes active only
-after replay or forward-trial evidence. Bounded active and provisional guidance is delivered
-read-only to later task turns, while a replayable eval-set protects previous wins against regression.
+after replay or forward-trial evidence. Later task turns may \emph{read} what was learned through
+four read-only tools, while a replayable eval-set protects previous wins against regression.
 
 PandaProbe Harness is a Python package developed and maintained by PandaProbe, a research lab at
 Chirpz AI building open infrastructure for reliable agent systems. Task evaluation reaches the
-PandaProbe platform through its public CLI; managed repair model calls use the PandaProbe SDK's
+PandaProbe platform through its public CLI; repair-agent model calls use the PandaProbe SDK's
 official LiteLLM wrapper and tracing integration. Project resources are available at:
 \begin{itemize}[leftmargin=*,itemsep=0pt,topsep=2pt]
 \item \textbf{GitHub repository:}\\[-1pt]
@@ -204,8 +206,12 @@ proportions, and a corpus-level regression guard (\S\ref{sec:validate}--\S\ref{s
 \item \textbf{A reliability-first evaluation protocol.} We compare baseline and Harness arms
 using $\passone$, $\passk$, metric--failure calibration, rule-promotion checkpoints, paired
 statistics, and explicit overhead accounting across three public benchmarks.
+\item \textbf{A capability boundary between doing and diagnosing.} Rule authoring is moved out of the
+task agent entirely: it keeps four read-only tools and a constant preamble, a package-owned repair
+agent holds the nine-operation diagnostic surface, and neither can promote or retire a rule. We
+report the measured attention and token costs that motivated the split (\S\ref{sec:retrieval}).
 \item \textbf{An open implementation surface.} The released package provides a small facade,
-six framework adapters, four read-only task tools, a restricted managed-repair tool surface,
+six framework adapters, four read-only task tools, a restricted repair-agent tool surface,
 offline examples, operator CLIs, and a reproducible benchmark project for community extension.
 \end{enumerate}
 
@@ -268,8 +274,8 @@ $\ggain,\gdrop$ & gain / drop margins ($0.02$, $0.15$) \\
 $\tau_j$ & absolute threshold, tiers $0,2$ (default $0.5$) \\
 $\outcome$ & optional outcome-verifier score (tier $0$) \\
 $\Rset$ & active $\cup$ candidate rule set, by scope \\
-$c(\Rset)$ & bounded active/candidate guidance for the task agent \\
-$\idx$ & read-only rule-reference index \\
+$c_0$ & constant capability preamble (no rule text) \\
+$\idx$ & generated rule-reference index (read on demand) \\
 $\Heal$ & self-heal operator \\
 $\Breach_t$ & conditions observed at turn $t$ \\
 $\dpromote,\dregress$ & margins (default $0.05$) \\
@@ -289,8 +295,8 @@ separate package-owned repair agent claims it, inspects only assigned evidence, 
 rules, and may write a candidate (\textbf{Heal}). The candidate is promoted only after replay or a
 forward trial and is retired if it regresses (\textbf{Validate}). A per-turn barrier waits for
 evaluation and bounded repair before the next task turn. The capability boundary leaves the task
-agent with bounded guidance and four optional read-only rule tools, never mailbox or rule-write
-access.}
+agent with a constant capability sentence and four read-only rule tools it may pull from --- never
+mailbox, rule-write, or lifecycle access.}
 \label{fig:overview}
 \end{figure}
 
@@ -402,7 +408,7 @@ with metrics actually run, which is what makes always-on trajectory monitoring a
 Detection is worthless if the correction arrives after the task is over. \Harness therefore exposes
 a per-turn \emph{barrier}: \texttt{settle(session\_id)}, also reachable as a \texttt{settle=True}
 flag on the turn scope, which waits until the turn's evaluation has resolved, its
-report has been handled, any case captured, any notice posted, and one bounded managed-repair
+report has been handled, any case captured, any notice posted, and one bounded repair
 attempt has completed or timed out. The \emph{next} turn therefore observes any candidate this
 turn produced. It runs on its own budget
 (\texttt{barrier\_timeout\_s}, default 180\,s), separate from the best-effort drain joins used
@@ -444,49 +450,72 @@ $97.5\%$ of sessions where the continuous score separates near-misses from genui
 therefore wire the pass fraction, not the flag.
 % source: benchmarks/src/pandabench/runners/appworld.py outcome_for
 
-\subsection{Read-only guidance from a managed workspace}
+\subsection{Read-only rules from the harness workspace}
 \label{sec:retrieval}
 
 Learned rules must reach the agent somehow, and inlining them into the system prompt does not
 survive a growing corpus. Two costs grow with the rule set: tokens, and \emph{attention}. In a
 measured run of a build that inlined the whole corpus alongside a large self-diagnostic tool
 surface, the agent reoriented toward operating the Harness rather than doing the task, and most of
-the rules it authored concerned its own diagnostic protocol rather than the work. Growth in what the
-agent has learned should not become growth in what it must read every turn.
+the rules it authored concerned its own diagnostic protocol rather than the work. The token cost is
+equally concrete. Comparing that build against the current one on the same AppWorld task set and
+model (228 task-trials each), we group trials by how many rules were active when they ran: with at
+most two active rules the inlining build read $11.6$k input tokens per turn, and with more than two it
+read $46.5$k, a $4.0\times$ inflation driven purely by rules the agent had not asked for and whose
+peak trial reached $148$k. Under the pull model the same contrast is $5.4$k versus $5.3$k --- flat,
+because what the prompt carries no longer depends on what the corpus holds. Growth in what the agent
+has learned must not become growth in what it must read every turn.
 
-\Harness therefore selects bounded live guidance directly for each task session:
+\Harness therefore \emph{pushes nothing}. The task preamble is a constant,
 \begin{equation}
-  c(\Rset,s,q)=c_0\oplus\operatorname{topk}(\Rset,s,q),
+  c(\Rset,s,q)=c_0,
   \label{eq:context}
-  % source: hook/context.py compose_system_preamble
+  % source: hook/context.py compose_system_preamble (task_hint deleted, *_args discarded)
 \end{equation}
-where $c_0$ explains only active/candidate lifecycle labels and read-only inspection, $s$ is task
-session identity, and $q$ is an optional task hint. Current-session candidates are prioritized so a
-a rule written after turn $t$ is discoverable on turn $t{+}1$; retired rules are excluded,
-duplicates are removed, and list/search results remain bounded. The generated References index and
-four read-only tools preserve strictly on-demand access without injecting rule bodies. No mailbox
-banner or repair instruction enters task context.
+one sentence stating that learned rules exist and naming the four read-only tools that reach them.
+It is independent of $\Rset$, of the session $s$, and of any task hint $q$: constructing it performs
+no read, search, or ranking, so no eval-derived text can enter a task prompt automatically.
+Retired rules are never readable; a candidate written after turn $t$ is discoverable on turn $t{+}1$
+because the barrier (\S\ref{sec:barrier}) lands it before the turn begins, not because anything
+inserts it. No mailbox banner, notice count, scope index, or repair instruction enters task context.
+
+The agent \emph{pulls} when it judges prior rules relevant, through exactly four operations: list
+(the generated guide $\idx$ plus a live scope index with counts), read (one scope file), search, and
+status (one rule's lifecycle state). Nothing else is exposed, and a hallucinated administrative call
+is rejected at dispatch rather than reaching the developer's executor (\S\ref{sec:actionspace}).
 
 \paragraph{Scopes.}
-The rule set is partitioned by a free-form \emph{scope} that is also the file a rule lives in:
-\texttt{scoped} is the default for granular guidance, \texttt{global} is an explicit choice for
-genuinely universal guidance, and managed repair may select any safe task-relevant name. Notices
-default to \texttt{scoped}; a precise host hint may refine that name, while evaluation tier alone
-never implies global applicability. Scope is explicit rather than inferred, which corrects an
-earlier design that derived it from whether a rule happened to carry retrieval tags and so silently
-made any rule authored outside a notice a permanent global.
+The rule set is partitioned by an open-catalog \emph{scope} that is also the file a rule lives in.
+\texttt{global} is the \emph{default}: broadly reusable guidance not tied to one task, workflow,
+application, or domain. The repair agent may instead name any safe topic --- an application, workflow,
+or domain it can justify from the evidence --- and falls back to \texttt{scoped} only when a rule is
+specific but no meaningful stable name can be determined. A task-facing read with no scope argument
+likewise defaults to \texttt{global}.
+
+Two properties of that choice matter. First, it is a \emph{model} decision: the scope field is
+described in the \texttt{harness\_rule\_add} schema and the repair prompt, and the harness guarantees
+only filename safety (a path-shaped or unsafe name is rejected outright so the model retries, rather
+than being silently slugified into a plausible-looking file) and rejection of generic host labels
+such as a benchmark's own name. Naming taste is the model's. Second, silence means
+\emph{broadly applicable}, not \emph{unclassifiable}: an earlier revision defaulted to
+\texttt{scoped}, and because a model that omits an undescribed field lands on the default, a measured
+run filed all ten candidates of the run into a single \texttt{scoped.md} --- the corpus lost its
+partition entirely. Host metadata may \emph{inform} the choice through two optional turn-payload
+fields, a one-line \texttt{task\_summary} and a list of scope hints; neither dictates the outcome,
+and both are treated as untrusted data by the repair prompt. The summary matters most: told only an
+opaque task identifier, a model has nothing to name a scope after.
 
 \paragraph{Relevance ranking.}
-Ranking supports both bounded context selection and on-demand read-only search. With $Q$ the case-folded query token set, $T_r$ the
+Ranking serves on-demand read-only search and, when a scope file is read with a query, narrows the
+\emph{active} rules it renders. With $Q$ the case-folded query token set, $T_r$ the
 rule-tag tokens and $X_r$ the tokens of rule text, rationale, and metric,
 \begin{equation}
  \mathrm{score}(r,Q)=\frac{2|Q\cap T_r|+|Q\cap(X_r\setminus T_r)|}{\max(1,|Q|)},
  \label{eq:score}
  % source: workspace/rules.py::_relevance
 \end{equation}
-orders search results and narrows the \emph{active} rules rendered inside one scope file when a
-query is supplied ($k{=}8$, ties by score then recency then identifier). Current-session candidates
-are considered before this ranking and the final context remains bounded.
+orders results ($k{=}8$, ties by score then recency then identifier). This is invoked by the agent's
+own tool call, never on its behalf before a turn.
 
 \subsection{The self-heal operator}
 \label{sec:healop}
@@ -497,21 +526,30 @@ The loop maps the rule set to its next state:
  =\mathrm{gate}\bigl(\Rset_t,\mathrm{propose}(\Rset_t,\Breach_t)\bigr).
  \label{eq:heal}
 \end{equation}
-The package-owned repair agent executes \emph{propose}: it atomically claims one notice, reads only
-its assigned notice and trace evidence, searches existing rules, and either writes a candidate with
-rationale, target metric, tags, and scope or records a duplicate/no-proposal resolution.
+The package-owned repair agent executes \emph{propose}. Its unit of work is an \emph{episode}, not a
+notice: related notices from the same session and turn --- those whose trace or signature evidence
+overlaps --- are coalesced, so one underlying failure receives one diagnosis rather than three
+competing ones. Within an episode the agent reads only its assigned notice and the traces that
+notice names, searches existing rules for prior coverage, and then either writes \emph{at most one}
+candidate (with rationale, target metric, tags, and scope) or records a duplicate,
+already-covered, or no-proposal resolution. Exactly one acknowledgement closes the episode
+atomically; a timeout or failure acknowledges nothing and leaves the notice recoverable.
+
 Deterministic Harness code executes \emph{gate}. Live rules (active plus candidate) are deduplicated
-by normalized text and capped at 50, at which point an addition fails rather than silently evicting
-guidance. Candidates are immediately readable but explicitly provisional; only the validation
-engine can promote or retire them on evidence. The repair agent never receives domain tools or a
-promotion capability.
+by normalized text; a live-rule cap is available (\texttt{max\_active\_rules}, at which point an
+addition fails rather than silently evicting guidance) but is uncapped by default, since eviction of
+validated guidance is a worse failure than growth the pull model already keeps out of the prompt.
+Candidates are immediately readable but explicitly provisional. Only the validation engine may
+promote or retire; the repair agent has no domain tools, no promotion capability, and --- since
+v0.9 --- no retirement capability either, so no agent can approve or revoke its own work. Repair
+runs on its own model, session, and trace, so its activity is never scored as task activity.
 
 \begin{algorithm}[t]
 \caption{PandaProbe Harness self-heal loop}
 \label{alg:heal}
 \begin{algorithmic}[1]
-\STATE compose bounded read-only $c(\Rset,s,q)$ for the task agent
-\STATE run one agent turn; new traces $X$
+\STATE prepend the constant preamble $c_0$; attach four read-only tools
+\STATE run one agent turn; new traces $X$ \hfill{\footnotesize\itshape agent may pull rules}
 \STATE $\Breach\gets\varnothing$
 \FORALL{$x\in X$ chronologically, $j\in\Mset_1$}
   \STATE fold $m_j(x)$ into $\Gate$; add stall/regr verdicts to $\Breach$
@@ -525,11 +563,12 @@ promotion capability.
   \STATE post notice at severity Eq.~\eqref{eq:sev}
   \STATE capture replay case iff severity is \texttt{breach}
 \ENDIF
-\STATE \textbf{barrier}: wait for evaluation and bounded managed repair
-\IF{managed repair claims the notice}
+\STATE \textbf{barrier}: wait for evaluation and bounded repair
+\IF{the repair agent claims an episode}
+  \STATE coalesce related same-turn notices into one episode
   \STATE inspect assigned evidence; search existing rules
-  \STATE add candidate $r$, or resolve duplicate/no-proposal
-  \STATE acknowledge only after successful resolution
+  \STATE add $\le1$ candidate $r$, or resolve duplicate/covered/no-proposal
+  \STATE acknowledge exactly once, only on successful resolution
 \ENDIF
 \STATE schedule \textsc{ValidateCandidates}($\Rset$) without holding the task environment
 \STATE \textbf{return} $\Rset$
@@ -590,28 +629,89 @@ For target metric $\hat\jmath$, improvement requires
  \exists i:\Delta_{\hat\jmath}(s_i)\ge\dpromote,
  \label{eq:improve}
 \end{equation}
-and non-regression over every comparable metric and replayed failure or win requires
+and non-regression requires, over every replayed case $i$ and every metric $j$ that case may hold
+the candidate answerable for,
 \begin{equation}
- \forall i,j:\Delta_j(s_i)>-\dregress,
+ \forall i,\ \forall j\in\Mset^{\mathrm{ret}}_i:\ \Delta_j(s_i)>-\dregress,
  \label{eq:noregress}
 \end{equation}
 where $\dregress{=}0.05$. Regression dominates: a violation retires the rule even if another case
 improves. No comparable failure score remains pending; a conclusive failure with no improvement
 retires. After three inconclusive replay rounds, forward evidence is used.
 
+\paragraph{What a candidate is answerable for.}
+The set $\Mset^{\mathrm{ret}}_i$ in Eq.~\eqref{eq:noregress} is deliberately \emph{not} every metric
+the replay scored. On a \emph{win} case it is: a win exists precisely as the collateral-damage guard,
+so any metric declining there is the signal it was captured to catch. On a \emph{failure} case it is
+narrowed to $\{\outcome\}\cup\mathrm{met}(r)\cup\mathrm{met}(\mathrm{sig}(r))\cup\mathrm{met}(\mathrm{tags}(r))$:
+the authoritative outcome, the rule's declared target, and the metrics its triggering signatures and
+tags name. Judged metrics scored alongside move on their own between runs, so treating any decline as
+causation retires rules for reasons unrelated to what they say. This is not a hypothetical: in one
+measured run \emph{all four} retirements fired this way --- three on \texttt{argument\_correctness}
+for candidates targeting completion or tool use, and one on a \texttt{coherence} decline of $0.09$
+against a natural session spread of $\approx0.15$. The defect was the breadth of the check, not the
+margin, so the margins are unchanged.
+% source: validation/validator.py _retirement_metrics
+
+\paragraph{Attribution.}
+A delta is only evidence about a candidate if the candidate was the thing that changed and the
+replayed agent could actually see it. Two constraints enforce that. The replay's task toolset renders
+only the candidate under evaluation --- actives stay visible, but sibling candidates are hidden ---
+so a concurrently provisional rule cannot decide another's verdict. And because rules are pulled
+rather than injected (\S\ref{sec:retrieval}), a replay in which the agent never read the candidate
+carries no information about it: the toolset records which rule identifiers it surfaced, and a case
+where the candidate never appeared is scored \emph{inconclusive} rather than counted as evidence of
+no gain. Such a case increments the attempt counter, so the candidate falls through to forward trial
+instead of being retired on a replay that never exercised it.
+
+We state the limit plainly: this \emph{narrows} attribution, it does not achieve isolation. The
+baseline remains the original case's recorded scores, so a delta is still confounded by actives added
+since capture, by LLM nondeterminism, and by environment variance. A true counterfactual needs a
+paired control replay --- double the cost, and out of scope here.
+
+\paragraph{Every candidate gets a verdict.}
+Replays are sequential within a round, deliberately: concurrent replays multiply model cost and can
+violate framework thread-safety. That makes throughput the binding constraint, and it is easy to get
+wrong. In one measured run candidates accrued faster than replays decided them ($\approx4.5$ minutes
+per candidate), and the round always restarted at the oldest candidate, so ten candidates yielded
+zero promotions --- including two that had already earned promotion arithmetically on forward
+evidence they were never asked for. Three mechanisms close that gap. A round-robin cursor advances
+past each round's head, so replay attention rotates rather than re-spending the budget on the same
+candidate. An optional round budget (\texttt{validation\_round\_budget\_s}; unbounded by default)
+bounds a round, and past it the remaining candidates receive the \emph{cheap} forward-trial verdict
+rather than no verdict at all. And queueing for a contended replay environment is charged to a
+separate wait budget (\texttt{replay\_env\_wait\_timeout\_s}, re-armed by an optional host signal when
+execution actually begins), so a replay that spent its whole allowance waiting in line is not
+recorded as inconclusive evidence about the rule.
+
+Every terminal and pending state is journaled with a reason drawn from a closed enumeration,
+alongside the per-case deltas that produced it:
+\begin{center}\footnotesize\ttfamily
+trial\_in\_progress \textperiodcentered\ no\_matching\_replayable\_case
+\textperiodcentered\ replay\_inconclusive\\
+candidate\_not\_exercised \textperiodcentered\ env\_wait\_timeout
+\textperiodcentered\ round\_budget\_exhausted
+\end{center}
+This is a
+reporting requirement, not a nicety: without it a provisional rule is indistinguishable from a rule
+that was never examined, which is exactly the ambiguity that concealed the starvation above.
+
 \begin{algorithm}[t]
 \caption{\textsc{ValidateCandidates}: evidence gate}
 \label{alg:validate}
 \begin{algorithmic}[1]
-\FORALL{candidate $r\in\Rset$}
- \IF{replay available and attempts $<3$}
-  \STATE replay failures/wins; compute $\Delta$
-  \IF{$\exists i,j:\Delta_j(s_i)\le-\dregress$}
+\STATE $\mathrm{ord}\gets$ candidates, rotated past last round's head
+\FORALL{candidate $r\in\mathrm{ord}$}
+ \STATE $\textit{replay\_ok}\gets$ replay wired $\wedge$ attempts $<3$ $\wedge$ budget left
+ \IF{\textit{replay\_ok}}
+  \STATE replay $\le3$ failures / $\le2$ wins, candidate-only visibility
+  \STATE compute $\Delta$; drop cases where $r$ was never surfaced
+  \IF{$\exists i,\ j\in\Mset^{\mathrm{ret}}_i:\Delta_j(s_i)\le-\dregress$}
    \STATE retire $r$
   \ELSIF{$\exists i:\Delta_{\hat\jmath}(s_i)\ge\dpromote$}
    \STATE promote $r$
   \ELSIF{no conclusive failure}
-   \STATE pending; increment attempts
+   \STATE pending; increment attempts \hfill{\footnotesize\itshape journal reason}
   \ELSE
    \STATE retire $r$ \hfill{\footnotesize\itshape no gain}
   \ENDIF
@@ -661,24 +761,35 @@ omitted schemas. The task dispatcher exposes exactly rule read, search, list, an
 hallucinated administrative call is rejected. It has no mailbox, diagnostic, write, retirement,
 validation, or regression capability.
 
-The package-owned repair dispatcher is scoped to one notice. It can read that notice, inspect only
-the notice's flagged traces, read/search/list rules and status, add a candidate, retire an active
-rule where allowed, and acknowledge or explicitly resolve the notice. It has no developer domain
-tools, shell or filesystem write access, replay controls, or direct promotion. Every operation
-writes through the atomic mailbox and rule-store APIs.
+The package-owned repair dispatcher is scoped to one episode. It can read the assigned notice,
+inspect only the traces that notice names, read/search/list rules and status, add at most one
+candidate, and acknowledge or explicitly resolve the episode --- nine operations in total. It has no
+developer domain tools, shell or filesystem write access, replay controls, promotion, \emph{or
+retirement}: rule revocation was withdrawn from the model surface in v0.9 so that lifecycle
+transitions belong exclusively to validation. Every operation writes through the atomic mailbox and
+rule-store APIs.
 
-The workspace is intentionally ordinary and inspectable. Note that
-\texttt{harness\_rules.md} is a \emph{skill root}, holding the protocol and the generated References
-index but no rule text; rule bodies live in the package-managed \texttt{rules/} tree:
+The workspace is intentionally ordinary and inspectable. \texttt{rules.jsonl} is the sole source of
+truth (latest record per identifier wins). Everything human-readable is a \emph{derived view} with no
+authority: \texttt{rules.md} carries the task-facing guide and a generated References index of live
+scopes with counts but \emph{no rule text}, and rule bodies live in the package-owned
+\texttt{rules/} tree. Both are regenerated from \texttt{rules.jsonl} on every rule mutation and at
+startup, so deleting \texttt{rules.md} restores it and hand-editing it is overwritten by the next
+write. The guide's instructional head is packaged with the release and versioned with it, which is
+what lets the task-facing contract change without a workspace migration:
 \begin{lstlisting}[language={}]
 HARNESS_ROOT/
-  rules.md           <- SKILL-style task guide + scope index (no rule text)
-  rules/             <- global.md, scoped.md, <topic>.md
+  rules.jsonl        <- SOURCE OF TRUTH
+  rules.md           <- generated task guide + scope index (no rule text)
+  rules/             <- generated: global.md, <topic>.md, scoped.md
+  scope_metadata.json
   mailbox/{pending,processed}/
   traces/       evalset/
-  rules.jsonl   journal.jsonl
+  journal.jsonl
   state/score_history.json
 \end{lstlisting}
+All writes are atomic (unique temporary file plus rename) and the stores are lock-guarded, so one
+workspace safely serves many concurrent sessions.
 
 \subsection{Hyperparameters and open-source integration}
 \label{sec:hyper}
@@ -701,8 +812,13 @@ $\tau_{\mathrm{out}}$ & outcome-verifier threshold & $0.9$ \\
 $k$ & \topk\ actives per queried scope & $8$ \\
 $n$ & forward window & $5$ \\
 $\dpromote,\dregress$ & validation margins & $0.05$ \\
--- & live rule cap & $50$ \\
+-- & live rule cap & off ($0$) \\
 -- & replay failures/wins & $3/2$ \\
+-- & max replay attempts per candidate & $3$ \\
+-- & replay execution budget (s) & $300$ \\
+-- & replay env-wait budget (s) & off ($0$) \\
+-- & validation round budget (s) & off ($0$) \\
+-- & default rule scope & \texttt{global} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -716,10 +832,10 @@ harness = Harness.create(
     replay=my_replay,      # counterfactual validation
     verifier=my_grader,    # ground-truth outcome (optional)
 )
-# bounded guidance; session identity prioritizes fresh candidates
-prompt = harness.system_context(session_id, task_hint=user_input) + prompt
+# one constant capability sentence; reads nothing from the workspace
+prompt = harness.system_context(session_id) + prompt
 
-# only optional read-only rule tools go to the task agent
+# only the four read-only rule tools go to the task agent
 tools = my_domain_tools + list(harness.task_tools.specs())
 async with harness.turn(session_id, settle=True):
     result = await agent_step(prompt, tools)
@@ -754,15 +870,49 @@ and LLM user simulator in the retail domain; native $\passk$.
 \begin{itemize}[leftmargin=*,itemsep=2pt]
 \item \textbf{A, baseline}: plain agent loop, no Harness preamble or toolset.
 \item \textbf{B, PandaProbe Harness}: the tiered trace trigger, trajectory gate, per-turn barrier,
-four read-only task tools, package-owned managed repair, capture, replay, and candidate validation.
+four read-only task tools, the package-owned repair agent, capture, replay, and candidate validation
+--- all live for the whole run (\S\ref{sec:continuous}).
 \end{itemize}
 
-\subsection{Learning and frozen evaluation}
-For each benchmark--model cell, a seeded 35\% learning split lets arm B accumulate and validate
-rules; baseline runs the same split for symmetry. Both arms then run held-out frozen evaluation,
-with arm B carrying learned rules and capture off. The runner settles \emph{every turn}
-(\S\ref{sec:barrier}) and drains validation at the phase boundary, so promotion decisions are made
-during learning rather than arriving after frozen evaluation begins.
+\subsection{Continuous operation, and why we abandoned frozen evaluation}
+\label{sec:continuous}
+
+An earlier protocol split each benchmark into a seeded 35\% learning portion and a held-out
+evaluation portion, froze the ruleset at the boundary, and measured arm B on the held-out portion
+with healing disabled. We report its abandonment as a finding, because the reasoning generalizes to
+anyone evaluating a cross-episode self-improvement mechanism.
+
+The split imports an assumption from supervised learning that does not hold here. Freezing is the
+right control when the artifact under test is a \emph{model} that could otherwise memorize the test
+set. But the artifact here is a \emph{runtime envelope}, and its central claim --- that a lesson from
+turn $t$ is available at turn $t{+}1$ (\S\ref{sec:barrier}) --- is precisely the thing a frozen
+evaluation switches off. Frozen evaluation therefore measures a rule \emph{corpus}, transplanted onto
+tasks it was not derived from, while the deployed configuration it stands in for is one where the
+envelope is live continuously. It answers a question we are not asking.
+
+Two measurements settled it. First, the boundary is not clean in the direction that matters: because
+transfer requires the evaluation tasks to resemble the learning tasks, a split that is properly
+held-out is a split across which the corpus has the least to say --- and AppWorld's own scenario
+structure means most rules earned on one scenario have no counterpart on another. Second, the frozen
+arm was contaminated in the other direction anyway: in a measured run the active rule count grew from
+8 to 35 \emph{during} evaluation, because validation of candidates outstanding at the boundary
+continued past it, so 28 rules were promoted mid-measurement and the resulting pass ratio measures no
+single ruleset at all.
+
+The protocol is therefore: \textbf{the harness is live for the entire run in arm B}, on every task,
+with capture, repair, and validation enabled throughout. Rules accumulate across the run as they
+would in deployment. AppWorld's native splits are respected as \emph{task sets} --- we report per
+split --- but each is run with the envelope live rather than one being designated a training portion.
+Arm A runs the identical task sequence with no Harness wiring, so the comparison remains paired on
+task and seed.
+
+This costs us a guarantee and we state it rather than hide it: with rules accumulating during
+measurement, a task late in the sequence is attempted under a larger corpus than an early one, so
+task order is confounded with corpus size. We control it two ways --- multiple task-order seeds, and
+reporting the within-run trend explicitly (\S\ref{sec:main}), since a mechanism that works should
+show a rising trajectory rather than a level shift. The barrier runs every turn and validation is run
+to a standstill before any snapshot or report, so a candidate that earned a verdict receives one
+inside the run that produced it.
 
 \subsection{Models, trials, and estimators}
 The matrix spans frontier and smaller models from Google Gemini, OpenAI GPT, and Anthropic Claude.
@@ -795,25 +945,30 @@ recall, F1, and a sweep over $\gtarget$ and the tier-2 thresholds. If no setting
 signal, arm B is inert and the null mechanism is reported rather than tuned away. Checkpoint 2 is
 \emph{trajectory liveness}: each session's score history must hold more than one sample per metric,
 which confirms the barrier is working and the stall window is reachable at all; a length-one series
-means the trigger could never have fired. Checkpoint 3 verifies rules were promoted before
-evaluation; the study uses $n{=}3$ so the short learning phase can resolve candidates. The Harness
-bounded guidance and four optional read-only tool schemas consume tokens, while managed repair and
-the barrier add conditional cost and latency; all are reported alongside success.
+means the trigger could never have fired. Checkpoint 3 is \emph{lifecycle resolution}: every
+candidate must reach a terminal verdict or carry an explicit pending reason
+(\S\ref{sec:validate}), and we report promotions, retirements, and pending counts separately. A run
+whose candidates were never decided is not a run in which the mechanism was tested, and the earlier
+protocol's habit of reporting that state identically to ``no rules were learned'' is what let a
+starved validation queue pass unnoticed. The study uses $n{=}3$ so candidates resolve within a run.
+The four read-only tool schemas consume tokens, while the repair agent and the barrier add conditional
+cost and latency; all are reported alongside success.
 
 \begin{table}[t]
 \centering\small
-\caption{Study configuration; task counts are finalized by seed.}
+\caption{Study configuration. The harness is live across every task in arm B; task counts are
+finalized by seed.}
 \label{tab:config}
 {%
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
-Benchmark & Split & \#learn & \#eval & $k$ & turns \\
+Benchmark & Task set & \#tasks & $k$ & turns \\
 \midrule
-AppWorld & dev & \TBD & \TBD & 4 & 100 \\
-Terminal-Bench & subset & \TBD & \TBD & 4 & 100 \\
-$\tau^2$-bench & retail & \TBD & \TBD & 4 & 100 \\
+AppWorld & dev & \TBD & 4 & 100 \\
+Terminal-Bench & subset & \TBD & 4 & 100 \\
+$\tau^2$-bench & retail & \TBD & 4 & 100 \\
 \midrule
-\multicolumn{6}{l}{Seeds $\{1,2,3\}$; arms A/B/B$'$; study forward window $n{=}3$.}\\
+\multicolumn{5}{l}{Seeds $\{1,2,3\}$; arms A/B; study forward window $n{=}3$.}\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -867,16 +1022,25 @@ $\tau^2$-bench&small&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD&\TBD\\
 \end{tabular}
 \end{table}
 
-\subsection{Learning dynamics}
-Figure~\ref{fig:results} pairs learning-phase pass rate with cumulative promoted rules. An upward
-trend tracking promotion supports the proposed mechanism; a flat line despite promotions suggests
-rules do not generalize. A zero promotion curve identifies baseline-plus-overhead runs.
+\subsection{Within-run learning dynamics}
+\label{sec:dynamics}
+Because the envelope is live throughout (\S\ref{sec:continuous}), the within-run trend is not a
+secondary diagnostic but the primary evidence for the mechanism. Figure~\ref{fig:results} pairs pass
+rate against task-trial index with the cumulative count of promoted rules. The prediction is
+specific: a \emph{rising} pass rate whose inflections track promotions. Three alternatives are
+distinguishable and each falsifies a different claim. A flat pass rate despite accumulating
+promotions says rules pass the gate but do not transfer --- the gate is not wrong, the rules are
+inert. A rising pass rate with a flat promotion curve is task-order luck, not healing. A zero
+promotion curve identifies a run that was baseline-plus-overhead regardless of what the headline
+delta shows. Because task order is confounded with corpus size by construction, we read this trend
+across seeds rather than from any single ordering.
 
 \begin{figure}[t]
 \centering
 \resizebox{0.72\textwidth}{!}{\input{figures/results}}
-\caption{\textbf{Learning dynamics (placeholder).} Harness pass rate (solid) and cumulative
-promoted rules (dashed). Curves are schematic, not measured.}
+\caption{\textbf{Within-run learning dynamics (placeholder).} Harness pass rate (solid) against
+task-trial index and cumulative promoted rules (dashed), with the envelope live throughout. Curves
+are schematic, not measured.}
 \label{fig:results}
 \end{figure}
 
@@ -900,7 +1064,12 @@ Quantity&AppWorld&Terminal&$\tau^2$\\
 rules proposed&\TBD&\TBD&\TBD\\
 rules promoted&\TBD&\TBD&\TBD\\
 rules retired&\TBD&\TBD&\TBD\\
+candidates left pending&\TBD&\TBD&\TBD\\
+validation rounds / replays run&\TBD&\TBD&\TBD\\
+inconclusive replays&\TBD&\TBD&\TBD\\
+distinct rule scopes&\TBD&\TBD&\TBD\\
 notices: trend / breach&\TBD&\TBD&\TBD\\
+repair episodes / notices coalesced&\TBD&\TBD&\TBD\\
 gate fires / session&\TBD&\TBD&\TBD\\
 tier-2 escalation rate&\TBD&\TBD&\TBD\\
 samples / series (median)&\TBD&\TBD&\TBD\\
@@ -915,9 +1084,15 @@ barrier wait / turn (s)&\TBD&\TBD&\TBD\\
 \emph{No-barrier} isolates in-session repair, and its prediction is sharper than the others:
 without it a session contributes too few samples per series
 for the stall window to close, so notices and promotions should fall toward zero and arm B should
-collapse onto baseline-plus-overhead. \emph{Inlined rules} renders the whole corpus instead of the
-bounded selection in Eq.~\eqref{eq:context}; we report the fraction of task-agent calls that use the
-optional read-only Harness tools beside $\passk$. \emph{Tier-3 on} buys richer diagnoses at a cost scaling with metric count.
+collapse onto baseline-plus-overhead. \emph{Inlined rules} pushes the whole corpus into the system
+prompt instead of the constant preamble of Eq.~\eqref{eq:context}, testing the pull model directly;
+beside $\passk$ we report input tokens per turn and the fraction of task-agent calls that use the
+read-only tools, since the pull model trades guaranteed delivery for the agent's own judgment about
+relevance and the size of that trade is an empirical question. \emph{Frozen evaluation} restores the
+abandoned split of \S\ref{sec:continuous} as an explicit ablation, so the protocol change is
+measured rather than asserted. \emph{Self-administered repair} restores the pre-v0.9 design in which
+the task agent holds the administrative tools, quantifying the attention cost that motivated the
+two-agent split. \emph{Tier-3 on} buys richer diagnoses at a cost scaling with metric count.
 Replay-only and forward-only isolate the validators. Each row reports delta from the full Harness.
 
 \begin{table}[t]
@@ -931,6 +1106,8 @@ Variant&$\passone$&$\passk$&$\Delta\passk$\\
 Full Harness&\TBD&\TBD&--\\
 No barrier&\TBD&\TBD&\TBD\\
 Inlined rules&\TBD&\TBD&\TBD\\
+Frozen evaluation&\TBD&\TBD&\TBD\\
+Self-administered repair&\TBD&\TBD&\TBD\\
 Tier 3 enabled&\TBD&\TBD&\TBD\\
 Replay only&\TBD&\TBD&\TBD\\
 Forward trial only&\TBD&\TBD&\TBD\\
@@ -955,9 +1132,28 @@ nothing. An outcome verifier (\S\ref{sec:verifier}) covers exactly that case, wh
 reason to wire one where possible.
 
 \paragraph{Token-overhead confound.}
-Bounded guidance and four optional read-only tool schemas consume context, and the barrier plus
+The constant preamble and four read-only tool schemas consume context, and the barrier plus
 separate repair-model calls add latency and cost on failing turns. Any $\passk$ change must be read next to
-Table~\ref{tab:telemetry}.
+Table~\ref{tab:telemetry}. The pull model shifts rather than removes this: it bounds what the agent
+must read per turn independently of corpus size, at the price that a rule the agent declines to read
+cannot help it.
+
+\paragraph{Task order confounded with corpus size.}
+Running the envelope live throughout (\S\ref{sec:continuous}) means a task attempted late in a run
+faces a larger rule corpus than an early one, so position and treatment strength are not separable
+within a single ordering. Multiple task-order seeds and the trend analysis of \S\ref{sec:dynamics}
+mitigate this; they do not eliminate it. This is a deliberate trade: the alternative protocol removes
+the confound by disabling the mechanism under test.
+
+\paragraph{Attribution in the evidence gate.}
+Replay narrows attribution --- only the candidate under evaluation is visible, and it must actually
+have been read --- but the baseline remains the case's originally recorded scores. A delta is
+therefore still confounded by actives promoted since capture, by sampling nondeterminism, and by
+environment variance, and a promotion is evidence of association under those conditions rather than
+of causation. A paired control replay would settle it at twice the cost. Relatedly, replays remain
+sequential within a round, so on benchmarks that serialize environment access (AppWorld holds a
+single world server) validation throughput, not evidence quality, can become the binding constraint;
+the round budget converts that into cheaper forward-trial verdicts rather than into missing ones.
 
 \paragraph{Gate parameters as a design surface.}
 The trajectory gate introduces four constants ($\gwin,\gtarget,\ggain,\gdrop$) whose right values
@@ -983,15 +1179,16 @@ other metric families, richer rules, and architectures remains open.
 PandaProbe Harness closes the loop on agent reliability: it detects degradation, assigns diagnosis
 and candidate authoring to a separate package-owned repair agent, and admits each correction only
 after replay or live evidence, with a regression guard for prior wins. The developer's task agent
-keeps ownership of its model, framework, prompt, tools, loop, and environment while receiving only
-bounded read-only guidance. Equally important is what invokes the gate. \Harness scores every
+keeps ownership of its model, framework, prompt, tools, loop, and environment, and receives no
+injected text at all --- one capability sentence and four read-only tools it may choose to call.
+Equally important is what invokes the gate. \Harness scores every
 step of a session and judges the \emph{trajectory} those scores trace out, so an unfinished task is
 not mistaken for a failing one; it spends expensive step-level diagnosis only on sessions a cheap
 always-on signal already flagged; it closes the loop inside the session through a per-turn barrier;
 and it decides on a developer's own outcome oracle in preference to a judged proxy when one is
-available. Session-aware top-$k$ retrieval keeps the policy-inducing context bounded as the corpus
-grows. The implementation makes that loop practical as an inspectable envelope around existing
-agent code, using PandaProbe's official LiteLLM wrapper for provider-neutral managed-repair calls
+available. Because rules are pulled rather than pushed, the policy-inducing context stays constant in
+size as the corpus grows. The implementation makes that loop practical as an inspectable envelope around existing
+agent code, using PandaProbe's official LiteLLM wrapper for provider-neutral repair-agent calls
 and trace isolation. The empirical verdict is forthcoming.
 
 Future work includes structured rules with preconditions, vector-valued/Pareto validation,
