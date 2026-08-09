@@ -1,7 +1,11 @@
 """End-to-end dry-run pipeline test: run -> records -> resume -> report.
 
 Uses the generic MockTaskRunner (no network, no external harness), which is what
-`pandabench-run --smoke` exercises for real."""
+`pandabench-run --smoke` exercises for real.
+
+Also pins the harness-live-throughout lifecycle: one live harness for the whole
+dataset, deterministic arm-identical task order, and a single end-of-run
+settlement that waits for validation before the workspace is archived."""
 
 from __future__ import annotations
 
@@ -16,12 +20,12 @@ import pytest
 from pandaprobe_harness import ReplayContext
 from pandaprobe_harness.agent_tools.spec import ToolSpec
 
-from pandabench.agents.frozen_wiring import FrozenEvalWiring
 from pandabench.agents.harness_wiring import AgentWiring, HarnessWiring
 from pandabench.config import load_study
 from pandabench.providers.litellm_client import ChatClient, MockClient, Usage
 from pandabench.providers.models import ResolvedModel, load_registry
 from pandabench.report import aggregate
+from pandabench.runners import base as base_module
 from pandabench.runners.base import BenchmarkRunner, TaskOutcome
 from pandabench.runners.mock import MockTaskRunner
 
@@ -74,10 +78,10 @@ class ReplayTaskRunner(MockTaskRunner):
 
 
 class WiringRecordingRunner(MockTaskRunner):
-    def __init__(self) -> None:
-        super().__init__("appworld")
+    def __init__(self, *, tasks: int = 4) -> None:
+        super().__init__("appworld", tasks=tasks)
         self.wirings: list[AgentWiring | None] = []
-        self.frozen_rule_reads: list[str] = []
+        self.rule_reads: list[str] = []
 
     async def run_once(
         self,
@@ -90,12 +94,29 @@ class WiringRecordingRunner(MockTaskRunner):
         wiring: AgentWiring | None,
     ) -> TaskOutcome:
         self.wirings.append(wiring)
-        if isinstance(wiring, FrozenEvalWiring):
+        if wiring is not None:
+            # Exercise the on-demand read path, not just the preamble.
             result = await wiring.dispatch("harness_rules_read", {"scope": "global"})
-            self.frozen_rule_reads.append(str(result["content"]))
+            self.rule_reads.append(str(result.get("content", "")))
         return await super().run_once(
             task_id=task_id, session_id=session_id, model=model, client=client,
             max_turns=max_turns, wiring=wiring,
+        )
+
+
+class AppWorldLikeRunner(MockTaskRunner):
+    """A mock runner reporting per-test counts, so relaxed scoring can apply."""
+
+    def __init__(self) -> None:
+        super().__init__("appworld", tasks=1)
+
+    async def run_once(self, **kwargs: Any) -> TaskOutcome:
+        outcome = await super().run_once(**kwargs)
+        return TaskOutcome(
+            passed=False,
+            native_metrics={**outcome.native_metrics, "num_tests": 2, "num_passes": 1},
+            turns=outcome.turns, wall_time_s=outcome.wall_time_s,
+            usage=outcome.usage, error=outcome.error,
         )
 
 
@@ -121,9 +142,9 @@ class FakeRule:
 class FakeLiveHarness:
     """A live harness whose validation takes two rounds to go quiet.
 
-    ``validation_pending`` starts non-zero so the settle barrier has to wait for
-    something other than evals; a barrier that only watched ``pending_sessions``
-    would snapshot straight through it.
+    ``validation_pending`` starts non-zero so the end-of-run settle barrier has to
+    wait for something other than evals; a barrier that only watched
+    ``pending_sessions`` would archive straight through it.
     """
 
     def __init__(self, events: list[str], *, validation_rounds: int = 2) -> None:
@@ -148,6 +169,8 @@ class FakeLiveHarness:
         return self._rounds_left
 
     async def _tool_call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name == "harness_rules_read":
+            return {"ok": True, "content": self.rule.to_json()["rule"]}
         raise AssertionError(f"unexpected live harness tool call: {name} {args}")
 
     def _all_rules(self) -> list[FakeRule]:
@@ -156,7 +179,7 @@ class FakeLiveHarness:
 
     def system_context(self, session_id: str, *, task_hint: str | None = None) -> str:
         del session_id, task_hint
-        return "live learning harness"
+        return "live harness"
 
     def on_turn_end(self, payload: dict[str, Any]) -> None:
         del payload
@@ -205,7 +228,7 @@ def _runner(
 async def test_dry_run_pipeline_and_resume(tmp_path):
     run_dir = await _runner(tmp_path).run(
         arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-        k=1, limit=2, dry_run=True, phases=("eval",),
+        k=1, limit=2, dry_run=True,
     )
     records_file = run_dir / "records.jsonl"
     n_first = len(records_file.read_text().splitlines())
@@ -215,7 +238,7 @@ async def test_dry_run_pipeline_and_resume(tmp_path):
     # Resume: rerun with the same run_id -> every trial is skipped, no duplicates.
     await _runner(tmp_path).run(
         arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-        k=1, limit=2, dry_run=True, phases=("eval",), run_id=run_dir.name,
+        k=1, limit=2, dry_run=True, run_id=run_dir.name,
     )
     assert len(records_file.read_text().splitlines()) == n_first
 
@@ -231,23 +254,82 @@ async def test_both_arms_dry_run_pipeline(tmp_path):
     for arm in ("baseline", "harness"):
         run_dir = await _runner(tmp_path).run(
             arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-            k=1, limit=1, dry_run=True, phases=("learning", "eval"),
+            k=1, limit=1, dry_run=True,
         )
         assert (run_dir / "records.jsonl").exists()
 
 
-async def test_live_learning_freezes_once_and_eval_never_builds_or_settles(
+async def test_task_order_is_seeded_deterministic_and_arm_independent(tmp_path):
+    """Order decides what has been learned by task N, so it must be reproducible."""
+
+    runner = _runner(tmp_path, MockTaskRunner("appworld", tasks=8))
+    first = runner._tasks("dev", 1, None)
+    assert first == runner._tasks("dev", 1, None)  # same seed -> same order
+    assert first != runner._tasks("dev", 2, None)  # different seed -> different order
+    assert sorted(first) == sorted(runner._tasks("dev", 2, None))  # same task set
+    assert runner._tasks("dev", 1, 3) == first[:3]  # limit truncates the run
+
+
+async def test_relaxed_scoring_applies_to_the_harness_arm_only(tmp_path):
+    """Baseline must always be judged by the benchmark's own criteria.
+
+    The mock AppWorld env returns 1 of 2 tests passing on every trial, which is a
+    relaxed pass at the configured tolerance of 1 and a native failure.
+    """
+
+    outcomes: dict[str, dict[str, object]] = {}
+    for arm in ("baseline", "harness"):
+        run_dir = await _runner(tmp_path, AppWorldLikeRunner()).run(
+            arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=1,
+            k=1, limit=1, dry_run=True, run_id=f"tolerance-{arm}",
+        )
+        record = json.loads((run_dir / "records.jsonl").read_text(encoding="utf-8"))
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        outcomes[arm] = {
+            "passed": record["passed"],
+            "relaxed": record["native_metrics"]["passed_relaxed"],
+            "tolerance": manifest["resolved_config"]["pass_tolerance"],
+        }
+
+    # The native verdict is identical in both arms.
+    assert outcomes["baseline"]["passed"] is outcomes["harness"]["passed"] is False
+    assert outcomes["baseline"]["tolerance"] == 0
+    assert outcomes["harness"]["tolerance"] == 1
+    assert outcomes["baseline"]["relaxed"] is False
+    assert outcomes["harness"]["relaxed"] is True
+
+
+async def test_both_arms_run_identical_task_order(tmp_path):
+    """A paired per-task comparison is invalid unless both arms see one order."""
+
+    orders: dict[str, list[str]] = {}
+    for arm in ("baseline", "harness"):
+        run_dir = await _runner(tmp_path, MockTaskRunner("appworld", tasks=4)).run(
+            arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=7,
+            k=1, dry_run=True, run_id=f"order-{arm}",
+        )
+        orders[arm] = [
+            json.loads(line)["task_id"]
+            for line in (run_dir / "records.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+
+    assert orders["baseline"] == orders["harness"]
+    assert len(orders["baseline"]) == 4
+
+
+async def test_harness_is_live_for_every_task_in_one_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The whole dataset runs with one live harness — no split, no frozen ruleset."""
+
     events: list[str] = []
-    single = WiringRecordingRunner()
+    single = WiringRecordingRunner(tasks=3)
     live = FakeLiveHarness(events)
     runner = _runner(tmp_path, single)
-    builds: list[str] = []
+    builds: list[dict[str, Any]] = []
 
     def fake_build(*args: Any, **kwargs: Any) -> FakeLiveHarness:
-        phase = str(args[1] if len(args) > 1 else kwargs["phase"])
-        builds.append(phase)
+        builds.append({"args": args, "kwargs": kwargs})
         return live
 
     monkeypatch.setattr(runner, "_make_client", lambda arm, dry_run: MockClient())
@@ -255,90 +337,119 @@ async def test_live_learning_freezes_once_and_eval_never_builds_or_settles(
 
     run_dir = await runner.run(
         arm="harness", model_key="mock", backend=None, seed=1,
-        k=2, limit=1, dry_run=False, phases=("learning", "eval"),
-        run_id="frozen-lifecycle",
+        k=2, dry_run=False, run_id="live-lifecycle",
     )
 
-    assert builds == ["learning"]
-    assert live.on_turn_end_calls == live.settle_calls == 2
-    # The barrier loops until validation is quiet, not just until evals land: two
-    # rounds were outstanding, so it drained twice before settling.
-    assert live.refresh_calls == 2
-    assert live.validation_drains == 2
-    assert live.validation_settles == 1
-    # Validation settles BEFORE the snapshot reads the ruleset, so a candidate
-    # that earned a verdict is not frozen as provisional. (Earlier `rules-read`
-    # events are per-trial telemetry; the snapshot is the last one.)
-    assert max(i for i, event in enumerate(events) if event == "validation-settle") < max(
-        i for i, event in enumerate(events) if event == "rules-read"
-    )
-    assert all(isinstance(wiring, HarnessWiring) for wiring in single.wirings[:2])
-    assert all(isinstance(wiring, FrozenEvalWiring) for wiring in single.wirings[2:])
-    assert all("Read the learned state" in content for content in single.frozen_rule_reads)
-
+    assert len(builds) == 1  # one harness, for the whole run
     records = [
         json.loads(line)
         for line in (run_dir / "records.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    eval_records = [record for record in records if record["phase"] == "eval"]
-    assert len({record["harness"]["ruleset_hash"] for record in eval_records}) == 1
-    assert all(record["harness"]["mode"] == "frozen_eval" for record in eval_records)
-    assert all(record["harness"]["notices"] == 0 for record in eval_records)
-    assert all(record["harness"]["scores"] == {} for record in eval_records)
+    assert len(records) == 3 * 2
+    assert {record["task_id"] for record in records} == set(single.list_tasks("dev"))
+    assert all(record["phase"] == "live" for record in records)
+    assert all(record["harness"]["mode"] == "live" for record in records)
+    # Every trial got a live wiring and could reach rules on demand.
+    assert len(single.wirings) == 6
+    assert all(isinstance(wiring, HarnessWiring) for wiring in single.wirings)
+    assert all("Read the learned state" in content for content in single.rule_reads)
+    assert live.on_turn_end_calls == live.settle_calls == 6
+    assert list(run_dir.glob("**/frozen-rules.json")) == []
 
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     resolved = manifest["resolved_config"]
+    assert resolved["harness_policy"] == "live_throughout"
     assert resolved["gate_window"] == 10
     assert resolved["repair_model"] == "mock/mock"
     assert resolved["repair_reasoning_effort"] == "none"
     assert resolved["managed_repair"] is True
     assert resolved["trace_repair_agent"] is True
-    assert resolved["eval_policy"] == "frozen_rules"
-    assert resolved["trace_eval_during_eval"] is False
-    assert resolved["ruleset_hash"] == eval_records[0]["harness"]["ruleset_hash"]
+    assert resolved["n_tasks"] == 3
+    assert manifest["rules_outcome"] == "active=1"  # the one active FakeRule
 
 
-async def test_eval_only_harness_uses_explicit_empty_snapshot_without_live_harness(
+async def test_end_of_run_settlement_waits_for_validation_before_archiving(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    single = WiringRecordingRunner()
-    runner = _runner(tmp_path, single)
+    """Settlement runs once, at the end, and outlasts a slow validation round.
+
+    ``FakeLiveHarness`` reports ``validation_pending > 0`` through the first drain,
+    so a barrier watching only pending evals would archive too early.
+    """
+
+    events: list[str] = []
+    live = FakeLiveHarness(events, validation_rounds=2)
+    runner = _runner(tmp_path, WiringRecordingRunner(tasks=2))
     monkeypatch.setattr(runner, "_make_client", lambda arm, dry_run: MockClient())
+    monkeypatch.setattr(runner, "_build_harness", lambda *a, **k: live)
 
-    def forbidden_build(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError(f"eval built a live harness: {args} {kwargs}")
+    archived: list[str] = []
+    real_archive = base_module.archive_workspace
 
-    monkeypatch.setattr(runner, "_build_harness", forbidden_build)
+    def recording_archive(harness_root: Path, dest: Path) -> None:
+        events.append("archive")
+        archived.append(dest.name)
+        real_archive(harness_root, dest)
+
+    monkeypatch.setattr(base_module, "archive_workspace", recording_archive)
+
+    await runner.run(
+        arm="harness", model_key="mock", backend=None, seed=1,
+        k=1, dry_run=False, run_id="settle-at-end",
+    )
+
+    # The barrier looped rather than exiting on the first drain.
+    assert live.refresh_calls == 2
+    assert live.validation_drains == 2
+    assert live.validation_settles == 1
+    # Once, after every trial, and before the archive.
+    assert events.count("validation-settle") == 1
+    assert events.index("validation-settle") > max(
+        i for i, event in enumerate(events) if event == "turn-settle"
+    )
+    assert events.index("validation-settle") < events.index("archive")
+    assert archived == ["harness"]
+
+
+async def test_resume_reruns_only_the_missing_trial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial records.jsonl is honored: completed trials are skipped."""
+
+    events: list[str] = []
+    live = FakeLiveHarness(events)
+    first = WiringRecordingRunner(tasks=3)
+    runner = _runner(tmp_path, first)
+    monkeypatch.setattr(runner, "_make_client", lambda arm, dry_run: MockClient())
+    monkeypatch.setattr(runner, "_build_harness", lambda *a, **k: live)
+
     run_dir = await runner.run(
         arm="harness", model_key="mock", backend=None, seed=1,
-        k=1, limit=1, dry_run=False, phases=("eval",), run_id="empty-eval",
+        k=1, dry_run=False, run_id="resume-run",
     )
+    records_path = run_dir / "records.jsonl"
+    original = records_path.read_text(encoding="utf-8").splitlines()
+    assert len(original) == 3
+    assert len(first.wirings) == 3
 
-    snapshot = json.loads((run_dir / "frozen-rules.json").read_text(encoding="utf-8"))
-    record = json.loads((run_dir / "records.jsonl").read_text(encoding="utf-8"))
-    assert snapshot["rules"] == []
-    assert snapshot["sha256"] == record["harness"]["ruleset_hash"]
-    assert record["harness"]["rules_active"] == 0
-    assert isinstance(single.wirings[0], FrozenEvalWiring)
+    # Truncate to simulate a run that died before its last task.
+    dropped = json.loads(original[-1])
+    records_path.write_text("\n".join(original[:-1]) + "\n", encoding="utf-8")
 
-    # Resume must trust the existing verified snapshot, not a later mutation in
-    # the live workspace. Remove only the synthetic record to force one eval slot
-    # to execute again in this temporary test run.
-    live_root = run_dir / "harness_root"
-    live_root.mkdir(parents=True, exist_ok=True)
-    (live_root / "rules.jsonl").write_text('{"id":"late-live-rule"}\n', encoding="utf-8")
-    (run_dir / "records.jsonl").unlink()
-    resumed = WiringRecordingRunner()
+    resumed = WiringRecordingRunner(tasks=3)
     resume_runner = _runner(tmp_path, resumed)
     monkeypatch.setattr(resume_runner, "_make_client", lambda arm, dry_run: MockClient())
-    monkeypatch.setattr(resume_runner, "_build_harness", forbidden_build)
+    monkeypatch.setattr(resume_runner, "_build_harness", lambda *a, **k: live)
     await resume_runner.run(
         arm="harness", model_key="mock", backend=None, seed=1,
-        k=1, limit=1, dry_run=False, phases=("eval",), run_id="empty-eval",
+        k=1, dry_run=False, run_id="resume-run",
     )
-    resumed_record = json.loads((run_dir / "records.jsonl").read_text(encoding="utf-8"))
-    assert resumed_record["harness"]["ruleset_hash"] == snapshot["sha256"]
-    assert resumed_record["harness"]["rules_active"] == 0
+
+    # Exactly the dropped trial re-ran; the two survivors were skipped.
+    assert len(resumed.wirings) == 1
+    final = records_path.read_text(encoding="utf-8").splitlines()
+    assert len(final) == 3
+    assert json.loads(final[-1])["task_id"] == dropped["task_id"]
 
 
 async def test_repeated_setup_gets_a_fresh_remote_session_namespace(tmp_path):
@@ -347,12 +458,12 @@ async def test_repeated_setup_gets_a_fresh_remote_session_namespace(tmp_path):
 
     run_dir = await _runner(tmp_path, first).run(
         arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-        k=1, limit=1, dry_run=True, phases=("eval",), run_id="interrupted-run",
+        k=1, limit=1, dry_run=True, run_id="interrupted-run",
     )
     (run_dir / "records.jsonl").unlink()
     await _runner(tmp_path, second).run(
         arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-        k=1, limit=1, dry_run=True, phases=("eval",), run_id="interrupted-run",
+        k=1, limit=1, dry_run=True, run_id="interrupted-run",
     )
 
     assert len(first.session_ids) == len(second.session_ids) == 1
@@ -403,7 +514,7 @@ async def test_report_keeps_datasets_as_separate_benchmark_cells(tmp_path):
     for dataset in ("airline", "retail"):
         await _runner(tmp_path).run(
             arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-            k=1, limit=1, dry_run=True, phases=("eval",),
+            k=1, limit=1, dry_run=True,
             dataset_override=dataset, run_id=f"appworld-{dataset}",
         )
 
@@ -414,3 +525,43 @@ async def test_report_keeps_datasets_as_separate_benchmark_cells(tmp_path):
 
     assert {row["dataset"] for row in rows} == {"airline", "retail"}
     assert len(rows) == 2
+
+
+async def test_report_covers_a_run_with_no_eval_phase(tmp_path):
+    """A live-only run must still produce populated headline + paired tables.
+
+    The report used to filter to ``phase == "eval"``, which yields an empty frame
+    against these records.
+    """
+
+    for arm in ("baseline", "harness"):
+        await _runner(tmp_path, MockTaskRunner("appworld", tasks=4)).run(
+            arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=1,
+            k=1, dry_run=True, run_id=f"live-report-{arm}",
+        )
+
+    summary = tmp_path / "summary"
+    aggregate(tmp_path / "runs", summary)
+    with (summary / "headline.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert {row["arm"] for row in rows} == {"baseline", "harness"}
+    # Strict, relaxed, and ratio are reported side by side.
+    for row in rows:
+        assert row["pass_at_1"] != ""
+        assert row["pass_at_1_relaxed"] != ""
+        assert row["mean_pass_ratio"] != ""
+        assert int(row["n_tasks"]) == 4
+    # Relaxed scoring is harness-arm only, and the table names the definition used.
+    by_arm = {row["arm"]: row for row in rows}
+    assert by_arm["baseline"]["pass_tolerance"] == "0"
+    assert by_arm["harness"]["pass_tolerance"] == "1"
+
+    report = (summary / "report.md").read_text(encoding="utf-8")
+    assert "Headline (whole run)" in report
+    assert "not comparable to published numbers" in report.lower()
+    assert "_No baseline/harness pairs yet._" not in report
+    # Both paired rows are reported: strict, and the intentionally asymmetric
+    # relaxed comparison (harness at its tolerance vs baseline at the native one).
+    assert "| strict" in report
+    assert "| relaxed" in report
