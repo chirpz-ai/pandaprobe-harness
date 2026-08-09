@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -10,6 +11,7 @@ import httpx
 import pytest
 
 from pandabench.agents.frozen_wiring import FrozenEvalWiring
+from pandabench.config import load_study
 from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
@@ -19,7 +21,9 @@ from pandabench.runners.appworld_env import (
     EvalResult,
     HttpAppWorldEnv,
     TaskInfo,
+    _failure_requirements,
 )
+from pandabench.runners.base import _passed_relaxed
 from pandabench.runners.tau2 import Tau2Runner, _safe_task_workflow
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -75,6 +79,111 @@ class RecordingToolsClient(MockClient):
 class NoSettleFrozenWiring(FrozenEvalWiring):
     async def settle_turn(self, turn_index: int) -> None:
         raise AssertionError(f"frozen AppWorld eval settled turn {turn_index}")
+
+
+def test_passed_stays_native_while_relaxed_allows_one_missed_test() -> None:
+    """`passed` is AppWorld's verdict; `passed_relaxed` is ours, at tolerance 1."""
+
+    tolerance = load_study(CONFIGS / "study.yaml").benchmark("appworld").pass_tolerance
+    assert tolerance == 1
+
+    perfect = {"num_tests": 4, "num_passes": 4}
+    one_short = {"num_tests": 4, "num_passes": 3}
+    two_short = {"num_tests": 4, "num_passes": 2}
+
+    assert _passed_relaxed(True, perfect, tolerance) is True
+    assert _passed_relaxed(False, one_short, tolerance) is True
+    assert _passed_relaxed(False, two_short, tolerance) is False
+    # Tolerance 0 (always the baseline arm) collapses onto the strict metric.
+    assert _passed_relaxed(False, one_short, 0) is False
+    # No per-test counts (tau2, Terminal-Bench) -> the native verdict.
+    assert _passed_relaxed(False, {"reward": 0.5}, tolerance) is False
+    assert _passed_relaxed(True, {"reward": 1.0}, tolerance) is True
+
+
+async def test_appworld_records_which_tests_failed_bounded() -> None:
+    """Persist the failing tests' identities, capped, and never their tracebacks."""
+
+    raw_failures = [
+        {"requirement": f"  assert thing {i} matches\n ", "trace": "x" * 5000, "label": None}
+        for i in range(20)
+    ]
+    failures, truncated = _failure_requirements(raw_failures)
+    env = SequenceAppWorldEnv([
+        EvalResult(False, 24, 4, 1, {}, failures, truncated)
+    ])
+    runner = AppWorldRunner(env)
+    model = load_registry(CONFIGS / "models.yaml").resolve("mock")
+
+    outcome = await runner.run_once(
+        task_id="same-task", session_id="s1", model=model, client=MockClient(),
+        max_turns=2, wiring=None,
+    )
+
+    failing = outcome.native_metrics["failing_tests"]
+    assert failing[0] == "assert thing 0 matches"  # whitespace collapsed
+    assert len(failing) == 12  # capped in count
+    assert outcome.native_metrics["failing_tests_truncated"] is True
+    assert all(len(text) <= 240 for text in failing)
+    assert "x" * 100 not in json.dumps(outcome.native_metrics)  # no traceback
+
+
+def test_http_evaluate_parses_the_real_payload_shape() -> None:
+    """Pin the shape AppWorld's ``/evaluate`` returns.
+
+    Verified against ``appworld==0.1.3.post1``: ``TestTracker.to_dict`` wrapped in
+    ``{"output": ...}``, with ``num_passes`` derivable only by counting ``passes``.
+    """
+
+    payload = {
+        "output": {
+            "success": False,
+            "difficulty": 2,
+            "num_tests": 3,
+            "passes": [
+                {"requirement": "assert answers match.", "label": None},
+                {"requirement": "assert model changes match.", "label": "no_op_fail"},
+            ],
+            "failures": [
+                {
+                    "requirement": "assert added receiver ids match.",
+                    "trace": "```python\n...\n```\nAssertionError: nope",
+                    "label": "no_op_fail",
+                }
+            ],
+        }
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    env = HttpAppWorldEnv(
+        "http://appworld.test", appworld_root=Path("/nonexistent"), transport=transport
+    )
+
+    verdict = env.evaluate("task-1")
+
+    assert verdict.success is False
+    assert verdict.num_tests == 3
+    assert verdict.num_passes == 2  # counted from `passes`
+    assert verdict.difficulty == 2
+    assert verdict.failures == ("assert added receiver ids match.",)
+    assert verdict.failures_truncated is False
+    # The traceback is reachable in `raw` for debugging but is not what we persist.
+    assert "AssertionError" not in json.dumps(list(verdict.failures))
+
+
+def test_failure_requirements_bounds_length_and_tolerates_junk() -> None:
+    long_requirement = "y" * 400
+    bounded, truncated = _failure_requirements(
+        [{"requirement": long_requirement, "trace": "t"}]
+    )
+    assert len(bounded[0]) == 240
+    assert bounded[0].endswith("…")
+    assert truncated is True
+
+    # A short list is kept verbatim and reported untruncated.
+    assert _failure_requirements([{"requirement": "one"}]) == (("one",), False)
+    # Malformed payloads degrade to empty rather than raising during grading.
+    assert _failure_requirements(None) == ((), False)
+    assert _failure_requirements(["not-a-dict", {"requirement": ""}]) == ((), False)
 
 
 async def test_appworld_outcomes_and_experiments_are_session_scoped() -> None:
