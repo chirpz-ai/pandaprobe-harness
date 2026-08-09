@@ -6,9 +6,9 @@
 # Per-run knobs (overridable): make appworld ARM=harness MODEL=claude-sonnet-5 SEED=1 K=4 LIMIT=2
 #   ARM      baseline | harness
 #   MODEL    a models.yaml key (see `configs/models.yaml`)
-#   SEED     shuffles task order; use several (1 2 3) for replicates
+#   SEED     shuffles task order, identically in both arms; use several (1 2 3) for replicates
 #   K        trials per task (pass@1 = first trial; pass^k = all K)
-#   LIMIT    max tasks per phase (unset = the whole split)
+#   LIMIT    run only the first N tasks (unset = the whole dataset)
 #   DATASET  dataset override (unset = the benchmark's configured dataset)
 #   MAXTURNS per-task agent-turn cap (unset = study.yaml max_turns, 100 for all benchmarks)
 #   BACKEND  Claude only: bedrock | anthropic (default: bedrock)
@@ -43,7 +43,7 @@ setup: sync ## Full setup: deps (including harbor), isolated AppWorld env, prefl
 preflight: ## Validate Docker, CLIs, credentials, and a 1-token ping per provider
 	uv run pandabench-run --preflight
 
-smoke: ## 2 tasks/phase x 1 trial x both arms x cheap model, all benchmarks (< ~10 min)
+smoke: ## 2 tasks x 1 trial x both arms x cheap model, all benchmarks (< ~10 min)
 	uv run pandabench-run --smoke
 
 run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=] [DATASET=] [MAXTURNS=])
