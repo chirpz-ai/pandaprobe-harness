@@ -1,12 +1,16 @@
 # AppWorld benchmark config. Merged into study.yaml (study.yaml keys win).
 # The agent's single tool is execute(code); the environment runs out-of-process
-# (see runners/appworld_env.py). Splits come from {APPWORLD_ROOT}/data/datasets/<dataset>.txt.
+# (see runners/appworld_env.py). Task ids come from
+# {APPWORLD_ROOT}/data/datasets/<dataset>.txt.
+#
+# AppWorld's own split is used WHOLE — we never re-partition one, which is what
+# keeps our numbers comparable to published AppWorld results for that split.
 dataset: dev                 # train(90) | dev(57) | test_normal(168) | test_challenge(417)
+                             #   dev is the default; test_normal gives ~3x the tasks and so
+                             #   more in-session learning runway and more power, at ~3x spend.
 max_turns: 100
-learning_fraction: 0.35      # seeded partition of the dataset into learning/eval
+pass_tolerance: 1
 domain_policy: >-
   AppWorld's supervisor credential API is an authorized authentication mechanism.
   Judge actions against the task instruction and AppWorld API contracts; using the
   supervisor app for required credentials is not itself a failure.
-# learning_split: []         # explicit task ids override the seeded partition
-# eval_split: []
