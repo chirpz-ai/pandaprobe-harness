@@ -1,4 +1,11 @@
-"""Immutable, benchmark-owned ruleset captured at the learning/eval boundary."""
+"""Immutable, benchmark-owned ruleset snapshot with a stable content digest.
+
+**Currently unwired.** The harness arm is live for a benchmark's whole dataset, so
+no run freezes a ruleset and none writes ``frozen-rules.json``. Kept with its tests
+(as is :mod:`pandabench.agents.frozen_wiring`) because transfer/generalization —
+"does a static learned ruleset help on unseen tasks?" — may be worth measuring
+later, and keeping these is cheap where rewriting them would not be.
+"""
 
 from __future__ import annotations
 
