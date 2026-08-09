@@ -10,8 +10,11 @@ Endpoints used (verified against ``appworld==0.1.3.post1``):
   supervisor, datetime}}``
 - ``GET  /api_docs`` -> per-app API documentation
 - ``POST /execute {task_id, code}`` -> ``{output: <stdout|traceback>}``
-- ``POST /evaluate {task_id, report}`` -> ``{output: {success, num_tests,
-  passes, failures, difficulty}}``
+- ``POST /evaluate {task_id, report}`` -> ``{output: {success, difficulty,
+  num_tests, passes, failures}}`` (``TestTracker.to_dict(stats_only=False)``), where
+  each ``passes`` entry is ``{requirement, label}`` and each ``failures`` entry is
+  ``{requirement, trace, label}``. We keep the failing ``requirement`` texts and drop
+  ``trace``: a full stack trace plus source context, too large for every record.
 - ``POST /close {task_id}``
 
 Task ids come from ``{APPWORLD_ROOT}/data/datasets/<split>.txt``.
@@ -32,6 +35,11 @@ import httpx
 logger = logging.getLogger("pandabench.appworld")
 
 _MAX_ERROR_BODY_CHARS = 4096
+
+# Bounds on the persisted failing-test identities. Measured over all 5,208
+# requirement strings in the AppWorld task data: mean 92 chars, p95 197, max 545.
+_MAX_FAILURES = 12
+_MAX_FAILURE_CHARS = 240
 
 __all__ = [
     "AppWorldEnv",
@@ -59,6 +67,11 @@ class EvalResult:
     num_passes: int
     difficulty: int
     raw: dict[str, Any]
+    #: The ``requirement`` text of each failed test, bounded. Which tests failed
+    #: separates a systematic agent behavior a rule could fix from an environment
+    #: artifact; the counts alone cannot.
+    failures: tuple[str, ...] = ()
+    failures_truncated: bool = False
 
 
 class AppWorldEnv(Protocol):
@@ -137,12 +150,15 @@ class HttpAppWorldEnv:
                 raise
         data = out if isinstance(out, dict) else {}
         passes = data.get("passes") or []
+        failures, truncated = _failure_requirements(data.get("failures"))
         return EvalResult(
             success=bool(data.get("success", False)),
             num_tests=int(data.get("num_tests", 0) or 0),
             num_passes=len(passes) if isinstance(passes, list) else 0,
             difficulty=int(data.get("difficulty", 0) or 0),
             raw=data,
+            failures=failures,
+            failures_truncated=truncated,
         )
 
     def close(self, task_id: str) -> None:
@@ -196,12 +212,39 @@ class MockAppWorldEnv:
         return "[mock] executed"
 
     def evaluate(self, task_id: str) -> EvalResult:
+        # One test short, the shape real runs overwhelmingly produce, so a dry run
+        # exercises `passed_relaxed` and the failing-test capture.
         return EvalResult(
-            success=False, num_tests=2, num_passes=1, difficulty=1, raw={"mock": True}
+            success=False, num_tests=2, num_passes=1, difficulty=1, raw={"mock": True},
+            failures=("[mock] assert answers match.",),
         )
 
     def close(self, task_id: str) -> None:
         pass
+
+
+def _failure_requirements(failures: Any) -> tuple[tuple[str, ...], bool]:
+    """Extract the failing tests' ``requirement`` texts, bounded.
+
+    Bounded here rather than at the call site so no caller can persist an
+    unbounded payload. The sibling ``trace`` field is deliberately not read.
+    """
+
+    if not isinstance(failures, list):
+        return (), False
+    truncated = len(failures) > _MAX_FAILURES
+    kept: list[str] = []
+    for failure in failures[:_MAX_FAILURES]:
+        if not isinstance(failure, dict):
+            continue
+        text = " ".join(str(failure.get("requirement") or "").split())
+        if not text:
+            continue
+        if len(text) > _MAX_FAILURE_CHARS:
+            text = text[: _MAX_FAILURE_CHARS - 1].rstrip() + "…"
+            truncated = True
+        kept.append(text)
+    return tuple(kept), truncated
 
 
 def _summarize_api_docs(docs: Any) -> str:
