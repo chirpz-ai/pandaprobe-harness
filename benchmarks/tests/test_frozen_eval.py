@@ -66,7 +66,7 @@ def test_benchmark_gate_window_defaults_and_installed_package_default(tmp_path: 
     assert HarnessKnobs().gate_window == 10
 
     cfg = build_harness_config(
-        harness_root=tmp_path / "harness", phase="learning", study=study,
+        harness_root=tmp_path / "harness", capture=True, study=study,
         benchmark="appworld", repair_model="mock/mock",
     )
     assert cfg.gate_window == 10
@@ -110,7 +110,7 @@ def test_study_can_select_a_dedicated_repair_model(tmp_path: Path) -> None:
     study = load_study(path)
     cfg = build_harness_config(
         harness_root=tmp_path / "harness",
-        phase="learning",
+        capture=True,
         study=study,
         benchmark="appworld",
         repair_model="openai/task-model",
@@ -124,7 +124,7 @@ def test_study_gate_window_can_be_explicitly_overridden(tmp_path: Path) -> None:
     study = load_study(path)
     assert study.harness.gate_window == 17
     cfg = build_harness_config(
-        harness_root=tmp_path / "harness", phase="learning", study=study,
+        harness_root=tmp_path / "harness", capture=True, study=study,
         benchmark="appworld", repair_model="mock/mock",
     )
     assert cfg.gate_window == 17
