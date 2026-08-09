@@ -45,17 +45,24 @@ def test_session_id_stable_within_one_invocation():
     kw = dict(
         session_namespace=namespace, benchmark="appworld", task_id="82e2fac_1",
         arm="harness", model_key="claude-sonnet-5", seed=1, trial=0,
-        phase="learning",
+        phase="live",
     )
     a = make_session_id(**kw)
     b = make_session_id(**kw)
     assert a == b == (
-        "appworld-82e2fac_1-harness-claude-sonnet-5-s1-learning-t0-"
+        "appworld-82e2fac_1-harness-claude-sonnet-5-s1-live-t0-"
         "r0123456789abcdef0123456789abcdef"
     )
 
 
 def test_session_ids_change_across_invocations_and_phases():
+    """A new invocation, and a replay, each get their own session.
+
+    Graded trials are all ``phase="live"`` now, so the phase component's remaining
+    job is keeping a validation replay from colliding with the graded session it
+    replays.
+    """
+
     common = dict(
         benchmark="tau2", task_id="37", arm="harness", model_key="claude-sonnet-5",
         seed=1, trial=0,
@@ -63,29 +70,29 @@ def test_session_ids_change_across_invocations_and_phases():
     first_namespace = new_session_namespace()
     second_namespace = new_session_namespace()
 
-    learning = make_session_id(
-        session_namespace=first_namespace, phase="learning", **common
+    live = make_session_id(
+        session_namespace=first_namespace, phase="live", **common
     )
     repeated_run = make_session_id(
-        session_namespace=second_namespace, phase="learning", **common
+        session_namespace=second_namespace, phase="live", **common
     )
-    eval_session = make_session_id(
-        session_namespace=first_namespace, phase="eval", **common
+    replay_session = make_session_id(
+        session_namespace=first_namespace, phase="replay", **common
     )
 
     assert first_namespace != second_namespace
-    assert len({learning, repeated_run, eval_session}) == 3
+    assert len({live, repeated_run, replay_session}) == 3
 
 
 def test_session_id_respects_platform_length_limit_without_losing_namespace():
     namespace = "f" * 32
     session_id = make_session_id(
         session_namespace=namespace, benchmark="terminal_bench", task_id="t" * 400,
-        arm="harness", model_key="m" * 100, seed=1, trial=0, phase="learning",
+        arm="harness", model_key="m" * 100, seed=1, trial=0, phase="live",
     )
     same_prefix = make_session_id(
         session_namespace=namespace, benchmark="terminal_bench", task_id=("t" * 399) + "x",
-        arm="harness", model_key="m" * 100, seed=1, trial=0, phase="learning",
+        arm="harness", model_key="m" * 100, seed=1, trial=0, phase="live",
     )
     assert len(session_id) == 255
     assert session_id.endswith(f"-r{namespace}")
@@ -99,7 +106,7 @@ def test_trial_record_round_trip():
     rec = TrialRecord(
         run_id="r1", benchmark="appworld", task_id="t1", arm="harness",
         model="gemini-3.1-flash-lite", provider="vertex", backend=None,
-        resolved_model="vertex_ai/gemini-3.1-flash-lite", seed=1, trial=0, phase="eval",
+        resolved_model="vertex_ai/gemini-3.1-flash-lite", seed=1, trial=0, phase="live",
         passed=True, native_metrics={"tgc": 1.0}, turns=3, wall_time_s=12.5,
         usage={"input_tokens": 100, "output_tokens": 20, "cost_usd": 0.01},
         harness={"session_id": "s", "rules_active": 2}, error=None,
@@ -107,13 +114,13 @@ def test_trial_record_round_trip():
     restored = TrialRecord.from_json(json.loads(json.dumps(rec.to_json())))
     assert restored == rec
     assert restored.resume_key == resume_key(
-        "appworld", "t1", "harness", "gemini-3.1-flash-lite", None, 1, 0, "eval"
+        "appworld", "t1", "harness", "gemini-3.1-flash-lite", None, 1, 0, "live"
     )
 
 
 def test_resume_key_normalizes_backend():
-    assert resume_key("b", "t", "a", "m", None, 1, 0, "eval")[4] == ""
-    assert resume_key("b", "t", "a", "m", "vertex_ai", 1, 0, "eval")[4] == "vertex_ai"
+    assert resume_key("b", "t", "a", "m", None, 1, 0, "live")[4] == ""
+    assert resume_key("b", "t", "a", "m", "vertex_ai", 1, 0, "live")[4] == "vertex_ai"
 
 
 def test_calibration_uses_recorded_session_id(tmp_path):
@@ -121,7 +128,7 @@ def test_calibration_uses_recorded_session_id(tmp_path):
     labels = tmp_path / "labels.json"
     current = {
         "schema_version": 2, "benchmark": "tau2", "task_id": "37", "arm": "harness",
-        "model": "claude-sonnet-5", "seed": 1, "trial": 0, "phase": "learning",
+        "model": "claude-sonnet-5", "seed": 1, "trial": 0, "phase": "live",
         "passed": True, "harness": {"session_id": "actual-namespaced-session"},
     }
     records.write_text(json.dumps(current) + "\n", encoding="utf-8")
@@ -265,7 +272,7 @@ async def test_on_turn_end_capture_yields_replayable_eval_case(tmp_path):
     model = registry.resolve("mock")
     session_id = make_session_id(
         session_namespace="test-namespace", benchmark="appworld", task_id="t1",
-        arm="harness", model_key="mock", seed=1, trial=0, phase="learning",
+        arm="harness", model_key="mock", seed=1, trial=0, phase="live",
     )
     descriptor = {"benchmark": "appworld", "task_id": "t1", "arm": "harness",
                   "model_key": "mock", "backend": None, "seed": 1, "trial": 0}
