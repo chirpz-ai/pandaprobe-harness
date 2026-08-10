@@ -1,13 +1,19 @@
 # =============================================================================
-# Study design — arms, seeds, trials, splits, thresholds, harness knobs.
+# Study design — arms, seeds, trials, datasets, thresholds, harness knobs.
 # See IMPLEMENTATION_NOTES.md. Nothing study-relevant is hardcoded.
+#
+# The harness arm is LIVE for a benchmark's whole dataset: one continuous pass,
+# no learning/eval split, no frozen ruleset. Task order is a pure function of
+# (dataset, seed) and identical in both arms — and it is load-bearing, since it
+# decides what has been learned by the time task N runs.
 # =============================================================================
 arms: [baseline, harness]     # managed repair always uses the candidate-validation lifecycle
-seeds: [1, 2, 3]              # >=3 seeds; each shuffles task order (counterbalances learning)
-k: 4                          # trials per eval task (pass@1 = first trial; pass^k = all k)
+seeds: [1, 2, 3]              # >=3 seeds; each shuffles task order (counterbalances what
+                              #   the harness sees early, now that order matters)
+k: 4                          # trials per task (pass@1 = first trial; pass^k = all k)
 
 # Harness knobs for the study (override the package defaults). Lowered
-# rule_trial_min_sessions so the short learning phase can promote rules
+# rule_trial_min_sessions so rules can be promoted within a single run
 # (Checkpoint 2). Recorded here so every run is reproducible.
 harness:
   rule_trial_min_sessions: 3
@@ -31,9 +37,12 @@ harness:
   # above that or scores/notices never land.
   poll_interval_s: 5          # seconds between score polls
   poll_max_attempts: 200      # -> ~1000s (17 min) background poll budget
-  # Settle barrier between the learning and eval phases (and before archiving): wait
-  # for outstanding turn evals + candidate-rule validation to drain so the eval
-  # phase snapshots a settled boundary ruleset. Bounded; breaks early when drained.
+  # Settle barrier, run ONCE at the end of a run (before archiving): wait for
+  # outstanding turn evals + candidate-rule validation to drain, so a candidate
+  # that has earned a verdict receives one instead of being archived as
+  # permanently provisional. Bounded; breaks early when drained. Validation is not
+  # deferred to here — the harness spawns it from every handled report during the
+  # run, which is what lets a rule be promoted mid-run.
   settle_timeout_s: 1080      # max seconds to wait for evals + validation to drain
   settle_poll_s: 10           # seconds between drain checks
   gate_window: 10             # ten non-improving evaluated trace updates before Tier-1 STALL
@@ -63,23 +72,21 @@ breach_thresholds:
   terminal_bench: 0.5
   tau2: 0.5
 
-# Per-benchmark task universe + subset rule. Task-specific detail (dataset,
-# tool surface) is merged from configs/benchmarks/<name>.yaml; keys here win.
+# Per-benchmark task universe. Each dataset is run WHOLE — nothing here
+# subdivides it. Task-specific detail (dataset, tool surface) is merged from
+# configs/benchmarks/<name>.yaml; keys here win.
 benchmarks:
   appworld:
-    dataset: dev              # 57 tasks; the study's default AppWorld subset
+    dataset: dev              # 57 tasks, run whole; --dataset test_normal (168) for more power
     max_turns: 100            # a turn = one execute(); AppWorld's env cap is 1000
-    learning_fraction: 0.35   # ~20 learning / ~37 eval, partitioned by seed
-    learning_split: []        # explicit ids override the seeded partition
-    eval_split: []
+    pass_tolerance: 1         # pass = within 1 missed test; HARNESS arm only
   terminal_bench:
     dataset: terminal-bench-sample@2.0  # smaller default; use terminal-bench@2.0 for full
     max_turns: 100            # Terminal-Bench has no native turn cap (timeout-driven);
-    learning_fraction: 0.35   #   100 is our in-process agent budget
+                              #   100 is our in-process agent budget
   tau2:
-    dataset: airline             # default; valid domains: airline, retail, telecom
+    dataset: airline          # default; valid domains: airline, retail, telecom
     max_turns: 100            # matches tau2's native default (run_tasks max_steps=100)
-    learning_fraction: 0.35
 
 # Budget discipline: `make matrix` prints an estimate and asks before launching.
 cost_cap_usd: 200
@@ -87,7 +94,7 @@ cost_cap_usd: 200
 # The smoke test: cheap, fast, exercises the whole pipeline end to end.
 smoke:
   model: gemini-3.1-flash-lite
-  tasks: 2
+  tasks: 2                    # tasks per run (--limit), not per phase
   k: 1
   arms: [baseline, harness]
   benchmarks: [appworld, terminal_bench, tau2]

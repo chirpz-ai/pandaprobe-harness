@@ -83,8 +83,8 @@ def make_session_id(
     """Mint a unique, readable PandaProbe session id (maximum 255 characters).
 
     Calls with the same namespace and semantic identity are stable, while a new
-    runner invocation changes the namespace. ``phase`` prevents a task from
-    sharing a session if a custom split ever places it in both phases.
+    runner invocation changes the namespace. ``phase`` is ``"live"`` for graded
+    trials and ``"replay"`` for a validation replay, so the two cannot collide.
     """
 
     parts = [
@@ -115,7 +115,7 @@ def harness_root_for(run_dir: Path) -> Path:
 def build_harness_config(
     *,
     harness_root: Path,
-    phase: str,
+    capture: bool,
     study: StudyConfig,
     benchmark: str,
     repair_model: str,
@@ -123,10 +123,15 @@ def build_harness_config(
 ) -> HarnessConfig:
     """Resolve a HarnessConfig for one run.
 
-    Capture is on only in the learning phase. Managed repair always retains the
-    candidate-validation lifecycle required by the package. The breach threshold
-    is identical across all arms/seeds of a benchmark (set by Checkpoint 1).
-    Explicit overrides beat ambient ``HARNESS_*`` env so runs are deterministic.
+    ``capture`` is explicit, not derived from a phase name: it gates
+    ``capture_eval_cases``, the sole switch on whether a breaching session becomes a
+    replayable failure case, and so on whether replay validation has anything to
+    replay. Inferring it from a string is how a rename silently disables promotion.
+
+    Managed repair always retains the candidate-validation lifecycle required by
+    the package. The breach threshold is identical across all arms/seeds of a
+    benchmark (set by Checkpoint 1). Explicit overrides beat ambient ``HARNESS_*``
+    env so runs are deterministic.
     """
 
     threshold = study.breach_threshold(benchmark)
@@ -136,7 +141,7 @@ def build_harness_config(
     )
     return HarnessConfig.from_env(
         harness_root=harness_root,
-        capture_eval_cases=(phase == "learning"),
+        capture_eval_cases=capture,
         rule_validation=True,
         rule_trial_min_sessions=study.harness.rule_trial_min_sessions,
         rule_promote_margin=study.harness.rule_promote_margin,

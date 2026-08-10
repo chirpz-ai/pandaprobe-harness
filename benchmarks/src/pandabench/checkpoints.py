@@ -23,7 +23,7 @@ __all__ = ["records_to_labels", "run_calibration"]
 
 
 def records_to_labels(
-    records_path: Path, out_path: Path, *, benchmark: str, phase: str = "learning",
+    records_path: Path, out_path: Path, *, benchmark: str, phase: str = "live",
     arm: str = "harness",
 ) -> int:
     """Write a calibrate label file from records: ``failed = not passed``.

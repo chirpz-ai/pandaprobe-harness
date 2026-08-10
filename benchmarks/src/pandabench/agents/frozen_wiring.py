@@ -1,4 +1,8 @@
-"""Read-only agent wiring backed only by a frozen benchmark rules snapshot."""
+"""Read-only agent wiring backed only by a frozen benchmark rules snapshot.
+
+**Currently unwired**: no run serves a frozen ruleset now that the harness is live
+throughout. See :mod:`pandabench.frozen_rules` for why it is kept.
+"""
 
 from __future__ import annotations
 

@@ -233,6 +233,9 @@ class AppWorldRunner(SingleTaskRunner):
             "pass_ratio": pass_ratio,
             "difficulty": verdict.difficulty,
             "stopped_reason": result.stopped_reason,
+            # Which tests failed, not just how many — see EvalResult.failures.
+            "failing_tests": list(verdict.failures),
+            "failing_tests_truncated": verdict.failures_truncated,
         }
         if server_error is not None:
             native_metrics["server_error"] = server_error

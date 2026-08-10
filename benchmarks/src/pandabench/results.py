@@ -84,7 +84,8 @@ class TrialRecord:
     resolved_model: str
     seed: int
     trial: int
-    phase: str  # "learning" | "eval"
+    #: Always ``"live"``; see ``runners.base.LIVE_PHASE``.
+    phase: str
     passed: bool
     native_metrics: dict[str, Any]
     turns: int
@@ -140,7 +141,9 @@ class RunManifest:
     litellm_version: str
     resolved_config: dict[str, Any]
     env_fingerprint: dict[str, Any]
-    learning_outcome: str | None = None
+    #: End-of-run rule lifecycle stamp: ``active=N``, ``active=N,pending=M``,
+    #: ``pending=M``, or ``no_rules``.
+    rules_outcome: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def to_json(self) -> dict[str, Any]:
@@ -371,7 +374,11 @@ def _validation_summary(harness: Any) -> dict[str, Any]:
 
 
 def frozen_harness_telemetry(snapshot: Any, session_id: str) -> HarnessTelemetry:
-    """Explicit arm-B telemetry for eval, where no trace scores are produced."""
+    """Explicit arm-B telemetry for a frozen-ruleset trial, which has no scores.
+
+    Currently unwired, like :mod:`pandabench.frozen_rules` and
+    :mod:`pandabench.agents.frozen_wiring` — see those modules for why it is kept.
+    """
 
     return HarnessTelemetry(
         session_id=session_id,

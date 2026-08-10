@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from pandabench.adapters import harbor_agent
-from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
 from pandabench.results import RecordWriter, TrialRecord
@@ -83,7 +82,7 @@ def _write_result(job_dir: Path, dirname: str, payload: dict[str, Any]) -> None:
 
 def test_ingest_rewards_ordinals_usage_and_harness_metadata(tmp_path):
     model = load_registry(CONFIGS / "models.yaml").resolve("mock")
-    job_dir = tmp_path / "raw" / "learning"
+    job_dir = tmp_path / "raw" / "live"
     # Directory names are intentionally opposite timestamp order. Harbor's suffix
     # is random, so started_at must assign stable attempt ordinals.
     _write_result(
@@ -119,7 +118,7 @@ def test_ingest_rewards_ordinals_usage_and_harness_metadata(tmp_path):
         k=2,
         arm="harness",
         model=model,
-        phase="learning",
+        phase="live",
         writer=writer,
         run_id="run-1",
         seed=3,
@@ -146,7 +145,7 @@ def test_ingest_rewards_ordinals_usage_and_harness_metadata(tmp_path):
 
 def test_ingest_exception_and_synthetic_error_record(tmp_path):
     model = load_registry(CONFIGS / "models.yaml").resolve("mock")
-    job_dir = tmp_path / "raw" / "eval"
+    job_dir = tmp_path / "raw" / "live"
     _write_result(
         job_dir,
         "task-b__aaaaaaa",
@@ -171,7 +170,7 @@ def test_ingest_exception_and_synthetic_error_record(tmp_path):
         k=1,
         arm="harness",
         model=model,
-        phase="eval",
+        phase="live",
         writer=writer,
         run_id="run-2",
         seed=3,
@@ -189,15 +188,15 @@ def test_ingest_exception_and_synthetic_error_record(tmp_path):
         model=model,
         seed=3,
         trial=0,
-        phase="eval",
+        phase="live",
         returncode=2,
     )
     assert missing.passed is False
     assert missing.error == "Harbor exited with status 2"
-    assert missing.native_metrics == {"harbor_exit_code": 2}
+    assert missing.native_metrics == {"harbor_exit_code": 2, "passed_relaxed": False}
 
 
-def test_harbor_learning_argv_is_serial_and_requests_managed_harness(tmp_path):
+def test_harbor_harness_argv_is_serial_and_requests_managed_harness(tmp_path):
     model = load_registry(CONFIGS / "models.yaml").resolve("mock")
     argv = _harbor_argv(
         dataset="terminal-bench-sample@2.0",
@@ -205,14 +204,13 @@ def test_harbor_learning_argv_is_serial_and_requests_managed_harness(tmp_path):
         k=2,
         arm="harness",
         model=model,
-        phase="learning",
+        phase="live",
         raw_dir=tmp_path / "raw",
         seed=3,
         backend=None,
         harness_root=tmp_path / "harness_root",
         max_turns=50,
         session_namespace="test-namespace",
-        frozen_rules_path=None,
     )
 
     assert Path(argv[0]).name == "harbor"
@@ -220,9 +218,10 @@ def test_harbor_learning_argv_is_serial_and_requests_managed_harness(tmp_path):
     assert argv[argv.index("-d") + 1] == "terminal-bench-sample@2.0"
     assert argv[argv.index("-n") + 1] == "1"
     assert "-y" in argv
+    # The harness arm captures for the whole job; there is no frozen eval to flag.
     assert "capture=true" in argv
-    assert "phase=learning" in argv
-    assert "frozen_eval=false" in argv
+    assert "phase=live" in argv
+    assert not any(arg.startswith("frozen") for arg in argv)
     assert "session_namespace=test-namespace" in argv
     assert [argv[index + 1] for index, value in enumerate(argv) if value == "-i"] == [
         "task-a",
@@ -230,24 +229,17 @@ def test_harbor_learning_argv_is_serial_and_requests_managed_harness(tmp_path):
     ]
 
 
-def test_harbor_eval_argv_explicitly_forwards_frozen_snapshot(tmp_path):
+def test_harbor_baseline_argv_never_captures(tmp_path):
     model = load_registry(CONFIGS / "models.yaml").resolve("mock")
-    snapshot_path = tmp_path / "frozen-rules.json"
-    FrozenRulesSnapshot.create((), created_at="2026-08-05T00:00:00+00:00").save(
-        snapshot_path
-    )
     argv = _harbor_argv(
         dataset="terminal-bench-sample@2.0", tasks=["task-a"], k=1,
-        arm="harness", model=model, phase="eval", raw_dir=tmp_path / "raw",
+        arm="baseline", model=model, phase="live", raw_dir=tmp_path / "raw",
         seed=1, backend=None, harness_root=tmp_path / "harness_root",
         max_turns=20, session_namespace="test-namespace",
-        frozen_rules_path=snapshot_path,
     )
 
-    assert "phase=eval" in argv
-    assert "frozen_eval=true" in argv
     assert "capture=false" in argv
-    assert f"frozen_rules_path={snapshot_path.resolve()}" in argv
+    assert "arm=baseline" in argv
 
 
 class RecordingHarborClient(MockClient):
@@ -288,26 +280,11 @@ class RecordingHarborClient(MockClient):
         self.flushes += 1
 
 
-async def test_frozen_harbor_agent_never_builds_live_harness(
+async def test_baseline_harbor_agent_builds_no_harness_and_offers_no_rule_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    snapshot_path = tmp_path / "frozen-rules.json"
-    snapshot = FrozenRulesSnapshot.create(
-        [{
-            "id": "r-harbor",
-            "created_at": "2026-08-05T00:00:00+00:00",
-            "rule": "Inspect the repository before editing.",
-            "rationale": "Learned from a training task.",
-            "source_notice_id": "n-harbor",
-            "metric": "task_completion",
-            "status": "active",
-            "tags": ["repository"],
-            "trial": None,
-            "scope": "global",
-        }],
-        created_at="2026-08-05T01:00:00+00:00",
-    )
-    snapshot.save(snapshot_path)
+    """Arm A stays a plain tool-calling loop, and still flushes its traces."""
+
     client = RecordingHarborClient()
     monkeypatch.setattr(harbor_agent, "LiteLLMClient", lambda **kwargs: client)
     monkeypatch.setattr(
@@ -321,12 +298,10 @@ async def test_frozen_harbor_agent_never_builds_live_harness(
     logs_dir.mkdir(parents=True)
     agent = harbor_agent.PandaBenchAgent(
         logs_dir,
-        arm="harness",
+        arm="baseline",
         seed=1,
         model_key="mock",
-        phase="eval",
-        frozen_eval=True,
-        frozen_rules_path=str(snapshot_path),
+        phase="live",
         harness_root=str(tmp_path / "live-root"),
         max_turns=3,
     )
@@ -336,13 +311,6 @@ async def test_frozen_harbor_agent_never_builds_live_harness(
     await agent.run("complete the task", environment, context)
 
     assert agent._harness is None
-    assert "Inspect the repository before editing" in client.messages[1][-1]["content"]
-    assert set(client.tool_names[0]) == {
-        "bash", "harness_rules_read", "harness_rules_search",
-        "harness_rules_list", "harness_rule_status",
-    }
-    assert all("harness_rule_add" not in tools for tools in client.tool_names)
+    assert all(tools == ["bash"] for tools in client.tool_names)
     assert client.flushes == 1
-    assert context.metadata["harness"]["mode"] == "frozen_eval"
-    assert context.metadata["harness"]["ruleset_hash"] == snapshot.sha256
-    assert context.metadata["harness"]["scores"] == {}
+    assert context.metadata["harness"] is None
