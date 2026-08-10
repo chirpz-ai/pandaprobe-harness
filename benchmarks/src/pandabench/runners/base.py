@@ -1,23 +1,27 @@
 """Generic run orchestration shared by every benchmark.
 
-A :class:`BenchmarkRunner` drives one ``(benchmark x model x arm x seed)`` run:
-the learning phase (arm B captures + validates rules; arm A runs the same split
-for symmetry) then the frozen eval phase, ``k`` trials each, with resumability
-and the arm-B ``refresh`` + ``drain_validation`` pacing baked in. Benchmark-
-specific work is confined to a :class:`SingleTaskRunner` (``run_once`` or the
-optional bulk ``run_phase`` hook); the harness session lifecycle lives here so it
-is identical across benchmarks and so ``run_once`` can be reused verbatim by the
+A :class:`BenchmarkRunner` drives one ``(benchmark x model x arm x seed)`` run as a
+single continuous pass over the benchmark's whole dataset, ``k`` trials per task,
+with resumability. In the ``harness`` arm the harness stays live for that entire
+pass, so a rule learned at task N can help task N+1 — the in-session healing claim
+under test, and the reason there is no learning/eval split or frozen ruleset here.
+
+Task order is therefore load-bearing: it decides what has been learned by task N.
+See :meth:`BenchmarkRunner._tasks`.
+
+Benchmark-specific work is confined to a :class:`SingleTaskRunner` (``run_once`` or
+the optional bulk ``run_phase`` hook); the harness session lifecycle lives here so
+it is identical across benchmarks and so ``run_once`` can be reused verbatim by the
 ReplayFn (with ``wiring=None``).
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,10 +29,8 @@ from typing import Any, Protocol
 
 from pandaprobe_harness import RuleScopeHint
 
-from ..agents.frozen_wiring import FrozenEvalWiring
 from ..agents.harness_wiring import AgentWiring, HarnessWiring, ReplayRuleWiring
 from ..config import StudyConfig
-from ..frozen_rules import FROZEN_RULES_FILENAME, FrozenRulesSnapshot
 from ..harness_glue import (
     build_harness,
     build_harness_config,
@@ -48,7 +50,6 @@ from ..results import (
     archive_workspace,
     collect_harness_telemetry,
     env_fingerprint,
-    frozen_harness_telemetry,
     git_sha,
     package_version,
     resume_key,
@@ -56,6 +57,11 @@ from ..results import (
 )
 
 logger = logging.getLogger("pandabench.runner")
+
+#: The one phase a graded trial can be in. Kept as a recorded field (and a
+#: ``resume_key`` component) because dropping it would change every trial's dedup
+#: identity and break resume against existing ``records.jsonl`` files.
+LIVE_PHASE = "live"
 
 # Credentials/config whose PRESENCE (not value) we fingerprint into the manifest.
 _ENV_KEYS = (
@@ -75,12 +81,6 @@ class TaskOutcome:
     wall_time_s: float
     usage: Usage
     error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskSplits:
-    learning: list[str]
-    eval: list[str]
 
 
 class SingleTaskRunner(Protocol):
@@ -157,9 +157,8 @@ class SingleTaskRunner(Protocol):
         backend: str | None,
         max_turns: int,
         benchmark: str,
-        frozen_rules_path: Path | None,
     ) -> bool:
-        """Drive a whole phase when the benchmark owns task/attempt iteration.
+        """Drive the whole run when the benchmark owns task/attempt iteration.
 
         Structural implementations need not define this method. The orchestrator
         treats an absent hook exactly like this default ``False`` result and falls
@@ -177,7 +176,7 @@ def _run_id(benchmark: str, model: str, arm: str, seed: int) -> str:
 
 
 class BenchmarkRunner:
-    """Orchestrates the learning + eval phases for one run tuple."""
+    """Orchestrates one continuous, harness-live run for one run tuple."""
 
     def __init__(
         self,
@@ -213,7 +212,6 @@ class BenchmarkRunner:
         k: int,
         limit: int | None = None,
         dry_run: bool = False,
-        phases: Sequence[str] = ("learning", "eval"),
         run_id: str | None = None,
         max_turns_override: int | None = None,
         dataset_override: str | None = None,
@@ -231,144 +229,120 @@ class BenchmarkRunner:
         max_turns = max_turns_override or bench_cfg.max_turns
 
         client = self._make_client(arm, dry_run)
-        splits = self._splits(dataset, seed, limit, benchmark)
+        tasks = self._tasks(dataset, seed, limit)
         harness_root = harness_root_for(run_dir)
         use_harness = arm == "harness" and not dry_run
-        snapshot_path = run_dir / FROZEN_RULES_FILENAME
-        snapshot: FrozenRulesSnapshot | None = None
-        learning_outcome = _existing_learning_outcome(run_dir / "manifest.json")
-        harness: Any = None
+        rules_outcome: str | None = None
+        tolerance = bench_cfg.pass_tolerance if arm == "harness" else 0
 
         logger.info(
-            "run %s: arm=%s model=%s seed=%s learning=%d eval=%d",
-            run_id, arm, model.key, seed, len(splits.learning), len(splits.eval),
+            "run %s: arm=%s model=%s seed=%s tasks=%d k=%d (harness live throughout)",
+            run_id, arm, model.key, seed, len(tasks), k,
         )
 
-        if "learning" in phases:
-            harness = await self._run_phase(
-                phase="learning", tasks=splits.learning, k=k, arm=arm, model=model,
-                client=client, writer=writer, run_id=run_id,
-                session_namespace=session_namespace, seed=seed, backend=backend,
-                max_turns=max_turns, benchmark=benchmark,
-                dataset=dataset, harness_root=harness_root, use_harness=use_harness,
-                frozen_snapshot=None, frozen_rules_path=None,
-            )
-            if harness is not None:
-                # Barrier: drain learning-phase evals + candidate validation within
-                # the existing bound, then freeze the exact resulting lifecycle state.
-                await self._settle(harness, "learning")
-                snapshot = self._freeze_learning_rules(snapshot_path, harness)
-                learning_outcome = _checkpoint_two(snapshot)
-                # Eval never owns a live harness, so archive the settled learning
-                # workspace now rather than relying on a post-eval barrier.
-                archive_workspace(harness_root, run_dir / "harness")
-
-        if "eval" in phases:
-            if use_harness and snapshot is None:
-                snapshot = self._snapshot_for_eval(snapshot_path)
-            # Deliberately drop the learning Harness. Frozen eval is backed only
-            # by the persisted benchmark snapshot and cannot touch the workspace.
-            harness = None
-            await self._run_phase(
-                phase="eval", tasks=splits.eval, k=k, arm=arm, model=model,
-                client=client, writer=writer, run_id=run_id,
-                session_namespace=session_namespace, seed=seed, backend=backend,
-                max_turns=max_turns, benchmark=benchmark,
-                dataset=dataset, harness_root=harness_root, use_harness=use_harness,
-                frozen_snapshot=snapshot,
-                frozen_rules_path=snapshot_path if snapshot is not None else None,
-            )
+        harness = await self._run_tasks(
+            tasks=tasks, k=k, arm=arm, model=model, client=client, writer=writer,
+            run_id=run_id, session_namespace=session_namespace, seed=seed,
+            backend=backend, max_turns=max_turns, benchmark=benchmark,
+            dataset=dataset, harness_root=harness_root, use_harness=use_harness,
+            pass_tolerance=tolerance,
+        )
+        if harness is not None:
+            # The only point where nothing holds an environment a replay needs.
+            await self._settle(harness, "run")
+            rules_outcome = _rules_outcome(harness)
+            archive_workspace(harness_root, run_dir / "harness")
 
         self._write_manifest(
             run_dir=run_dir, run_id=run_id, benchmark=benchmark, model=model,
-            arm=arm, seed=seed, backend=backend, learning_outcome=learning_outcome,
-            phases=phases, k=k, dry_run=dry_run, dataset=dataset, snapshot=snapshot,
+            arm=arm, seed=seed, backend=backend, rules_outcome=rules_outcome,
+            k=k, dry_run=dry_run, dataset=dataset,
+            pass_tolerance=tolerance, n_tasks=len(tasks),
         )
         await self._single.aclose()
         logger.info("run %s complete: %d records", run_id, writer.count)
         return run_dir
 
-    # -- phases ---------------------------------------------------------------
+    # -- the single pass ------------------------------------------------------
 
-    async def _run_phase(
-        self, *, phase: str, tasks: Sequence[str], k: int, arm: str, model: ResolvedModel,
+    async def _run_tasks(
+        self, *, tasks: Sequence[str], k: int, arm: str, model: ResolvedModel,
         client: ChatClient, writer: RecordWriter, run_id: str, seed: int,
         backend: str | None, max_turns: int, benchmark: str, dataset: str,
         harness_root: Path, use_harness: bool, session_namespace: str,
-        frozen_snapshot: FrozenRulesSnapshot | None,
-        frozen_rules_path: Path | None,
+        pass_tolerance: int,
     ) -> Any:
         bulk_hook = getattr(self._single, "run_phase", None)
         if bulk_hook is not None:
             handled = await bulk_hook(
-                tasks=tasks, k=k, arm=arm, model=model, phase=phase, dataset=dataset,
-                harness_root=harness_root, writer=writer, run_id=run_id, seed=seed,
-                backend=backend, max_turns=max_turns, benchmark=benchmark,
-                session_namespace=session_namespace,
-                frozen_rules_path=frozen_rules_path,
+                tasks=tasks, k=k, arm=arm, model=model, phase=LIVE_PHASE,
+                dataset=dataset, harness_root=harness_root, writer=writer,
+                run_id=run_id, seed=seed, backend=backend, max_turns=max_turns,
+                benchmark=benchmark, session_namespace=session_namespace,
             )
             if handled:
-                # Harbor's custom agent owns the live per-turn Harness. Construct
-                # this process's phase-level view only after Harbor exits, with no
-                # replay or verifier: Terminal-Bench supports neither capability.
+                # Harbor's custom agent owns the live Harness in its own process;
+                # build this process's read-back view only after Harbor exits, with
+                # no replay or verifier (Terminal-Bench supports neither).
                 return (
                     self._build_harness(
-                        harness_root, phase, benchmark, model, seed,
+                        harness_root, benchmark, model, seed,
                         session_namespace, bulk=True,
                     )
-                    if use_harness and phase == "learning"
+                    if use_harness
                     else None
                 )
 
         harness = (
             self._build_harness(
-                harness_root, phase, benchmark, model, seed, session_namespace
+                harness_root, benchmark, model, seed, session_namespace
             )
-            if use_harness and phase == "learning"
+            if use_harness
             else None
         )
         for task_id in tasks:
             for trial in range(k):
-                key = resume_key(benchmark, task_id, arm, model.key, backend, seed, trial, phase)
+                key = resume_key(
+                    benchmark, task_id, arm, model.key, backend, seed, trial, LIVE_PHASE
+                )
                 if writer.done(key):
-                    logger.info("skip (resumed): %s t%d %s", task_id, trial, phase)
+                    logger.info("skip (resumed): %s t%d", task_id, trial)
                     continue
                 record = await self._run_trial(
-                    phase=phase, task_id=task_id, trial=trial, arm=arm, model=model,
+                    task_id=task_id, trial=trial, arm=arm, model=model,
                     client=client, harness=harness, run_id=run_id, seed=seed,
                     backend=backend, max_turns=max_turns, benchmark=benchmark,
                     session_namespace=session_namespace,
-                    frozen_snapshot=frozen_snapshot,
+                    pass_tolerance=pass_tolerance,
                 )
                 writer.append(record)
                 status = "PASS" if record.passed else ("ERR" if record.error else "fail")
                 logger.info(
-                    "%s %s t%d %s -> %s (%.1fs, $%.4f)",
-                    benchmark, task_id, trial, phase, status,
+                    "%s %s t%d -> %s (%.1fs, $%.4f)",
+                    benchmark, task_id, trial, status,
                     record.wall_time_s, record.usage.get("cost_usd", 0.0),
                 )
         return harness
 
     async def _run_trial(
-        self, *, phase: str, task_id: str, trial: int, arm: str, model: ResolvedModel,
+        self, *, task_id: str, trial: int, arm: str, model: ResolvedModel,
         client: ChatClient, harness: Any, run_id: str, seed: int, backend: str | None,
-        max_turns: int, benchmark: str, session_namespace: str,
-        frozen_snapshot: FrozenRulesSnapshot | None,
+        max_turns: int, benchmark: str, session_namespace: str, pass_tolerance: int,
     ) -> TrialRecord:
         session_id = make_session_id(
             session_namespace=session_namespace, benchmark=benchmark, task_id=task_id,
-            arm=arm, model_key=model.key, seed=seed, trial=trial, phase=phase,
+            arm=arm, model_key=model.key, seed=seed, trial=trial, phase=LIVE_PHASE,
         )
         wiring: AgentWiring | None = None
         if harness is not None:
             descriptor = {
                 "benchmark": benchmark, "task_id": task_id, "arm": arm,
                 "model_key": model.key, "backend": backend, "seed": seed, "trial": trial,
-                "run_id": run_id, "phase": phase,
+                "run_id": run_id, "phase": LIVE_PHASE,
             }
             wiring = HarnessWiring(
                 harness=harness, benchmark=benchmark, task_id=task_id,
-                capture=(phase == "learning"), replay_descriptor=descriptor,
+                capture=True, replay_descriptor=descriptor,
                 # The loop settles every turn through this wiring, so the harness
                 # sees the trajectory one trace at a time instead of once at the
                 # end — the precondition for the trajectory gate having a series.
@@ -376,8 +350,6 @@ class BenchmarkRunner:
                 rule_scope_hints=self._single.rule_scope_hints(task_id),
                 task_summary=self._single.task_summary(task_id),
             )
-        elif frozen_snapshot is not None and arm == "harness" and phase == "eval":
-            wiring = FrozenEvalWiring(frozen_snapshot)
 
         outcome = await self._single.run_once(
             task_id=task_id, session_id=session_id, model=model, client=client,
@@ -398,14 +370,17 @@ class BenchmarkRunner:
             telemetry = collect_harness_telemetry(
                 harness, session_id, report, repair=repair
             ).to_dict()
-        elif frozen_snapshot is not None and arm == "harness" and phase == "eval":
-            telemetry = frozen_harness_telemetry(frozen_snapshot, session_id).to_dict()
 
+        native_metrics = dict(outcome.native_metrics)
+        native_metrics["passed_relaxed"] = _passed_relaxed(
+            outcome.passed, native_metrics, pass_tolerance
+        )
         return TrialRecord(
             run_id=run_id, benchmark=benchmark, task_id=task_id, arm=arm,
             model=model.key, provider=model.provider, backend=model.backend,
-            resolved_model=model.litellm_model, seed=seed, trial=trial, phase=phase,
-            passed=outcome.passed, native_metrics=outcome.native_metrics,
+            resolved_model=model.litellm_model, seed=seed, trial=trial,
+            phase=LIVE_PHASE,
+            passed=outcome.passed, native_metrics=native_metrics,
             turns=outcome.turns, wall_time_s=outcome.wall_time_s,
             usage=outcome.usage.to_dict(), harness=telemetry, error=outcome.error,
         )
@@ -426,11 +401,11 @@ class BenchmarkRunner:
         )
 
     def _build_harness(
-        self, harness_root: Path, phase: str, benchmark: str, model: ResolvedModel,
+        self, harness_root: Path, benchmark: str, model: ResolvedModel,
         seed: int, session_namespace: str, *, bulk: bool = False,
     ) -> Any:
         cfg = build_harness_config(
-            harness_root=harness_root, phase=phase, study=self._study,
+            harness_root=harness_root, capture=True, study=self._study,
             benchmark=benchmark, repair_model=model.litellm_model,
             health_check=not bulk,
         )
@@ -483,40 +458,6 @@ class BenchmarkRunner:
 
         return make_replay_fn(replay_runner=replay_runner)
 
-    @staticmethod
-    def _freeze_learning_rules(path: Path, harness: Any) -> FrozenRulesSnapshot:
-        """Create once after learning settlement; never refresh an existing boundary."""
-
-        if path.exists():
-            logger.info("reusing existing frozen learning snapshot at %s", path)
-            return FrozenRulesSnapshot.load(path)
-        snapshot = FrozenRulesSnapshot.create(harness.rules.all())
-        snapshot.save(path)
-        logger.info(
-            "froze learning rules: sha256=%s active=%d candidate=%d retired=%d",
-            snapshot.sha256,
-            snapshot.active_count,
-            snapshot.candidate_count,
-            snapshot.retired_count,
-        )
-        return snapshot
-
-    @staticmethod
-    def _snapshot_for_eval(path: Path) -> FrozenRulesSnapshot:
-        """Load a resume snapshot, or persist an explicit empty eval-only one."""
-
-        if path.exists():
-            snapshot = FrozenRulesSnapshot.load(path)
-            logger.info("loaded frozen eval ruleset sha256=%s", snapshot.sha256)
-            return snapshot
-        snapshot = FrozenRulesSnapshot.create(())
-        snapshot.save(path)
-        logger.info(
-            "eval-only harness run has no prior snapshot; created explicit empty ruleset %s",
-            snapshot.sha256,
-        )
-        return snapshot
-
     async def _settle(self, harness: Any, label: str) -> None:
         """Await outstanding background evals + validate candidate rules (bounded).
 
@@ -528,8 +469,13 @@ class BenchmarkRunner:
         Waiting on evals alone is not enough, and used to be the whole loop: it
         exits as soon as scores have landed, leaving validation to a trailing
         best-effort join bounded by ``drain_timeout_s`` (15s) — far less than one
-        replay-bound round needs. The snapshot below then froze candidates that
-        had already earned a verdict as permanently provisional.
+        replay-bound round needs. Candidates that had already earned a verdict
+        were then recorded as permanently provisional.
+
+        Called once, at the end of the run. Validation itself is not deferred to
+        here: the harness spawns it (single-flight, detached) from every handled
+        report, so promotion can happen in-session. This barrier only decides what
+        is still outstanding when the tasks run out.
         """
 
         deadline = time.monotonic() + self._study.harness.settle_timeout_s
@@ -551,9 +497,8 @@ class BenchmarkRunner:
                 label, len(pending), validating,
             )
             await asyncio.sleep(self._study.harness.settle_poll_s)
-        # Evals are quiet, so every trial's evidence is in. Run validation out to a
-        # standstill on the remaining budget: this is the only point in the run
-        # where nothing holds the environment a replay needs.
+        # Evals are quiet, so every trial's evidence is in; run validation out to a
+        # standstill on the remaining budget.
         try:
             settled = await harness.settle_validation(
                 timeout=max(0.0, deadline - time.monotonic())
@@ -567,26 +512,23 @@ class BenchmarkRunner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("settle(%s): settle_validation error: %s", label, exc)
 
-    def _splits(self, dataset: str, seed: int, limit: int | None, benchmark: str) -> TaskSplits:
-        cfg = self._study.benchmark(benchmark)
-        if cfg.learning_split or cfg.eval_split:
-            learning = list(cfg.learning_split)
-            eval_ = list(cfg.eval_split)
-        else:
-            all_ids = self._single.list_tasks(dataset)
-            shuffled = list(all_ids)
-            random.Random(seed).shuffle(shuffled)
-            n_learn = round(len(shuffled) * cfg.learning_fraction)
-            learning, eval_ = shuffled[:n_learn], shuffled[n_learn:]
-        if limit is not None:
-            learning, eval_ = learning[:limit], eval_[:limit]
-        return TaskSplits(learning, eval_)
+    def _tasks(self, dataset: str, seed: int, limit: int | None) -> list[str]:
+        """The whole dataset in one deterministic, arm-independent order.
+
+        Deterministic given ``(dataset, seed)`` so a rerun learns in the same
+        sequence, and ``arm`` is deliberately not a parameter so the two arms
+        cannot diverge — the report's paired per-task comparison needs both.
+        ``limit`` truncates the run.
+        """
+
+        shuffled = list(self._single.list_tasks(dataset))
+        random.Random(seed).shuffle(shuffled)
+        return shuffled if limit is None else shuffled[:limit]
 
     def _write_manifest(
         self, *, run_dir: Path, run_id: str, benchmark: str, model: ResolvedModel,
-        arm: str, seed: int, backend: str | None, learning_outcome: str | None,
-        phases: Sequence[str], k: int, dry_run: bool,
-        dataset: str, snapshot: FrozenRulesSnapshot | None,
+        arm: str, seed: int, backend: str | None, rules_outcome: str | None,
+        k: int, dry_run: bool, dataset: str, pass_tolerance: int, n_tasks: int,
     ) -> None:
         manifest = RunManifest(
             run_id=run_id, benchmark=benchmark, model=model.key, arm=arm, seed=seed,
@@ -596,7 +538,8 @@ class BenchmarkRunner:
             litellm_version=package_version("litellm"),
             resolved_config={
                 "resolved_model": model.litellm_model, "provider": model.provider,
-                "dataset": dataset, "k": k, "phases": list(phases), "dry_run": dry_run,
+                "dataset": dataset, "k": k, "dry_run": dry_run,
+                "n_tasks": n_tasks, "pass_tolerance": pass_tolerance,
                 "breach_threshold": self._study.breach_threshold(benchmark),
                 "rule_trial_min_sessions": self._study.harness.rule_trial_min_sessions,
                 "gate_window": self._study.harness.gate_window,
@@ -610,47 +553,51 @@ class BenchmarkRunner:
                 ),
                 "trace_repair_agent": self._study.harness.trace_repair_agent,
                 "managed_repair": True,
-                "eval_policy": "frozen_rules" if arm == "harness" else "baseline",
-                "trace_eval_during_eval": False,
-                **(
-                    {
-                        "ruleset_hash": snapshot.sha256,
-                        "rules_active": snapshot.active_count,
-                        "rules_candidate": snapshot.candidate_count,
-                        "rules_retired": snapshot.retired_count,
-                    }
-                    if snapshot is not None
-                    else {}
+                "harness_policy": (
+                    "live_throughout" if arm == "harness" else "baseline"
                 ),
             },
             env_fingerprint=env_fingerprint(_ENV_KEYS),
-            learning_outcome=learning_outcome,
+            rules_outcome=rules_outcome,
         )
         manifest.write(run_dir / "manifest.json")
 
 
-def _existing_learning_outcome(path: Path) -> str | None:
-    """Preserve the learning checkpoint when an eval-only resume rewrites a manifest."""
+def _passed_relaxed(passed: bool, native: Mapping[str, Any], tolerance: int) -> bool:
+    """Whether the trial passed within ``tolerance`` missed tests.
 
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    value = raw.get("learning_outcome") if isinstance(raw, dict) else None
-    return str(value) if value is not None else None
+    Ours, not any benchmark's: ``TrialRecord.passed`` stays the benchmark's own
+    all-or-nothing verdict. This exists because that verdict is floored — in a
+    measured 456-trial AppWorld run, 72% of trials failed by exactly one test.
 
-
-def _checkpoint_two(snapshot: FrozenRulesSnapshot) -> str:
-    """Checkpoint 2: did the learning phase promote any rules? Stamp the outcome.
-
-    "Learning produced nothing" and "learning produced N candidates that
-    validation never decided" are very different results, and reporting both as
-    ``no_rules`` hid the second one completely. Undecided candidates are named.
+    ``tolerance=0`` (always the baseline arm) makes this the native verdict, as does
+    a benchmark with no per-test counts to relax.
     """
 
-    active = snapshot.active_count
-    candidate = snapshot.candidate_count
-    logger.info("checkpoint-2: rules_active=%d rules_candidate=%d", active, candidate)
+    total = native.get("num_tests")
+    passes = native.get("num_passes")
+    if not isinstance(total, int) or not isinstance(passes, int) or total <= 0:
+        return passed
+    return passes >= total - max(0, tolerance)
+
+
+def _rules_outcome(harness: Any) -> str:
+    """The end-of-run rule lifecycle state, for the manifest.
+
+    Names undecided candidates: "produced nothing" and "produced N candidates
+    validation never decided" are different results.
+    """
+
+    active = candidate = 0
+    try:
+        for rule in harness.rules.all():
+            status = getattr(rule, "status", "")
+            active += status == "active"
+            candidate += status == "candidate"
+    except Exception as exc:  # noqa: BLE001 - a manifest stamp must not fail a run
+        logger.warning("could not read end-of-run rule state: %s", exc)
+        return "unknown"
+    logger.info("end of run: rules_active=%d rules_candidate=%d", active, candidate)
     if active:
         return f"active={active}" if not candidate else f"active={active},pending={candidate}"
     return f"pending={candidate}" if candidate else "no_rules"

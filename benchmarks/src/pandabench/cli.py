@@ -98,8 +98,9 @@ def run_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("-k", "--k", type=int, default=None, dest="k")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--phases", default="learning,eval", help="comma list of phases")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="run only the first N tasks of the dataset"
+    )
     parser.add_argument("--dry-run", action="store_true", help="mock model, no external calls")
     parser.add_argument("--run-id", default=None, help="reuse an existing run_id to resume")
     parser.add_argument("--max-turns", type=int, default=None)
@@ -119,11 +120,10 @@ def run_main(argv: list[str] | None = None) -> int:
 
     study, registry = _load()
     runner = _make_runner(args.benchmark, study, registry, dry_run=args.dry_run)
-    phases = tuple(p.strip() for p in args.phases.split(",") if p.strip())
     asyncio.run(
         runner.run(
             arm=args.arm, model_key=args.model, backend=args.backend, seed=args.seed,
-            k=args.k or study.k, limit=args.limit, dry_run=args.dry_run, phases=phases,
+            k=args.k or study.k, limit=args.limit, dry_run=args.dry_run,
             run_id=args.run_id, max_turns_override=args.max_turns,
             dataset_override=args.dataset,
         )
@@ -153,7 +153,7 @@ def _smoke() -> int:
                 runner.run(
                     arm=arm, model_key=study.smoke.model, backend=None, seed=1,
                     k=study.smoke.k, limit=study.smoke.tasks, dry_run=True,
-                    phases=("learning", "eval"), max_turns_override=6,
+                    max_turns_override=6,
                 )
             )
     logger.info("smoke complete — see results/runs/ and `make report`")

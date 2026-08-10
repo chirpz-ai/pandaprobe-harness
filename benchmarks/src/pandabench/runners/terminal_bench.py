@@ -1,8 +1,9 @@
 """Terminal-Bench 2.x runner, driven through Harbor's stable CLI surface.
 
 Harbor owns task download, container lifecycle, task attempts, and verification.
-PandaBench invokes one serial Harbor job per phase and ingests its ``result.json``
-artifacts into the shared :class:`~pandabench.results.TrialRecord` schema.
+PandaBench invokes one serial Harbor job per run and ingests its ``result.json``
+artifacts into the shared :class:`~pandabench.results.TrialRecord` schema. The
+harness arm runs live for the whole job; ``phase`` is the constant ``"live"``.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.harness_wiring import AgentWiring
-from ..frozen_rules import FrozenRulesSnapshot
 from ..providers.litellm_client import ChatClient
 from ..providers.models import ResolvedModel
 from ..results import RecordWriter, TrialRecord, resume_key
@@ -108,14 +108,8 @@ class TerminalBenchRunner(SingleTaskRunner):
         backend: str | None,
         max_turns: int,
         benchmark: str,
-        frozen_rules_path: Path | None,
     ) -> bool:
         effective_backend = model.backend
-        frozen_snapshot = (
-            FrozenRulesSnapshot.load(frozen_rules_path)
-            if arm == "harness" and phase == "eval" and frozen_rules_path is not None
-            else None
-        )
         pending_tasks = [
             task_id
             for task_id in tasks
@@ -130,7 +124,7 @@ class TerminalBenchRunner(SingleTaskRunner):
             )
         ]
         if not pending_tasks:
-            logger.info("Harbor phase %s is already complete; nothing to resume", phase)
+            logger.info("Harbor %s job is already complete; nothing to resume", phase)
             return True
 
         run_dir = harness_root.parent
@@ -151,10 +145,9 @@ class TerminalBenchRunner(SingleTaskRunner):
             harness_root=harness_root,
             max_turns=max_turns,
             session_namespace=session_namespace,
-            frozen_rules_path=frozen_rules_path,
         )
 
-        logger.info("starting Harbor %s phase for %d task(s)", phase, len(pending_tasks))
+        logger.info("starting Harbor %s job for %d task(s)", phase, len(pending_tasks))
         launch_error: str | None
         try:
             process = await asyncio.create_subprocess_exec(
@@ -188,7 +181,6 @@ class TerminalBenchRunner(SingleTaskRunner):
             run_id=run_id,
             seed=seed,
             benchmark=benchmark,
-            frozen_snapshot=frozen_snapshot,
         )
         missing_error = launch_error or (
             f"Harbor exited with status {returncode} without producing this result"
@@ -215,12 +207,11 @@ class TerminalBenchRunner(SingleTaskRunner):
                         trial=trial,
                         phase=phase,
                         returncode=returncode,
-                        frozen_snapshot=frozen_snapshot,
                     )
                 )
 
         if returncode != 0:
-            logger.warning("Harbor %s phase exited with status %d", phase, returncode)
+            logger.warning("Harbor %s job exited with status %d", phase, returncode)
         return True
 
     async def run_once(
@@ -268,7 +259,6 @@ def _harbor_argv(
     harness_root: Path,
     max_turns: int,
     session_namespace: str,
-    frozen_rules_path: Path | None,
 ) -> list[str]:
     argv = [
         _harbor_executable(), "run",
@@ -284,16 +274,11 @@ def _harbor_argv(
         "--ak", f"seed={seed}",
         "--ak", f"model_key={model.key}",
         "--ak", f"phase={phase}",
-        "--ak", f"frozen_eval={str(arm == 'harness' and phase == 'eval').lower()}",
-        "--ak", f"capture={str(phase == 'learning').lower()}",
+        "--ak", f"capture={str(arm == 'harness').lower()}",
         "--ak", f"harness_root={harness_root.resolve()}",
         "--ak", f"max_turns={max_turns}",
         "--ak", f"session_namespace={session_namespace}",
     ]
-    if arm == "harness" and phase == "eval":
-        if frozen_rules_path is None:
-            raise ValueError("frozen harness eval requires a frozen rules snapshot path")
-        argv.extend(("--ak", f"frozen_rules_path={frozen_rules_path.resolve()}"))
     resolved_backend = backend or model.backend
     if resolved_backend is not None:
         argv.extend(("--ak", f"backend={resolved_backend}"))
@@ -314,7 +299,6 @@ def _ingest_results(
     run_id: str,
     seed: int,
     benchmark: str,
-    frozen_snapshot: FrozenRulesSnapshot | None = None,
 ) -> set[tuple[str, int]]:
     """Ingest Harbor trial artifacts and return the task/ordinal slots observed."""
 
@@ -353,7 +337,6 @@ def _ingest_results(
                 seed=seed,
                 trial=trial,
                 phase=phase,
-                frozen_snapshot=frozen_snapshot,
             )
             writer.append(record)
     return seen
@@ -371,7 +354,6 @@ def _record_from_result(
     seed: int,
     trial: int,
     phase: str,
-    frozen_snapshot: FrozenRulesSnapshot | None = None,
 ) -> TrialRecord:
     verifier = payload.get("verifier_result") or {}
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
@@ -385,21 +367,19 @@ def _record_from_result(
     harness = metadata.get("harness")
     if arm != "harness" or not isinstance(harness, dict):
         harness = None
-    if harness is None and arm == "harness" and phase == "eval" and frozen_snapshot is not None:
-        from ..results import frozen_harness_telemetry
-
-        harness = frozen_harness_telemetry(
-            frozen_snapshot, str(metadata.get("session_id") or "unavailable")
-        ).to_dict()
 
     error = _exception_message(payload.get("exception_info"))
     if reward is None and error is None:
         error = "Harbor result has no verifier reward"
+    passed = bool(reward is not None and reward >= 1.0 - 1e-6)
     native = {
         "reward": reward,
         "rewards": rewards if isinstance(rewards, dict) else {},
         "harbor_trial_name": payload.get("trial_name") or source.parent.name,
         "stopped_reason": metadata.get("stopped_reason"),
+        # Harbor returns a threshold reward, not per-test counts: no partial-credit
+        # signal to relax, so relaxed equals the native verdict.
+        "passed_relaxed": passed,
     }
     return TrialRecord(
         run_id=run_id,
@@ -413,7 +393,7 @@ def _record_from_result(
         seed=seed,
         trial=trial,
         phase=phase,
-        passed=bool(reward is not None and reward >= 1.0 - 1e-6),
+        passed=passed,
         native_metrics=native,
         turns=int(metadata.get("turns", 0) or 0),
         wall_time_s=_wall_time(payload.get("started_at"), payload.get("finished_at")),
@@ -478,15 +458,7 @@ def _error_record(
     trial: int,
     phase: str,
     returncode: int,
-    frozen_snapshot: FrozenRulesSnapshot | None = None,
 ) -> TrialRecord:
-    from ..results import frozen_harness_telemetry
-
-    harness = (
-        frozen_harness_telemetry(frozen_snapshot, "unavailable").to_dict()
-        if arm == "harness" and phase == "eval" and frozen_snapshot is not None
-        else None
-    )
     return TrialRecord(
         run_id=run_id,
         benchmark=benchmark,
@@ -500,11 +472,11 @@ def _error_record(
         trial=trial,
         phase=phase,
         passed=False,
-        native_metrics={"harbor_exit_code": returncode},
+        native_metrics={"harbor_exit_code": returncode, "passed_relaxed": False},
         turns=0,
         wall_time_s=0.0,
         usage={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
-        harness=harness,
+        harness=None,
         error=message,
     )
 
