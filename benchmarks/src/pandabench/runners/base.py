@@ -21,7 +21,7 @@ import asyncio
 import logging
 import random
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -233,7 +233,6 @@ class BenchmarkRunner:
         harness_root = harness_root_for(run_dir)
         use_harness = arm == "harness" and not dry_run
         rules_outcome: str | None = None
-        tolerance = bench_cfg.pass_tolerance if arm == "harness" else 0
 
         logger.info(
             "run %s: arm=%s model=%s seed=%s tasks=%d k=%d (harness live throughout)",
@@ -245,7 +244,6 @@ class BenchmarkRunner:
             run_id=run_id, session_namespace=session_namespace, seed=seed,
             backend=backend, max_turns=max_turns, benchmark=benchmark,
             dataset=dataset, harness_root=harness_root, use_harness=use_harness,
-            pass_tolerance=tolerance,
         )
         if harness is not None:
             # The only point where nothing holds an environment a replay needs.
@@ -256,8 +254,7 @@ class BenchmarkRunner:
         self._write_manifest(
             run_dir=run_dir, run_id=run_id, benchmark=benchmark, model=model,
             arm=arm, seed=seed, backend=backend, rules_outcome=rules_outcome,
-            k=k, dry_run=dry_run, dataset=dataset,
-            pass_tolerance=tolerance, n_tasks=len(tasks),
+            k=k, dry_run=dry_run, dataset=dataset, n_tasks=len(tasks),
         )
         await self._single.aclose()
         logger.info("run %s complete: %d records", run_id, writer.count)
@@ -270,7 +267,6 @@ class BenchmarkRunner:
         client: ChatClient, writer: RecordWriter, run_id: str, seed: int,
         backend: str | None, max_turns: int, benchmark: str, dataset: str,
         harness_root: Path, use_harness: bool, session_namespace: str,
-        pass_tolerance: int,
     ) -> Any:
         bulk_hook = getattr(self._single, "run_phase", None)
         if bulk_hook is not None:
@@ -313,7 +309,6 @@ class BenchmarkRunner:
                     client=client, harness=harness, run_id=run_id, seed=seed,
                     backend=backend, max_turns=max_turns, benchmark=benchmark,
                     session_namespace=session_namespace,
-                    pass_tolerance=pass_tolerance,
                 )
                 writer.append(record)
                 status = "PASS" if record.passed else ("ERR" if record.error else "fail")
@@ -327,7 +322,7 @@ class BenchmarkRunner:
     async def _run_trial(
         self, *, task_id: str, trial: int, arm: str, model: ResolvedModel,
         client: ChatClient, harness: Any, run_id: str, seed: int, backend: str | None,
-        max_turns: int, benchmark: str, session_namespace: str, pass_tolerance: int,
+        max_turns: int, benchmark: str, session_namespace: str,
     ) -> TrialRecord:
         session_id = make_session_id(
             session_namespace=session_namespace, benchmark=benchmark, task_id=task_id,
@@ -371,16 +366,12 @@ class BenchmarkRunner:
                 harness, session_id, report, repair=repair
             ).to_dict()
 
-        native_metrics = dict(outcome.native_metrics)
-        native_metrics["passed_relaxed"] = _passed_relaxed(
-            outcome.passed, native_metrics, pass_tolerance
-        )
         return TrialRecord(
             run_id=run_id, benchmark=benchmark, task_id=task_id, arm=arm,
             model=model.key, provider=model.provider, backend=model.backend,
             resolved_model=model.litellm_model, seed=seed, trial=trial,
             phase=LIVE_PHASE,
-            passed=outcome.passed, native_metrics=native_metrics,
+            passed=outcome.passed, native_metrics=dict(outcome.native_metrics),
             turns=outcome.turns, wall_time_s=outcome.wall_time_s,
             usage=outcome.usage.to_dict(), harness=telemetry, error=outcome.error,
         )
@@ -438,7 +429,7 @@ class BenchmarkRunner:
         replay_client = LiteLLMClient(
             tracer=PandaTracer.from_env(), num_retries=self._num_retries, timeout_s=self._timeout_s
         )
-        replay_max_turns = self._study.harness.replay_max_turns
+        replay_max_turns = self._study.replay_max_turns(benchmark)
 
         async def replay_runner(task_id: str, context: Any) -> str:
             self._replay_counter += 1
@@ -528,7 +519,7 @@ class BenchmarkRunner:
     def _write_manifest(
         self, *, run_dir: Path, run_id: str, benchmark: str, model: ResolvedModel,
         arm: str, seed: int, backend: str | None, rules_outcome: str | None,
-        k: int, dry_run: bool, dataset: str, pass_tolerance: int, n_tasks: int,
+        k: int, dry_run: bool, dataset: str, n_tasks: int,
     ) -> None:
         manifest = RunManifest(
             run_id=run_id, benchmark=benchmark, model=model.key, arm=arm, seed=seed,
@@ -539,7 +530,7 @@ class BenchmarkRunner:
             resolved_config={
                 "resolved_model": model.litellm_model, "provider": model.provider,
                 "dataset": dataset, "k": k, "dry_run": dry_run,
-                "n_tasks": n_tasks, "pass_tolerance": pass_tolerance,
+                "n_tasks": n_tasks,
                 "breach_threshold": self._study.breach_threshold(benchmark),
                 "rule_trial_min_sessions": self._study.harness.rule_trial_min_sessions,
                 "gate_window": self._study.harness.gate_window,
@@ -561,24 +552,6 @@ class BenchmarkRunner:
             rules_outcome=rules_outcome,
         )
         manifest.write(run_dir / "manifest.json")
-
-
-def _passed_relaxed(passed: bool, native: Mapping[str, Any], tolerance: int) -> bool:
-    """Whether the trial passed within ``tolerance`` missed tests.
-
-    Ours, not any benchmark's: ``TrialRecord.passed`` stays the benchmark's own
-    all-or-nothing verdict. This exists because that verdict is floored — in a
-    measured 456-trial AppWorld run, 72% of trials failed by exactly one test.
-
-    ``tolerance=0`` (always the baseline arm) makes this the native verdict, as does
-    a benchmark with no per-test counts to relax.
-    """
-
-    total = native.get("num_tests")
-    passes = native.get("num_passes")
-    if not isinstance(total, int) or not isinstance(passes, int) or total <= 0:
-        return passed
-    return passes >= total - max(0, tolerance)
 
 
 def _rules_outcome(harness: Any) -> str:

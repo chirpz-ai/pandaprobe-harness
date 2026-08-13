@@ -218,25 +218,14 @@ make report
 Produces in `results/summary/`:
 
 - `all_records.csv` — every task-trial row, flattened.
-- `headline.csv` — benchmark × dataset × model × arm over the **whole run**, with three
-metrics side by side: strict `pass@1`/`pass^k` (the **benchmark's own** verdict, the
-only publishable one), `pass_at_1_relaxed`/`pass_hat_k_relaxed` and `mean_pass_ratio`
-(**ours**), the `pass_tolerance` each arm was scored at, plus mean cost and tokens.
+- `headline.csv` — benchmark × dataset × model × arm over the **whole run**, strictest
+metric first: `pass@1`/`pass^k`, then `pass_any_k`, `pass_at_1_relaxed`/`pass_hat_k_relaxed` at the `relax` in
+force, and `mean_score` (**ours**), plus mean cost and tokens.
+- `relax_sweep.csv` — both arms' paired `pass@1` across a range of tolerances.
 - `harness_telemetry.csv` — rules active/candidate/retired, notices, breach rate (arm B).
-- `report.md` — headline table + harness-vs-baseline paired delta on **both** the strict
-and the relaxed metric (bootstrap CI + McNemar p) + cost/overhead + methodology notes.
+- `report.md` — headline table + harness-vs-baseline paired delta on **all three**
 - `learning_curve.png` — arm-B cumulative pass rate across the run in task order. With
 the harness live throughout, this is a genuine in-session learning curve.
-
-Why a relaxed metric exists: in a measured 456-trial AppWorld run, 72% of trials failed
-by exactly one test, so the strict all-or-nothing verdict was floored and could not
-move. It applies to the **harness arm only** — the baseline is always scored by the
-benchmark's own criteria (tolerance 0). The `relaxed` paired row is therefore an
-intentionally asymmetric comparison (harness at tolerance N vs baseline at 0), which is
-the intended read: how the harness does under a given tolerance against an unrelaxed
-baseline. It is **not** comparable to published numbers, and the headline's
-`pass_tolerance` column names the definition each arm used. Benchmarks with no
-partial-credit signal (τ², Terminal-Bench) report it equal to the strict verdict.
 
 With no records yet it writes an empty summary — that's expected before any run.
 

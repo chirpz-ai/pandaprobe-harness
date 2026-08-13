@@ -377,9 +377,6 @@ def _record_from_result(
         "rewards": rewards if isinstance(rewards, dict) else {},
         "harbor_trial_name": payload.get("trial_name") or source.parent.name,
         "stopped_reason": metadata.get("stopped_reason"),
-        # Harbor returns a threshold reward, not per-test counts: no partial-credit
-        # signal to relax, so relaxed equals the native verdict.
-        "passed_relaxed": passed,
     }
     return TrialRecord(
         run_id=run_id,
@@ -472,7 +469,7 @@ def _error_record(
         trial=trial,
         phase=phase,
         passed=False,
-        native_metrics={"harbor_exit_code": returncode, "passed_relaxed": False},
+        native_metrics={"harbor_exit_code": returncode},
         turns=0,
         wall_time_s=0.0,
         usage={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},

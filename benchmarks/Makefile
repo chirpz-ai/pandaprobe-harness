@@ -61,8 +61,8 @@ terminal: terminal_bench ## Alias for terminal_bench
 matrix: ## Full study matrix — NOT yet wired; prints how to run per-arm loops (see RUNNING.md §6)
 	uv run pandabench-run --matrix configs/study.yaml
 
-report: ## Regenerate summary/ (CSVs + report.md + plots) from runs/
-	uv run pandabench-report
+report: ## Regenerate summary/ from runs/
+	uv run pandabench-report $(if $(RELAX),--relax $(RELAX),)
 
 calibrate: ## Checkpoint 1: metric<->failure calibration for one benchmark (BENCH=appworld)
 	uv run pandabench-calibrate --benchmark $(BENCH)

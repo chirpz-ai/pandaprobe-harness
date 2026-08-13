@@ -21,6 +21,7 @@ __all__ = [
     "bootstrap_ci",
     "mcnemar",
     "paired_delta",
+    "pass_any_k",
     "pass_at_1",
     "pass_hat_k",
 ]
@@ -41,6 +42,20 @@ def pass_hat_k(trials_by_task: Sequence[Sequence[bool]]) -> float:
     if not tasks:
         return 0.0
     return sum(1 for trials in tasks if all(trials)) / len(tasks)
+
+
+def pass_any_k(trials_by_task: Sequence[Sequence[bool]]) -> float:
+    """Fraction of tasks whose ANY trial passed (pass@k).
+
+    The one relaxation that still moves on a benchmark with no partial credit: it
+    loosens the *trial* axis rather than the score axis, so it works identically
+    for AppWorld's per-test counts and for tau2/Terminal-Bench's binary reward.
+    """
+
+    tasks = [t for t in trials_by_task if t]
+    if not tasks:
+        return 0.0
+    return sum(1 for trials in tasks if any(trials)) / len(tasks)
 
 
 def bootstrap_ci(
