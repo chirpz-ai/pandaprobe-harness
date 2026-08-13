@@ -258,13 +258,22 @@ def _ping(model_key: str) -> tuple[bool, str]:
 
 def report_main(argv: list[str] | None = None) -> int:
     _configure_logging()
-    from .report import aggregate
+    from .report import DEFAULT_RELAX, aggregate
 
     parser = argparse.ArgumentParser(prog="pandabench-report")
     parser.add_argument("--runs", default=str(RUN_ROOT))
     parser.add_argument("--out", default=str(BENCH_ROOT / "results" / "summary"))
+    parser.add_argument(
+        "--relax", type=float, default=DEFAULT_RELAX,
+        help=(
+            "Report-time pass tolerance as a fraction of a perfect score, applied to "
+            "BOTH arms. Re-reads existing records; no re-run needed."
+        ),
+    )
     args = parser.parse_args(argv)
-    aggregate(Path(args.runs), Path(args.out))
+    if not 0.0 <= args.relax < 1.0:
+        parser.error("--relax must be in [0, 1)")
+    aggregate(Path(args.runs), Path(args.out), relax=args.relax)
     return 0
 
 
