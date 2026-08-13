@@ -19,6 +19,13 @@ import yaml
 
 __all__ = ["BenchmarkConfig", "HarnessKnobs", "SmokeConfig", "StudyConfig", "load_study"]
 
+#: Non-improving evaluated trace updates before a Tier-1 STALL. Short relative to a
+#: benchmark episode by design: AppWorld averaged 11.6 turns, and any gain above
+#: gate_gain resets the counter, so a long window makes the STALL branch unreachable.
+#: A module constant rather than a class attribute because ``HarnessKnobs`` uses
+#: ``slots=True``, where ``HarnessKnobs.gate_window`` is a descriptor, not the default.
+DEFAULT_GATE_WINDOW = 10
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessKnobs:
@@ -49,7 +56,7 @@ class HarnessKnobs:
     # that earned a verdict gets one. Bounded; breaks early.
     settle_timeout_s: float = 1080.0
     settle_poll_s: float = 10.0
-    gate_window: int = 10
+    gate_window: int = DEFAULT_GATE_WINDOW
     enable_tier3: bool = False
     # The per-turn evaluation + managed-repair barrier's budget. Must exceed one turn's
     # trace evals to land (poll_interval_s * poll_max_attempts bounds that), or the
@@ -74,7 +81,10 @@ class BenchmarkConfig:
     name: str
     max_turns: int
     dataset: str  # e.g. appworld 'dev', tau2 'retail'
-    pass_tolerance: int = 1
+    # Replay budget in this benchmark's own ``max_turns`` unit. ``None`` falls back
+    # to ``HarnessKnobs.replay_max_turns``; set it whenever the unit is not an
+    # agent turn, or a replay is cut off before it can reproduce the failure.
+    replay_max_turns: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -107,14 +117,30 @@ class StudyConfig:
         except KeyError:
             raise KeyError(f"no benchmark config for {name!r} in study.yaml") from None
 
+    def replay_max_turns(self, benchmark: str) -> int:
+        """Replay budget for ``benchmark``, in that benchmark's own turn unit.
+
+        The global knob is a default, not a universal: ``max_turns`` means whatever
+        the benchmark's runner passes it to, and tau2 forwards it as ``max_steps``
+        (message hops). A single global value in agent-turn units silently truncated
+        tau2 replays to roughly a quarter of a median episode, so every candidate
+        rule was judged on a run that could not reach the behaviour under test.
+        """
+
+        override = self.benchmarks.get(benchmark)
+        if override is not None and override.replay_max_turns is not None:
+            return override.replay_max_turns
+        return self.harness.replay_max_turns
+
 
 def _benchmark_from(name: str, raw: Mapping[str, Any]) -> BenchmarkConfig:
-    known = {"max_turns", "dataset", "pass_tolerance"}
+    known = {"max_turns", "dataset", "replay_max_turns"}
+    replay_raw = raw.get("replay_max_turns")
     return BenchmarkConfig(
         name=name,
         max_turns=int(raw.get("max_turns", 30)),
         dataset=str(raw.get("dataset", "")),
-        pass_tolerance=int(raw.get("pass_tolerance", 1)),
+        replay_max_turns=int(replay_raw) if replay_raw is not None else None,
         extra={k: v for k, v in raw.items() if k not in known},
     )
 
@@ -143,7 +169,7 @@ def load_study(path: str | Path, *, benchmarks_dir: str | Path | None = None) ->
         poll_interval_s=float(harness_raw.get("poll_interval_s", 5.0)),
         poll_max_attempts=int(harness_raw.get("poll_max_attempts", 200)),
         settle_timeout_s=float(harness_raw.get("settle_timeout_s", 1080.0)),
-        gate_window=int(harness_raw.get("gate_window", 10)),
+        gate_window=int(harness_raw.get("gate_window", DEFAULT_GATE_WINDOW)),
         enable_tier3=bool(harness_raw.get("enable_tier3", False)),
         barrier_timeout_s=float(harness_raw.get("barrier_timeout_s", 1080.0)),
         outcome_threshold=float(harness_raw.get("outcome_threshold", 0.9)),
