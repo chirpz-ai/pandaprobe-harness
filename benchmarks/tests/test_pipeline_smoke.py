@@ -24,7 +24,7 @@ from pandabench.agents.harness_wiring import AgentWiring, HarnessWiring
 from pandabench.config import load_study
 from pandabench.providers.litellm_client import ChatClient, MockClient, Usage
 from pandabench.providers.models import ResolvedModel, load_registry
-from pandabench.report import aggregate
+from pandabench.report import DEFAULT_RELAX, RELAX_SWEEP, aggregate
 from pandabench.runners import base as base_module
 from pandabench.runners.base import BenchmarkRunner, TaskOutcome
 from pandabench.runners.mock import MockTaskRunner
@@ -225,6 +225,35 @@ def _runner(
     )
 
 
+async def test_replay_budget_is_resolved_per_benchmark_in_its_own_turn_unit(tmp_path):
+    """A validation replay must get the budget of the benchmark it is replaying."""
+
+    study = load_study(CONFIGS / "study.yaml")
+    assert study.replay_max_turns("appworld") == study.harness.replay_max_turns
+    assert study.replay_max_turns("terminal_bench") == study.harness.replay_max_turns
+    tau2_budget = study.replay_max_turns("tau2")
+    assert tau2_budget > study.harness.replay_max_turns
+
+    single = MockTaskRunner("tau2")
+    runner = _runner(tmp_path, single)
+    seen: list[int] = []
+    original = single.run_once
+
+    async def record_max_turns(**kwargs):
+        seen.append(kwargs["max_turns"])
+        return await original(**kwargs)
+
+    single.run_once = record_max_turns  # type: ignore[method-assign]
+    replay = runner._make_replay(
+        "tau2", runner._registry.resolve("gemini-3.1-flash-lite"), 1, "ns"
+    )
+    await replay(
+        SimpleNamespace(id="c-1", replay_input={"task_id": "t-0"}),
+        SimpleNamespace(task_tools=SimpleNamespace(specs=lambda: [])),
+    )
+    assert seen == [tau2_budget]
+
+
 async def test_dry_run_pipeline_and_resume(tmp_path):
     run_dir = await _runner(tmp_path).run(
         arm="baseline", model_key="gemini-3.1-flash-lite", backend=None, seed=1,
@@ -270,33 +299,23 @@ async def test_task_order_is_seeded_deterministic_and_arm_independent(tmp_path):
     assert runner._tasks("dev", 1, 3) == first[:3]  # limit truncates the run
 
 
-async def test_relaxed_scoring_applies_to_the_harness_arm_only(tmp_path):
-    """Baseline must always be judged by the benchmark's own criteria.
+async def test_runs_record_no_relaxed_verdict_only_the_native_one(tmp_path):
+    """Relaxation is a report-time lens, so nothing about it may reach a record."""
 
-    The mock AppWorld env returns 1 of 2 tests passing on every trial, which is a
-    relaxed pass at the configured tolerance of 1 and a native failure.
-    """
-
-    outcomes: dict[str, dict[str, object]] = {}
     for arm in ("baseline", "harness"):
         run_dir = await _runner(tmp_path, AppWorldLikeRunner()).run(
             arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=1,
-            k=1, limit=1, dry_run=True, run_id=f"tolerance-{arm}",
+            k=1, limit=1, dry_run=True, run_id=f"native-only-{arm}",
         )
         record = json.loads((run_dir / "records.jsonl").read_text(encoding="utf-8"))
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-        outcomes[arm] = {
-            "passed": record["passed"],
-            "relaxed": record["native_metrics"]["passed_relaxed"],
-            "tolerance": manifest["resolved_config"]["pass_tolerance"],
-        }
+        native = record["native_metrics"]
 
-    # The native verdict is identical in both arms.
-    assert outcomes["baseline"]["passed"] is outcomes["harness"]["passed"] is False
-    assert outcomes["baseline"]["tolerance"] == 0
-    assert outcomes["harness"]["tolerance"] == 1
-    assert outcomes["baseline"]["relaxed"] is False
-    assert outcomes["harness"]["relaxed"] is True
+        assert record["passed"] is False
+        assert "passed_relaxed" not in native
+        assert "pass_tolerance" not in manifest["resolved_config"]
+        assert native["num_tests"] == 2
+        assert native["num_passes"] == 1
 
 
 async def test_both_arms_run_identical_task_order(tmp_path):
@@ -546,22 +565,63 @@ async def test_report_covers_a_run_with_no_eval_phase(tmp_path):
         rows = list(csv.DictReader(handle))
 
     assert {row["arm"] for row in rows} == {"baseline", "harness"}
-    # Strict, relaxed, and ratio are reported side by side.
+    # Every metric is reported side by side, strictest first.
     for row in rows:
         assert row["pass_at_1"] != ""
+        assert row["pass_hat_k"] != ""
+        assert row["pass_any_k"] != ""
         assert row["pass_at_1_relaxed"] != ""
-        assert row["mean_pass_ratio"] != ""
+        assert row["mean_score"] != ""
         assert int(row["n_tasks"]) == 4
-    # Relaxed scoring is harness-arm only, and the table names the definition used.
+    # One tolerance, named, and identical for both arms — the delta is the arm's.
     by_arm = {row["arm"]: row for row in rows}
-    assert by_arm["baseline"]["pass_tolerance"] == "0"
-    assert by_arm["harness"]["pass_tolerance"] == "1"
+    assert by_arm["baseline"]["relax"] == by_arm["harness"]["relax"]
+    assert float(by_arm["harness"]["relax"]) == DEFAULT_RELAX
 
     report = (summary / "report.md").read_text(encoding="utf-8")
     assert "Headline (whole run)" in report
-    assert "not comparable to published numbers" in report.lower()
     assert "_No baseline/harness pairs yet._" not in report
-    # Both paired rows are reported: strict, and the intentionally asymmetric
-    # relaxed comparison (harness at its tolerance vs baseline at the native one).
+    # All three paired verdicts, plus the tolerance curve.
     assert "| strict" in report
     assert "| relaxed" in report
+    assert "| any_k" in report
+    assert "Relaxation sweep" in report
+
+
+async def test_report_relaxation_moves_the_harness_arm_only(tmp_path):
+    """`--relax` must loosen the harness arm and leave the baseline at the real bar."""
+
+    for arm in ("baseline", "harness"):
+        await _runner(tmp_path, AppWorldLikeRunner()).run(
+            arm=arm, model_key="gemini-3.1-flash-lite", backend=None, seed=1,
+            k=1, limit=2, dry_run=True, run_id=f"relax-{arm}",
+        )
+
+    def relaxed_by_arm(relax: float) -> dict[str, float]:
+        out = tmp_path / f"summary-{relax}"
+        aggregate(tmp_path / "runs", out, relax=relax)
+        with (out / "headline.csv").open(newline="", encoding="utf-8") as handle:
+            return {
+                row["arm"]: float(row["pass_at_1_relaxed"])
+                for row in csv.DictReader(handle)
+            }
+
+    # Tolerance below the score: nothing passes anywhere.
+    assert relaxed_by_arm(0.4) == {"baseline": 0.0, "harness": 0.0}
+    # Tolerance at the score: the harness passes, the baseline must NOT follow it.
+    assert relaxed_by_arm(0.5) == {"baseline": 0.0, "harness": 1.0}
+    # relax=0 must reproduce the benchmark's own verdict in both arms.
+    assert relaxed_by_arm(0.0) == {"baseline": 0.0, "harness": 0.0}
+
+    # The sweep reports the whole curve, flagging partial credit as available.
+    with (tmp_path / "summary-0.5" / "relax_sweep.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        sweep = list(csv.DictReader(handle))
+    assert {row["relax"] for row in sweep} == {str(v) for v in RELAX_SWEEP}
+    assert all(row["graded_score"] == "True" for row in sweep)
+    # The baseline is flat across the ENTIRE sweep; only the harness column moves,
+    # and it moves exactly once the tolerance reaches this mock's 0.5 score.
+    assert {row["baseline_pass_at_1"] for row in sweep} == {"0.0"}
+    moved = {float(r["relax"]) for r in sweep if float(r["harness_pass_at_1"]) > 0}
+    assert moved == {relax for relax in RELAX_SWEEP if relax >= 0.5}
