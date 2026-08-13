@@ -9,7 +9,6 @@ dataset: dev                 # train(90) | dev(57) | test_normal(168) | test_cha
                              #   dev is the default; test_normal gives ~3x the tasks and so
                              #   more in-session learning runway and more power, at ~3x spend.
 max_turns: 100
-pass_tolerance: 1
 domain_policy: >-
   AppWorld's supervisor credential API is an authorized authentication mechanism.
   Judge actions against the task instruction and AppWorld API contracts; using the
