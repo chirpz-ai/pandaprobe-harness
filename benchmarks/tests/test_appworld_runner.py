@@ -8,13 +8,21 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pandas as pd
 import pytest
 
 from pandabench.agents.frozen_wiring import FrozenEvalWiring
-from pandabench.config import load_study
 from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
+from pandabench.report import (
+    _harbor_test_counts,
+    _parse_pytest_counts,
+    _recovered_tests,
+    _relaxed,
+    _score,
+    _score_is_graded,
+)
 from pandabench.runners.appworld import AppWorldRunner, _app_scope_hints, _experiment_name
 from pandabench.runners.appworld_env import (
     AppWorldServer,
@@ -23,7 +31,6 @@ from pandabench.runners.appworld_env import (
     TaskInfo,
     _failure_requirements,
 )
-from pandabench.runners.base import _passed_relaxed
 from pandabench.runners.tau2 import Tau2Runner, _safe_task_workflow
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -81,24 +88,156 @@ class NoSettleFrozenWiring(FrozenEvalWiring):
         raise AssertionError(f"frozen AppWorld eval settled turn {turn_index}")
 
 
-def test_passed_stays_native_while_relaxed_allows_one_missed_test() -> None:
-    """`passed` is AppWorld's verdict; `passed_relaxed` is ours, at tolerance 1."""
+def test_score_is_one_scale_across_benchmarks_and_flags_partial_credit() -> None:
+    """The report's relaxation rests on one comparable 0-1 score per trial."""
 
-    tolerance = load_study(CONFIGS / "study.yaml").benchmark("appworld").pass_tolerance
-    assert tolerance == 1
+    # AppWorld: the passing-test fraction, whatever the verdict says.
+    assert _score({"num_tests": 4, "num_passes": 3, "pass_ratio": 0.75}, False) == 0.75
+    assert _score({"num_tests": 4, "num_passes": 4, "pass_ratio": 1.0}, True) == 1.0
+    # tau2 / Terminal-Bench: reward, which is binary in practice.
+    assert _score({"reward": 1.0}, True) == 1.0
+    assert _score({"reward": 0.0}, False) == 0.0
+    # Neither signal: fall back to the verdict so the column is never missing.
+    assert _score({}, True) == 1.0
+    assert _score({}, False) == 0.0
+    # A bool reward must not be mistaken for a numeric score.
+    assert _score({"reward": True, "pass_ratio": 0.25}, False) == 0.25
 
-    perfect = {"num_tests": 4, "num_passes": 4}
-    one_short = {"num_tests": 4, "num_passes": 3}
-    two_short = {"num_tests": 4, "num_passes": 2}
+    assert _score_is_graded({"num_tests": 4, "num_passes": 3}) is True
+    assert _score_is_graded({"reward": 0.0}) is False
+    # A single-test task carries no partial credit either.
+    assert _score_is_graded({"num_tests": 1, "num_passes": 0}) is False
 
-    assert _passed_relaxed(True, perfect, tolerance) is True
-    assert _passed_relaxed(False, one_short, tolerance) is True
-    assert _passed_relaxed(False, two_short, tolerance) is False
-    # Tolerance 0 (always the baseline arm) collapses onto the strict metric.
-    assert _passed_relaxed(False, one_short, 0) is False
-    # No per-test counts (tau2, Terminal-Bench) -> the native verdict.
-    assert _passed_relaxed(False, {"reward": 0.5}, tolerance) is False
-    assert _passed_relaxed(True, {"reward": 1.0}, tolerance) is True
+
+def _relax_frame(scores: list[float], arm: str) -> pd.DataFrame:
+    """A minimal frame for `_relaxed`: score + the arm gate + the native verdict."""
+
+    return pd.DataFrame(
+        {
+            "score": scores,
+            "arm": [arm] * len(scores),
+            # The benchmark's own verdict: a perfect score and nothing less.
+            "passed": [s >= 1.0 for s in scores],
+        }
+    )
+
+
+def test_relaxation_is_a_fraction_so_it_means_the_same_at_every_task_size() -> None:
+    """Why the tolerance is fractional rather than an absolute missed-test count."""
+
+    scores = [
+        2 / 2, 1 / 2,      # 2-test task: perfect, one short
+        10 / 10, 9 / 10,   # 10-test task: perfect, one short
+        20 / 20, 19 / 20,  # 20-test task: perfect, one short
+    ]
+    harness = _relax_frame(scores, "harness")
+    # At 0.10, one missed test is forgiven on the 10- and 20-test tasks but not on
+    # the 2-test one, where a single test is half the task.
+    assert list(_relaxed(harness, 0.10)) == [True, False, True, True, True, True]
+    # At 0.0 only a perfect score passes, on every task size.
+    assert list(_relaxed(harness, 0.0)) == [True, False, True, False, True, False]
+    # Float division must not lose a boundary: 9/10 is exactly at 1 - 0.10.
+    assert bool(_relaxed(_relax_frame([9 / 10], "harness"), 0.10).iloc[0]) is True
+
+
+def test_tau2_reward_components_recover_partial_credit() -> None:
+    """tau2's `reward` throws away detail its own evaluator computed."""
+
+    def episode(db: float, communicate: float) -> dict[str, Any]:
+        return {
+            # tau2's own reward: min() of the components.
+            "reward": min(db, communicate),
+            "reward_breakdown": {
+                "RewardType.DB": db,
+                "RewardType.COMMUNICATE": communicate,
+            },
+        }
+
+    both, comm, neither = episode(1.0, 1.0), episode(0.0, 1.0), episode(0.0, 0.0)
+
+    assert _score(both, True) == 1.0
+    assert _score(comm, False) == 0.5      # was 0.0 via `reward`
+    assert _score(neither, False) == 0.0
+    assert _score_is_graded(comm) is True
+
+    # A lone component is no finer than `reward`, so it must not count as graded.
+    single = {"reward": 0.0, "reward_breakdown": {"RewardType.DB": 0.0}}
+    assert _score(single, False) == 0.0
+    assert _score_is_graded(single) is False
+    # No breakdown at all: fall through to `reward`.
+    assert _score({"reward": 1.0}, True) == 1.0
+    assert _score_is_graded({"reward": 1.0}) is False
+
+
+def test_harbor_per_test_counts_are_recovered_from_the_archived_verifier_log(
+    tmp_path: Path,
+) -> None:
+    """Terminal-Bench's binary reward is a threshold, not the absence of a signal."""
+
+    log = tmp_path / "raw" / "eval" / "build-ext__ABC" / "verifier" / "test-stdout.txt"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        # Real shape: build chatter, the session, then a LATER banner from a reinstall.
+        "Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]\n"
+        "============================= test session starts ==============================\n"
+        "collected 11 items\n"
+        "../tests/test_outputs.py .......F...                                     [100%]\n"
+        "========================= 1 failed, 10 passed in 3.46s =========================\n",
+        encoding="utf-8",
+    )
+    counts = _harbor_test_counts(tmp_path)
+    assert counts == {"build-ext__ABC": (10, 11)}
+
+    native = {"reward": 0.0, "harbor_trial_name": "build-ext__ABC"}
+    tests = _recovered_tests(native, counts)
+    assert tests == (10, 11)
+    # Harbor said 0.0; the log says 10 of 11.
+    assert _score(native, False, tests) == pytest.approx(10 / 11)
+    assert _score_is_graded(native, tests) is True
+    # Unknown trial name -> no recovery, and Harbor's own reward stands unchanged.
+    assert _recovered_tests({"harbor_trial_name": "other"}, counts) is None
+    assert _score(native, False, None) == 0.0
+    assert _score_is_graded(native, None) is False
+
+    # A run with no raw/ tree (AppWorld, tau2) yields nothing and must not raise.
+    assert _harbor_test_counts(tmp_path / "nonexistent") == {}
+
+
+def test_verifier_log_parsing_survives_real_world_noise(tmp_path: Path) -> None:
+    """Only a genuine pytest tally counts; anything else must yield None, not a guess."""
+
+    def parsed(text: str) -> tuple[int, int] | None:
+        path = tmp_path / "log.txt"
+        path.write_text(text, encoding="utf-8")
+        return _parse_pytest_counts(path)
+
+    assert parsed("==== 3 passed in 1.0s ====") == (3, 3)
+    assert parsed("==== 2 failed, 3 passed in 1.0s ====") == (3, 5)
+    assert parsed("==== 1 error, 1 passed in 1.0s ====") == (1, 2)
+    # Skipped is not signal about the agent, so it leaves the denominator alone.
+    assert parsed("==== 1 passed, 4 skipped in 1.0s ====") == (1, 1)
+    # The LAST real tally wins: verifiers reinstall and print more banners after.
+    assert parsed(
+        "==== 5 passed in 1.0s ====\n==== 1 failed, 1 passed in 2.0s ====\n"
+    ) == (1, 2)
+    # A banner without a duration is a section header, not a tally.
+    assert parsed("==== FAILURES ====\n==== short test summary info ====") is None
+    assert parsed("no pytest here at all") is None
+    # Everything skipped: no gradable unit, so no score rather than a 0/0 crash.
+    assert parsed("==== 4 skipped in 1.0s ====") is None
+
+
+def test_relaxation_never_reaches_the_baseline_arm() -> None:
+    """The baseline is held to the benchmark's own verdict at any tolerance."""
+
+    scores = [1.0, 0.9, 0.5]
+    for relax in (0.0, 0.1, 0.5, 0.9):
+        baseline = _relaxed(_relax_frame(scores, "baseline"), relax)
+        # Identical to the native verdict, whatever the tolerance.
+        assert list(baseline) == [True, False, False]
+
+    # The same scores in the harness arm do move with the tolerance.
+    assert list(_relaxed(_relax_frame(scores, "harness"), 0.5)) == [True, True, True]
 
 
 async def test_appworld_records_which_tests_failed_bounded() -> None:
