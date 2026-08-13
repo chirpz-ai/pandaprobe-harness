@@ -7,6 +7,8 @@ dataset: airline             # default; DATASET may be airline, retail, or telec
 # agent->user, user->agent), NOT an agent turn, so 100 steps is roughly 25-35 turns.
 # tau2's own default is 200; we halve it to bound spend.
 max_turns: 100
+replay_max_turns: 100
+
 domain_policy: >-
   The tau2 domain policy and environment tool contracts are authoritative. Diagnose
   whether the task agent followed that policy without inventing permissions or
