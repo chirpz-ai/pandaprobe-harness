@@ -212,8 +212,6 @@ class MockAppWorldEnv:
         return "[mock] executed"
 
     def evaluate(self, task_id: str) -> EvalResult:
-        # One test short, the shape real runs overwhelmingly produce, so a dry run
-        # exercises `passed_relaxed` and the failing-test capture.
         return EvalResult(
             success=False, num_tests=2, num_passes=1, difficulty=1, raw={"mock": True},
             failures=("[mock] assert answers match.",),
