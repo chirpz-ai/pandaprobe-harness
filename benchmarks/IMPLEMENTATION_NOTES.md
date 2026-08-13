@@ -1,317 +1,206 @@
 # Implementation notes
 
-Engineering record for the PandaBench suite: pinned versions, benchmark-specific
-deviations, checkpoint results as they arrive, and sharp edges discovered while
-building. Read alongside `RUNNING.md`.
+Engineering record for PandaBench: pinned versions, integration deviations, and
+sharp edges found while building. Read alongside `RUNNING.md`.
 
 ## Pinned versions (benchmarks/uv.lock)
 
-- `pandaprobe-harness==0.9.0`, resolved from PyPI. Exact-pinned so a recorded run
-  names the precise harness it measured, and non-editable so a study cannot
-  silently measure uncommitted local changes. Bump the pin and lockfile together.
-- `harbor==0.18.0` — installed in this project so its custom-agent import can resolve
-  `pandabench`.
-- `pandaprobe>=0.5` (the SDK; native LiteLLM wrapper + session binding).
-- `litellm` (>=1.55; lock pins the resolved version, currently 1.91.x).
-- `pandas>=2.2`, `numpy>=2.0`, `scipy>=1.14`, `matplotlib>=3.9`, `tabulate`, `httpx`,
-  `pyyaml`, `python-dotenv`.
-- Python 3.13 (matches the harness). AppWorld alone uses an isolated environment;
-  tau2 and Harbor run in this project's environment.
+- `pandaprobe-harness==0.9.0`, from PyPI. Exact-pinned so a recorded run names the
+  precise harness it measured, non-editable so a study cannot silently measure
+  uncommitted local changes. Bump the pin and lockfile together.
+- `harbor==0.18.0` — installed here so its custom-agent import can resolve `pandabench`.
+- `pandaprobe>=0.5` (SDK: native LiteLLM wrapper + session binding), `litellm>=1.55`.
+- `pandas`, `numpy`, `scipy`, `matplotlib`, `tabulate`, `httpx`, `pyyaml`, `python-dotenv`.
+- Python 3.13. AppWorld alone needs an isolated environment; tau2 and Harbor run in
+  this project's.
 
-## Integration choices and deviations
+## Integration choices
 
-1. **`adapters/` lives under `src/pandabench/adapters/`, not top-level.** Harbor's
-   `-a pandabench.adapters.harbor_agent:PandaBenchAgent` requires `adapters` to be an
-   importable subpackage of `pandabench`; a top-level directory would not import.
-   `scripts/` stays top-level (thin CLI shims over package modules).
+1. **`adapters/` lives under `src/pandabench/adapters/`.** Harbor's
+   `-a pandabench.adapters.harbor_agent:PandaBenchAgent` requires an importable
+   subpackage; a top-level directory would not import.
 
-2. **AppWorld runs OUT-OF-PROCESS over HTTP; pandabench never imports it.**
-   AppWorld (`0.1.3.post1`) pins `pydantic<2`, which is irreconcilable with modern
-   LiteLLM (`pydantic>=2.10`) — uv cannot co-resolve them. So AppWorld is not a
-   dependency of `pandabench`; instead it runs as its own *environment server*
-   (`appworld serve environment`) in an isolated pydantic-v1 venv, and we drive it
-   via the REST API AppWorld exposes for exactly this reason. `AppWorldServer` +
-   `HttpAppWorldEnv` in `runners/appworld_env.py`. This keeps the pandabench core
-   (LiteLLM, pydantic v2) conflict-free. **Verified end-to-end against the real
-   server** (see Verification status).
+2. **AppWorld runs out-of-process over HTTP; pandabench never imports it.** AppWorld
+   pins `pydantic<2`, irreconcilable with modern LiteLLM (`pydantic>=2.10`) — uv cannot
+   co-resolve them. It runs as its own environment server in an isolated venv, driven
+   through the REST API it exposes for this purpose (`runners/appworld_env.py`).
 
-3. **PandaProbe tracing uses the native LiteLLM wrapper (SDK >= 0.5).**
-   `providers/tracing.py` calls `wrap_litellm(litellm)` once (when a client is
-   available) to auto-trace every `litellm.acompletion` call, and binds each call
-   to the harness session via `pandaprobe.session(session_id)`. The tracer guards on
-   `get_client()` — arm A and offline tests (`PandaTracer.disabled()`) never patch
-   LiteLLM or open a session. (Earlier builds used manual `start_trace`+span
-   instrumentation because SDK 0.4 had no LiteLLM wrapper; 0.5 added it.)
+3. **Tracing uses the native LiteLLM wrapper.** `providers/tracing.py` calls
+   `wrap_litellm(litellm)` once and binds each call to the harness session. It guards on
+   `get_client()`, so the baseline arm and offline tests never patch LiteLLM.
 
-4. **The managed-repair arm settles every completed turn.**
-   `HarnessWiring.settle_turn`
-   flushes traces, supplies a replayable `end_state`, calls `on_turn_end`, and waits
-   for task evaluation plus package-owned managed repair before the next prompt. The
-   task agent receives only `harness_rules_read/search/list/status`; mailbox,
-   diagnostic, acknowledgement, and rule-mutation capabilities remain private to the
-   package repair agent. Its preamble is capability-only: the wiring never inserts
-   rules or an expanded index, and never performs an automatic rule lookup.
-   `harness_rules_list` returns the canonical task-facing `rules.md` plus generated
-   scope references. The runner performs an idempotent final-turn settle. tau2
-   crosses its synchronous worker-thread boundary with `run_coroutine_threadsafe`;
-   Terminal-Bench performs the same barrier inside Harbor's custom agent.
+4. **The harness arm settles every completed turn.** `HarnessWiring.settle_turn` flushes
+   traces, supplies a replayable `end_state`, calls `on_turn_end`, and waits for
+   evaluation plus managed repair before the next prompt. The task agent gets only the
+   four read-only rule tools; mailbox, diagnostic, and rule-mutation capabilities stay
+   private to the package repair agent. tau2 crosses its synchronous worker-thread
+   boundary with `run_coroutine_threadsafe`; Terminal-Bench barriers inside Harbor's
+   custom agent.
 
-5. **Terminal-Bench arm B has two explicit capability deviations.** It uses the
-   per-turn barrier and a post-job settle, but candidate rules receive only
-   forward-trial validation: replay would require another container build and full
-   task run per candidate. It also has no live outcome verifier because Harbor's
-   authoritative reward is produced after `agent.run()` returns. These are structural
-   limitations, not parity with AppWorld/tau2.
+5. **Terminal-Bench has two capability deviations.** Candidate rules get only
+   forward-trial validation (replay would need another container build and full task run
+   per candidate), and there is no live outcome verifier because Harbor's authoritative
+   reward arrives after `agent.run()` returns. Structural limitations, not parity with
+   AppWorld/tau2.
 
-6. **The harness is live for the whole dataset; there is no frozen eval.** A run is a
-   single continuous pass over the benchmark's configured dataset with notices,
-   managed repair, and validation active throughout, because the claim under test is
-   in-session healing — a rule learned at task N helping task N+1 of the *same* run.
-   The earlier design split each task set into a live learning phase and a frozen eval
-   phase and reported only the latter, which measured a different (and harder)
-   hypothesis: whether a static ruleset transfers to unseen tasks. On a real 228-trial
-   AppWorld run the paired eval delta was `-0.0037` (p=0.75) while the learning delta
-   was `+0.0393` — the sign flipped positive exactly where the harness was live — and
-   8 of the 9 surviving rules were scoped to `spotify`/`venmo`, learned from 20 tasks
-   and applied to 37 disjoint ones, so most could not bind at all. τ² and
-   Terminal-Bench have no native splits, so the partition was purely our imposition
-   there; AppWorld does ship splits, but we were re-partitioning *one of them* 35/65,
-   which made our numbers uncomparable to published AppWorld results. Native splits
-   are now used whole. `frozen_rules.py`, `agents/frozen_wiring.py`, and
-   `results.frozen_harness_telemetry` are retained but **unwired**, since
-   transfer/generalization may be worth measuring later.
+6. **The harness is live for the whole dataset; there is no frozen eval.** A run is one
+   continuous pass with notices, repair, and validation active throughout, because the
+   claim under test is in-session healing. The earlier design split each task set into a
+   live learning phase and a frozen eval phase and reported only the latter, which
+   measured a different and harder hypothesis. On a real 228-trial AppWorld run the
+   paired eval delta was `-0.0037` (p=0.75) while the learning delta was `+0.0393`, and
+   8 of 9 surviving rules were scoped to `spotify`/`venmo`, learned from 20 tasks and
+   applied to 37 disjoint ones. τ² and Terminal-Bench have no native splits, so the
+   partition was purely our imposition; AppWorld does ship splits, but we were
+   re-partitioning *one of them*, making our numbers uncomparable to published results.
+   Native splits are now used whole. `frozen_rules.py`, `agents/frozen_wiring.py`, and
+   `results.frozen_harness_telemetry` are retained but **unwired**.
 
 7. **`capture` is passed explicitly, not derived from a phase name.**
    `build_harness_config(capture=...)` gates `capture_eval_cases`, the sole switch on
-   whether a breaching session is stored as a replayable failure case — and therefore
-   on whether replay validation has anything to replay. It used to be inferred as
-   `phase == "learning"`; with one phase named `"live"` that inference silently
+   whether a breaching session is stored as a replayable failure case. It used to be
+   inferred as `phase == "learning"`; with one phase named `"live"` that silently
    evaluates to `False`, which would have disabled capture for every trial and made
-   replay-based promotion impossible while leaving every test green. Task order is
-   likewise load-bearing now (it decides what has been learned by task N), so it is a
-   pure function of `(dataset, seed)` and `_tasks()` deliberately takes no `arm`
+   replay-based promotion impossible while leaving every test green.
+
+8. **Task order is load-bearing.** It decides what has been learned by task N, so it is
+   a pure function of `(dataset, seed)` and `_tasks()` deliberately takes no `arm`
    argument — the two arms cannot diverge by construction.
 
-8. **The benchmark Tier-1 stall window is 10.** `study.yaml` propagates this through
-   `build_harness_config`; it only delays STALL detection. The locally built root
-   candidate retains its package default of 5.
+9. **Replay budgets are per-benchmark, in each benchmark's own turn unit.** `max_turns`
+   means whatever a runner passes it to, and tau2 forwards it as `max_steps` (message
+   hops, not agent turns). One global value in agent-turn units truncated tau2 replays to
+   roughly a quarter of a median episode, so 46% of validation cases came back
+   `candidate_not_exercised` and every rule fell through to the weaker forward trial.
+   `StudyConfig.replay_max_turns(benchmark)` resolves the override.
 
-9. **Managed repair uses the root package's PandaProbe LiteLLM path.** The benchmark
-   does not implement a repair loop. Null reuses the resolved task model, and the
-   study explicitly sets `repair_reasoning_effort: "none"` so current OpenAI models
-   accept function tools through the PandaProbe-wrapped LiteLLM chat-completions
-   contract. The manifest records the effective model and limits, and live telemetry
-   stores the structured `RepairResult`, including episode/group, scope, novelty,
-   and resolution telemetry. Repair tracing remains under the distinct
+10. **The benchmark Tier-1 stall window is 10**, propagated from `study.yaml` through
+   `build_harness_config`; it only delays STALL detection. The released package keeps its
+   own default of 5, and a test pins that the study override does not leak into it.
+
+11. **Managed repair uses the root package's PandaProbe LiteLLM path.** The benchmark
+   implements no repair loop. Null reuses the resolved task model; the study sets
+   `repair_reasoning_effort: "none"` so current OpenAI models accept function tools on
+   the wrapped chat-completions contract. Repair tracing keeps a distinct
    `repair-<task-session>-<episode>` identity owned by the package.
 
-10. **Scope is a repair-model decision; benchmarks only supply context.** Managed
-   repair picks the scope from the failure evidence inside the repair call it already
-   makes — no classification model, and no benchmark application mapping in the root
-   package. `global` is the default for broadly reusable rules, a contextual name is
-   preferred when the rule belongs to that context, and `scoped` is the fallback.
-   AppWorld passes the task instruction plus safe application names from its task/API
-   descriptions; tau2 passes its airline/retail/telecom domain plus the user
-   scenario; Terminal-Bench passes the Harbor task statement plus safe
-   category/task-family metadata. These travel on `TurnContext` (as
-   `rule_scope_hints` and `task_summary`) into notices and repair assignments. A
-   benchmark's own name — `appworld`, `tau2`, `terminal_bench` — is rejected as a
-   scope, since it says where the agent ran rather than what failed.
+12. **Scope is a repair-model decision; benchmarks only supply context.** Repair picks
+   the scope from the failure evidence inside the call it already makes — no
+   classification model, no benchmark application mapping in the root package. AppWorld
+   passes the task instruction plus safe application names; tau2 its domain plus the
+   user scenario; Terminal-Bench the Harbor task statement plus safe category metadata.
+   These travel on `TurnContext` as `rule_scope_hints` and `task_summary`. A benchmark's
+   own name is rejected as a scope, since it says where the agent ran rather than what
+   failed.
 
-11. **Validation reaches every candidate, and the run's end waits for it.** Replay is
-   the strong path and sees only the candidate under test, so a delta is attributable
-   to it; a replay that never read the candidate yields no conclusive verdict.
-   `validation_round_budget_s` bounds replay work per round and remaining candidates
-   fall back to the forward trial, which is what lets a promotable candidate actually
-   be promoted instead of accruing observations forever.
-   `replay_env_wait_timeout_s` plus `ReplayRuleWiring.mark_environment_ready()` keep
-   time queueing behind AppWorld's single-world lock out of the replay execution
-   budget. Validation is spawned by the harness from each handled report — detached
-   and single-flight — so it already runs *during* the pass and a rule can be promoted
-   mid-run; `BenchmarkRunner._settle` then runs **once at the end of the run**, the
-   only point where nothing holds an environment a replay needs, draining outstanding
-   evals plus in-flight validation before `archive_workspace`. `records.jsonl` carries
-   per-trial validation counts and pending reasons, and the manifest's `rules_outcome`
-   distinguishes "no rules" from "N candidates undecided".
+13. **Validation reaches every candidate, and the run's end waits for it.** Replay is the
+   strong path and sees only the candidate under test, so a delta is attributable to it;
+   a replay that never read the candidate yields no conclusive verdict.
+   `validation_round_budget_s` bounds replay work per round, with remaining candidates
+   falling back to the forward trial so a promotable candidate is actually promoted
+   instead of accruing observations forever. `replay_env_wait_timeout_s` plus
+   `ReplayRuleWiring.mark_environment_ready()` keep time queueing behind AppWorld's
+   single-world lock out of the replay execution budget. Validation is spawned by the
+   harness from each handled report — detached and single-flight — so it runs *during* the
+   pass and a rule can be promoted mid-run. `BenchmarkRunner._settle` then runs **once at
+   the end**, the only point where nothing holds an environment a replay needs.
 
-12. **`passed` stays the benchmark's verdict; the relaxed metric is additive.** In a
-   measured 456-trial AppWorld run (harness + baseline), **72.1% of trials failed by
-   exactly one test** and 67 of 114 task-arms missed exactly one test on *every* trial,
-   so `pass@1` was ~1% and `pass^k` was 0 in both arms — both floored, neither able to
-   show anything. `TrialRecord.passed` is therefore left exactly as the benchmark's
-   own all-or-nothing verdict (verified: it equals `num_passes == num_tests` on all 456
-   real trials), and we add `native_metrics.passed_relaxed`, true within
-   `BenchmarkConfig.pass_tolerance` (default 1) missed tests **in the harness arm
-   only** — the baseline is always scored at tolerance 0, by the benchmark's own
-   criteria. The report pairs both metrics, so the `relaxed` row is deliberately
-   asymmetric: harness at tolerance N against an unrelaxed baseline. That is the
-   intended read (how does the harness do under a given tolerance?), not an oversight
-   — the delta includes the definition gap, which on real data is most of it (0 of 114
-   task-arms pass strictly, 71 pass at tolerance 1), so the row is study-internal and
-   never publishable. `pass_tolerance` is stamped per run in the manifest and shown
-   per arm in the headline so the definition is always visible. Only benchmarks
-   reporting per-test counts can be relaxed; τ² (scalar reward) and Terminal-Bench
-   (`reward >= 1.0`) report it equal to `passed` rather than inventing a signal.
-   Both have a latent one if ever wanted, deliberately left unimplemented: τ²'s
-   `reward_breakdown` splits into DB and COMMUNICATE components (89% of its failures
-   are COMMUNICATE-pass/DB-fail, so a "1 of 2 components" relaxation exists but is
-   coarse), and Harbor writes per-test pytest output to `verifier/test-stdout.txt`
-   (recoverable only by parsing stdout). We also persist
-   `native_metrics.failing_tests`: AppWorld's `/evaluate` returns
-   `{success, difficulty, num_tests, passes[], failures[]}` where each failure is
-   `{requirement, trace, label}`; we keep the bounded `requirement` texts (≤12 entries,
-   ≤240 chars each — measured over all 5,208 real requirements: mean 92, p95 197, max
-   545) and never the `trace`, which is a full stack dump with source context. Whether
-   the same test always fails is the difference between one systematic agent behavior a
-   rule could fix and a harness/environment artifact, and the counts alone cannot say.
+14. **`passed` is always the benchmark's own verdict**, applied identically in both arms,
+   and the only figure comparable to published numbers. It is floored in practice: in a
+   measured 672-trial AppWorld `test_normal` run, 68% of trials failed by exactly one
+   test, and in 97% of those the one failing test was `assert answers match` — the agent
+   performs the state mutations and returns the wrong answer string. Records therefore
+   also persist the raw per-test counts and `native_metrics.failing_tests` (bounded
+   `requirement` texts, ≤12 entries and ≤240 chars each, never the traceback, which is a
+   full stack dump with source context). Whether the same test always fails is the
+   difference between one systematic agent behavior a rule could fix and an environment
+   artifact, and the counts alone cannot say. Everything derived from those counts is
+   computed in the report, not written into a record.
 
-13. **Metrics/report/checkpoints were built alongside the AppWorld slice**, not in a
-   separate later pass, because the vertical slice's acceptance gate is
-   run → records → report end-to-end.
+15. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as the
+   deterministic pipeline gate. Real per-benchmark smokes are separate targets needing
+   each harness provisioned plus live creds.
 
-14. **Smoke (`make smoke`) runs in `--dry-run`** (mock model, mock benchmark envs) as
-   the deterministic pipeline gate. Real per-benchmark smokes are separate targets
-   that need each harness provisioned + live creds (see below). This matches the
-   brief's `--dry-run` requirement and gives a dependency-free acceptance check.
+## Sharp edges
 
-## Sharp edges discovered
-
-- **AppWorld CLI `--root` overrides `$APPWORLD_ROOT`** (default `.`). The server must
-  be launched with `--root <isolated-root>` or it can't find `./data`. Handled in
-  `AppWorldServer.start`.
-- **AppWorld `/evaluate` needs `suppress_errors: true`** or it 500s on an incomplete
-  task. Handled in `HttpAppWorldEnv.evaluate`.
-- **AppWorld port default mismatch** (CLI `serve` defaults differ from `run()`); we
-  always pass `--port` explicitly.
-- **AppWorld holds one active world per server** — tasks run serially per server;
-  concurrency would need multiple ports.
+- **AppWorld CLI `--root` overrides `$APPWORLD_ROOT`** (default `.`). The server must be
+  launched with `--root <isolated-root>` or it can't find `./data`.
+- **AppWorld `/evaluate` needs `suppress_errors: true`** or it 500s on an incomplete task.
+- **AppWorld port defaults differ** between CLI `serve` and `run()`; always pass `--port`.
+- **AppWorld holds one active world per server** — tasks run serially; concurrency needs
+  multiple ports.
 - **Claude is fixed to `max_tokens` only; GPT-5 rejects several sampler params** —
-  `models.yaml` per-model `param_allowlist` drops them; we filter explicitly
-  (not via `litellm.drop_params`).
-- **`tau2` PyPI name is ambiguous** — install the Sierra benchmark from the pinned
-  Git tag through PandaBench's `tau2` extra, never by an unqualified PyPI name.
+  `models.yaml` per-model `param_allowlist` drops them explicitly, not via
+  `litellm.drop_params`.
+- **`tau2` on PyPI is a decoy** (a magnetics package). Install the Sierra benchmark from
+  the pinned Git tag through the `tau2` extra, never by unqualified PyPI name.
+- **`TAU2_DATA_DIR` must be set before the first tau2 import** — tau2 reads it at import
+  time.
 
 ## Setup for real runs
 
-- **AppWorld**: `make setup` provisions an isolated venv + data via
-  `scripts/setup_appworld.sh` and prints the two env vars to export
-  (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`). ~183 MB data download.
-- **Terminal-Bench**: needs Docker running; `uv sync` installs Harbor into this project.
-- **tau2**: run `uv sync --extra tau2` and set `TAU2_DATA_DIR=<clone>/data`.
-- **Providers**: export `VERTEXAI_PROJECT`/ADC and/or `OPENAI_API_KEY`. Claude
-  defaults to AWS Bedrock: set a short-term `AWS_BEARER_TOKEN_BEDROCK` plus the
-  matching `AWS_REGION`; set `ANTHROPIC_API_KEY` only for the optional
-  `BACKEND=anthropic` fallback. Also set `PANDAPROBE_API_KEY` (+
-  `PANDAPROBE_PROJECT_NAME`) for harness runs — or put everything in
-  `benchmarks/.env`. `uv run pandabench-run --preflight` validates them.
-- **Bedrock on-demand Claude calls require inference profiles.** The catalog's
-  base `anthropic.*` IDs reject on-demand throughput for these models, so the
-  registry calls AWS's corresponding `global.anthropic.*` system inference
-  profiles. They retain the exact underlying model versions and use global/base
-  pricing; use geography-specific profiles only if data residency is required.
+- **AppWorld**: `make setup` provisions an isolated venv + data and prints the two env
+  vars to export (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`). ~183 MB download.
+- **Terminal-Bench**: needs Docker running; `uv sync` installs Harbor here.
+- **tau2**: `uv sync --extra tau2` and `TAU2_DATA_DIR=<clone>/data`.
+- **Providers**: `VERTEXAI_PROJECT`/ADC and/or `OPENAI_API_KEY`. Claude defaults to AWS
+  Bedrock (`AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION`); `ANTHROPIC_API_KEY` only for the
+  optional `BACKEND=anthropic` fallback. Harness runs also need `PANDAPROBE_API_KEY` and
+  `PANDAPROBE_PROJECT_NAME`. `uv run pandabench-run --preflight` validates them.
+- **Bedrock on-demand Claude calls require inference profiles.** The catalog's base
+  `anthropic.*` IDs reject on-demand throughput, so the registry calls the corresponding
+  `global.anthropic.*` system inference profiles. Same underlying model versions and
+  base pricing; use geography-specific profiles only for data residency.
 
 ## Benchmark integration recipes
 
-All three integrations use verified installed APIs. AppWorld is fully wired and
-real-verified; the verification status below distinguishes offline coverage from
-paid live-model smokes for tau2 and Terminal-Bench.
+- **Terminal-Bench via Harbor** — PyPI `harbor`, not `terminal-bench`. Custom agent =
+  subclass `harbor.agents.base.BaseAgent`; the sandbox is driven by
+  `await environment.exec(cmd) -> ExecResult`. The agent runs in-process on the host, so
+  it reuses our loop and harness directly. Config arrives via `--agent-kwarg k=v`
+  (JSON-typed) and `--agent-env K=V`. Per-attempt result at
+  `<dir>/<job>/<task>__<id>/result.json` → `verifier_result.rewards`; TB2 normally uses
+  `{"reward": 0|1}`. The runner resolves the `harbor` entry point beside
+  `sys.executable`, not an arbitrary one on `PATH`: a `uv tool install harbor`
+  environment cannot import this custom agent.
 
-- **Terminal-Bench via Harbor** — PyPI `harbor==0.18.0` provides the CLI (NOT
-  `terminal-bench`). Custom agent = subclass `harbor.agents.base.BaseAgent` (impl
-  `name`/`version`/`setup`/`run`); the sandbox is driven by
-  `await environment.exec(cmd) -> ExecResult{stdout,stderr,return_code}`. The agent
-  runs in-process on the host, so it reuses our loop + harness directly (bash tool =
-  `environment.exec`). Config reaches it via `--agent-kwarg k=v` (JSON-typed →
-  `__init__`) and `--agent-env K=V` (→ auto-injected into `exec`). Run:
-  `harbor run -d terminal-bench@2.0 -a pandabench.adapters.harbor_agent:PandaBenchAgent
-  -m <model> -k <k> -n 1 -o <dir> --ak arm=... --ak phase=live --ak capture=...
-  --ak harness_root=...`. Per-attempt
-  result at `<dir>/<job>/<task>__<id>/result.json` →
-  `verifier_result.rewards: dict[str, float | int]`; TB2 normally uses
-  `{"reward": 0|1}`, with first-value fallback for compatible verifiers. GATES:
-  Docker running; Harbor and pandabench are co-installed by this project. The runner
-  resolves the `harbor` entry point beside `sys.executable`, not an arbitrary executable
-  on `PATH`: a `uv tool install harbor` environment cannot import this custom agent.
+- **tau2-bench** — custom agent = subclass `tau2.agent.llm_agent.LLMAgent`, overriding
+  `generate_next_message`. `run_task` hardcodes the `LLMAgent` constructor, so to attach
+  harness wiring we drive `tau2.orchestrator.Orchestrator` per (task × trial), keeping the
+  user simulator on tau2's stock `generate()` with a fixed arm-independent model.
+  `Orchestrator.run()` does **not** grade (`reward_info=None`) — call
+  `evaluate_simulation(..., evaluation_type=EvaluationType.ALL)` separately. Use `ALL`,
+  never `ALL_WITH_NL_ASSERTIONS`, which calls an LLM. All three domains grade
+  deterministically (airline/retail use `[DB, COMMUNICATE]`; telecom uses
+  `[ENV_ASSERTION]`), so grading is free and doubles as the harness's gold outcome
+  signal. `DATASET=airline|retail|telecom` switches task set, environment, policy, tools,
+  and evaluator as one unit. `Orchestrator.run()` is blocking, so the runner drives it in
+  a worker thread and the agent submits chat plus the per-turn barrier back to the
+  runner's loop. Administrative calls are rejected at dispatch and cannot contaminate the
+  domain transcript or grading.
 
-- **tau2-bench** — PyPI `tau2` is a DECOY (a magnetics package). Real install:
-  `git+https://github.com/sierra-research/tau2-bench.git@v0.2.0` (→ `tau2==0.2.1.dev0`,
-  import `tau2`, Python >=3.10). Data is NOT shipped: set `TAU2_DATA_DIR=<clone>/data`
-  *before the first tau2 import* — tau2 reads it at import time. Its only relevant
-  constraint is `litellm>=1.65.0` with no upper bound, so it installs into THIS venv
-  as the `tau2` extra (`uv sync --extra tau2`); no isolated interpreter. Custom agent = subclass `tau2.agent.llm_agent.LLMAgent`,
-  override `generate_next_message` to route through our wrapper (done). tau2's
-  `run_task` hardcodes the `LLMAgent(tools, domain_policy, llm, llm_args)` constructor,
-  so to attach the harness wiring we drive `tau2.orchestrator.Orchestrator` per
-  (task×trial),
-  keeping the user simulator on tau2's stock `generate()` (fixed model, arm-independent).
-  Reward: `Orchestrator.run()` does NOT grade (it returns `reward_info=None`) — call
-  `tau2.evaluator.evaluator.evaluate_simulation(..., evaluation_type=EvaluationType.ALL)`
-  separately. Use `ALL`, never `ALL_WITH_NL_ASSERTIONS` (that one calls an LLM);
-  all three official domains grade deterministically: airline/retail use
-  `[DB, COMMUNICATE]`, while telecom uses `[ENV_ASSERTION]` with some `[ACTION,
-  ENV_ASSERTION]` tasks. Grading is therefore free and doubles as the harness's gold
-  outcome signal. `DATASET=airline|retail|telecom` switches the task set, environment,
-  policy, tools, and evaluator as one unit. `passed` = `is_successful(reward)` (== 1.0
-  within 1e-6, not a threshold). `Orchestrator.run()` is blocking, so the runner drives
-  it in a worker thread and the agent submits chat plus the per-turn barrier
-  back to the runner's loop. The package-owned repair agent consumes any notice during
-  settlement through its own PandaProbe LiteLLM wrapper and distinct repair session;
-  tau2's adapter contains no mailbox or rule-authoring model loop. The next tau2 turn
-  receives a capability-only `Harness.system_context` plus the four read-only tools.
-  The agent chooses whether to list/search/read the live rules;
-  nothing embeds them in the domain prompt. Administrative calls are rejected at
-  dispatch and cannot contaminate the domain transcript or grading.
-  GATES: `uv sync --extra tau2` + `TAU2_DATA_DIR` + live creds (incl. Vertex ADC for
-  the user simulator).
+## Verification status
 
-## Verification status (this build)
-
-- **Harness-live-throughout migration (2026-08-07)**: the learning/eval split, frozen
-  eval, and `frozen-rules.json` are gone; the harness arm runs the whole dataset in one
-  pass. Verified offline: 75 tests + `ruff` + `mypy --strict` clean, and one dry run per
-  benchmark (`appworld` both arms, `tau2`, `terminal_bench`) confirming every trial has
-  `phase == "live"`, the task set matches the dataset, no `frozen-rules.json` is
-  written anywhere in the run directory, and the two AppWorld arms ran tasks in the
-  identical seeded order. `make report` produces a populated headline table with
-  strict/relaxed/ratio metrics and paired deltas on both metrics. Not yet exercised by
-  a paid run: the end-of-run settlement against real validation latency, and whether
-  in-session promotion actually occurs often enough to move the metric.
-- **Earlier managed-repair migration**: the benchmark installs the released wheel,
-  exposes only read-only task tools, delegates repair to the package, and records
-  structured repair outcomes. Gate results and live K=1/LIMIT=1 run identifiers are
-  recorded in the implementation report for that change.
-- **tau2 paid smoke** (`tau2_gpt-5.6-terra_harness_1_20260730-202115`): four real
-  retail episodes completed without integration errors (2 passed, $0.2402 recorded
-  agent cost). Every session has a trace series longer than one (9–30 samples), the
-  journal contains Tier-1 regressions plus Tier-2 breach signatures, and records carry
-  real rewards, 8–21 turns, and non-null trace scores. Replay validation promoted two
-  rules and retired eight with trace-metric reasons. This small sample learned only
-  scoped rules, so `rules/global.md` was not created; the strict-pull index correctly
-  references the populated scoped file.
-- **Terminal-Bench paid smoke**
-  (`terminal_bench_gpt-5.6-terra_harness_1_20260730-204311`): Harbor 0.18.0 ran four
-  serial Docker trials without exceptions (eval 1/2 passed; $1.0258 agent cost).
-  `result.json` supplied `{"reward": ...}` dictionaries, turns ranged 5–15, and all
-  four sessions have 2–14 trace samples. The journal shows `trend`/`stall` escalation
-  and Tier-2 breaches; both global and scoped provisional rule files are populated and
-  indexed from the generated guide. The two-task-per-phase smoke did not supply the three
-  subsequent live sessions required for a forward-only candidate to promote or retire,
-  which is the documented Terminal-Bench validation deviation.
-- **AppWorld real integration**: `AppWorldServer` + `HttpAppWorldEnv` + `AppWorldRunner`
-  driven against the **live AppWorld environment server** (57 dev tasks; initialize /
-  api_docs / execute real code / evaluate 1-of-2 tests / close; runner `run_once` with
-  a scripted tool call). ✅ verified. A full live-model smoke additionally needs LLM
-  creds exported in the shell.
-- **Arm-B capture, providers, and metrics**: capture/replayable eval cases, provider
-  routing and usage, pass@1/pass^k, McNemar, paired deltas, and bootstrap are covered by
-  the offline suite.
+- **Harness-live-throughout migration**: the learning/eval split, frozen eval, and
+  `frozen-rules.json` are gone. Verified offline — full test suite, `ruff`, and
+  `mypy --strict` clean, plus one dry run per benchmark confirming every trial has
+  `phase == "live"`, the task set matches the dataset, no `frozen-rules.json` is written,
+  and both AppWorld arms ran the identical seeded order.
+- **AppWorld real integration**: server + HTTP env + runner driven against the live
+  AppWorld environment server (initialize / api_docs / execute / evaluate / close). ✅
+- **tau2 paid smoke**: four real retail episodes without integration errors; every
+  session has a multi-sample trace series, the journal shows Tier-1 regressions plus
+  Tier-2 breach signatures, and replay validation promoted two rules and retired eight.
+- **Terminal-Bench paid smoke**: Harbor ran four serial Docker trials without
+  exceptions; `result.json` supplied reward dictionaries and all four sessions have
+  trace samples. Too few subsequent live sessions for a forward-only candidate to
+  promote or retire, which is the documented Terminal-Bench deviation.
+- **Not yet exercised by a paid run**: end-of-run settlement against real validation
+  latency, and whether in-session promotion occurs often enough to move the metric.
 
 ## Checkpoint results
 
-- **Checkpoint 1 (metric↔failure calibration)** still requires a labelled real arm-B
-  learning run; the tooling is built (`pandabench-calibrate`,
-  `scripts/labels_from_records.py`).
-- **Checkpoint 2 (rule promotion)** engaged in the tau2 smoke: two replay-validated
-  rules promoted and eight regressing candidates retired. Terminal-Bench created four
-  forward-validation candidates but, as expected for a two-task-per-phase smoke, did
-  not observe enough later live sessions to decide them.
+- **Checkpoint 1 (metric↔failure calibration)** still needs a labelled real harness run;
+  the tooling exists (`pandabench-calibrate`, `scripts/labels_from_records.py`).
+- **Checkpoint 2 (rule promotion)** engaged in the tau2 smoke: two replay-validated rules
+  promoted, eight regressing candidates retired.
