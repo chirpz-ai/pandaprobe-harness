@@ -193,7 +193,7 @@ def test_ingest_exception_and_synthetic_error_record(tmp_path):
     )
     assert missing.passed is False
     assert missing.error == "Harbor exited with status 2"
-    assert missing.native_metrics == {"harbor_exit_code": 2, "passed_relaxed": False}
+    assert missing.native_metrics == {"harbor_exit_code": 2}
 
 
 def test_harbor_harness_argv_is_serial_and_requests_managed_harness(tmp_path):
