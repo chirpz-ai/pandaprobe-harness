@@ -140,11 +140,6 @@ Tool results remain the source of truth about whether an action succeeded; the
 legacy playbook controls which action to take next until a learned rule replaces it.
 """
 
-# The repair agent is package-owned in 0.9.0, so this demo no longer prompts a
-# task agent to diagnose. `Harness.settle()` runs the repair episode: it reads the
-# notice, inspects the flagged trace, and writes at most one candidate rule.
-# `domain_policy` is the only steer a host gets — untrusted context the repair
-# model weighs alongside the trace, not an instruction to author a specific rule.
 DOMAIN_POLICY = """Refund operations for this service settle asynchronously.
 
 A refund attempt can soft-fail with a pending settlement, and the tool result is
@@ -453,7 +448,7 @@ async def _evaluated_step(
     )
     # settle() is the whole healing beat in 0.9.0: it awaits this turn's evaluation,
     # posts a notice on breach, and runs one bounded managed-repair episode. The
-    # repair agent — not this file — reads the notice and writes the candidate.
+    # repair agent reads the notice and writes the candidate.
     settled = await harness.settle(session_id)
     if settled.timed_out:
         raise RuntimeError(f"evaluation barrier timed out for {session_id} turn {turn_index}")
@@ -805,38 +800,19 @@ async def _main(args: argparse.Namespace) -> int:
 
     cfg = HarnessConfig.from_env(
         harness_root=root,
-        # One non-gaining turn is enough to confirm a stall over this short horizon.
-        # A real take of the flawed playbook scores task_completion 0.50 → 0.50 →
-        # 0.60: with gate_window=2 the third turn's +0.10 clears gate_gain (0.02),
-        # which resets the window, so a 3-turn run could never accumulate two
-        # consecutive non-gaining turns and the gate never fired.
         gate_window=1,
-        # Recalibrated for the harness-aware judge prompts. Those prompts stopped
-        # scoring an incomplete-but-honest turn as 0.0 and now award partial credit,
-        # so the stalled trajectory plateaus at 0.50-0.60 while healthy coherence
-        # sits ~0.82. The old 0.60 target sat on that plateau and could not confirm
-        # a breach; 0.75 puts the whole stalled series below target while staying
-        # clear of normal coherence.
         gate_target=0.75,
-        # An ignored soft failure scores ~0.30-0.50 on tool_correctness. 0.60 keeps
-        # the bad step strictly below threshold.
         thresholds={"tool_correctness": 0.60},
         capture_eval_cases=True,
         barrier_timeout_s=300.0,
-        # Tuned for demo latency while retaining a 60-second polling budget.
         poll_interval_s=0.5,
         poll_max_attempts=120,
         eval_retry_attempts=4,
         eval_retry_backoff_s=0.5,
         rule_trial_min_sessions=1,
-        # Managed repair is package-owned in 0.9.0. It needs its own model id, and
-        # `reasoning_effort="none"` because it always calls function tools (the
-        # config default already pins this; stated here so the demo is legible).
         repair_model=args.repair_model,
         repair_reasoning_effort="none",
         trace_repair_agent=True,
-        # domain_policy is the host's only steer into repair: untrusted context the
-        # repair model weighs against the trace, never a rule dictated by us.
         domain_policy=DOMAIN_POLICY,
     )
 
@@ -854,12 +830,6 @@ async def _main(args: argparse.Namespace) -> int:
             candidate_visible="Provisional rules" in str(context),
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": TASK}]
-        # The replay MUST read the candidate through `context.task_tools`, not the
-        # live harness toolset. Validation counts a candidate as exercised only when
-        # it appears in that context's `surfaced_rule_ids`; reading the same rule via
-        # `harness.task_tools` touches a different object, so the case is recorded as
-        # `candidate_not_exercised` and the rule is judged by the weak forward trial.
-        # Managed repair owns scope selection, so read every scope holding a candidate.
         chunks: list[str] = []
         for scope in _candidate_scopes(harness):
             result = await context.task_tools.call("harness_rules_read", {"scope": scope})
@@ -919,9 +889,6 @@ async def _main(args: argparse.Namespace) -> int:
             "for the repair episode's resolution"
         )
 
-    # settle() deliberately does NOT await the validation round: replay re-runs the
-    # captured case through this same agent, which would deadlock a turn-scoped
-    # barrier. The host drives it here, where nothing holds the environment.
     print("  evidence gate: replaying the captured failure...", flush=True)
     state.verdicts.extend(await harness.validate_candidates())
     if not harness.rules.active():
