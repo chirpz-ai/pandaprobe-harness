@@ -79,7 +79,6 @@ benchmarks:
   appworld:
     dataset: dev              # 57 tasks, run whole; --dataset test_normal (168) for more power
     max_turns: 100            # a turn = one execute(); AppWorld's env cap is 1000
-    pass_tolerance: 1         # pass = within 1 missed test; HARNESS arm only
   terminal_bench:
     dataset: terminal-bench-sample@2.0  # smaller default; use terminal-bench@2.0 for full
     max_turns: 100            # Terminal-Bench has no native turn cap (timeout-driven);
