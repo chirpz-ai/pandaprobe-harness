@@ -78,7 +78,8 @@ a record, so additional views cost nothing and require no re-run.
 - The `pandaprobe` CLI on PATH (`curl -fsSL https://cli.pandaprobe.com/install.sh | sh`).
 - LLM credentials for the providers you use (see `.env.example`): Vertex AI ADC
   (`gcloud auth application-default login` + `VERTEXAI_PROJECT`), `OPENAI_API_KEY`, or
-  `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` for the default Claude backend.
+  `AWS_PROFILE_NAME` + `AWS_REGION` for the default Claude backend (any AWS
+  profile; boto3 auto-refreshes it, including SSO).
   `ANTHROPIC_API_KEY` enables the optional Claude fallback; the harness arm also needs
   `PANDAPROBE_API_KEY`.
 - Docker running (Terminal-Bench only). Harbor is installed with this project.
