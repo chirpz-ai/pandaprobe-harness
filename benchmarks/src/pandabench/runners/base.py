@@ -66,7 +66,7 @@ LIVE_PHASE = "live"
 # Credentials/config whose PRESENCE (not value) we fingerprint into the manifest.
 _ENV_KEYS = (
     "VERTEXAI_PROJECT", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-    "AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION", "CLAUDE_BACKEND",
+    "AWS_PROFILE_NAME", "AWS_REGION", "CLAUDE_BACKEND",
     "PANDAPROBE_API_KEY", "PANDAPROBE_PROJECT_NAME",
 )
 
