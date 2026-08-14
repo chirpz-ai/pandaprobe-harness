@@ -144,7 +144,7 @@ sharp edges found while building. Read alongside `RUNNING.md`.
 - **Terminal-Bench**: needs Docker running; `uv sync` installs Harbor here.
 - **tau2**: `uv sync --extra tau2` and `TAU2_DATA_DIR=<clone>/data`.
 - **Providers**: `VERTEXAI_PROJECT`/ADC and/or `OPENAI_API_KEY`. Claude defaults to AWS
-  Bedrock (`AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION`); `ANTHROPIC_API_KEY` only for the
+  Bedrock (`AWS_PROFILE_NAME` + `AWS_REGION`); `ANTHROPIC_API_KEY` only for the
   optional `BACKEND=anthropic` fallback. Harness runs also need `PANDAPROBE_API_KEY` and
   `PANDAPROBE_PROJECT_NAME`. `uv run pandabench-run --preflight` validates them.
 - **Bedrock on-demand Claude calls require inference profiles.** The catalog's base
