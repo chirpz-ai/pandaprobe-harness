@@ -192,12 +192,12 @@ def preflight() -> int:
     for var in (
         "VERTEXAI_PROJECT",
         "OPENAI_API_KEY",
-        "AWS_BEARER_TOKEN_BEDROCK",
-        "AWS_REGION",
         "ANTHROPIC_API_KEY",
         "PANDAPROBE_API_KEY",
     ):
         checks.append((var, bool(os.environ.get(var)), "set"))
+    bedrock_ok, bedrock_detail = _bedrock_auth()
+    checks.append(("Bedrock auth", bedrock_ok, bedrock_detail))
 
     ping_model = os.environ.get("PANDABENCH_PING_MODEL", "gemini-3.1-flash-lite")
     ok, detail = _ping(ping_model)
@@ -208,9 +208,6 @@ def preflight() -> int:
         print(f"  [{'OK ' if passed else 'XX '}] {name:28s} {detail}")
 
     # Hard requirement: pandaprobe CLI + at least one usable provider.
-    bedrock_ok = bool(
-        os.environ.get("AWS_BEARER_TOKEN_BEDROCK") and os.environ.get("AWS_REGION")
-    )
     provider_ok = bool(
         os.environ.get("VERTEXAI_PROJECT")
         or os.environ.get("OPENAI_API_KEY")
@@ -220,6 +217,58 @@ def preflight() -> int:
     hard_ok = shutil.which("pandaprobe") is not None and provider_ok
     print("\npreflight:", "PASS" if hard_ok else "FAIL (need pandaprobe CLI + >=1 provider)")
     return 0 if hard_ok else 1
+
+
+def _bedrock_auth() -> tuple[bool, str]:
+    """Resolve Bedrock credentials now, so a dead session fails here not hours in.
+
+    Auth goes through ``AWS_PROFILE_NAME`` — LiteLLM's own name for it, NOT the
+    standard ``AWS_PROFILE``, which it does not read. LiteLLM deliberately does not
+    cache the profile path, so every call re-resolves through boto3 and picks up a
+    refreshed SSO token from disk mid-run.
+
+    A short-term ``AWS_BEARER_TOKEN_BEDROCK`` also works in LiteLLM and takes
+    precedence over everything, but the suite no longer documents it: one expired
+    partway through a multi-hour run and produced 409 useless trials that the run
+    still reported as "complete". If it is set in the environment it silently wins
+    over the profile, so this warns about it rather than staying quiet.
+    """
+
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_REGION_NAME")
+    profile = os.environ.get("AWS_PROFILE_NAME")
+    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+        return False, (
+            "AWS_BEARER_TOKEN_BEDROCK is set and SILENTLY OVERRIDES the profile; "
+            "unset it and use AWS_PROFILE_NAME (it expires mid-run)"
+        )
+    if not profile:
+        return False, "AWS_PROFILE_NAME is unset (needed for the Claude/bedrock backend)"
+    return _sso_profile_ok(profile, region)
+
+
+def _sso_profile_ok(profile: str, region: str | None) -> tuple[bool, str]:
+    """Force a credential resolve for ``profile`` so a dead SSO session fails now."""
+
+    try:
+        import boto3  # type: ignore[import-untyped]
+    except ImportError:
+        return False, f"profile {profile!r} set but boto3 is not installed"
+    try:
+        credentials = boto3.Session(profile_name=profile).get_credentials()
+        if credentials is None:
+            return False, f"profile {profile!r} resolves no credentials"
+        # Forces a refresh through the SSO token cache; raises if the session died.
+        credentials.get_frozen_credentials()
+    except Exception as exc:  # noqa: BLE001 - any failure here means "log in again"
+        return False, (
+            f"profile {profile!r} FAILED ({type(exc).__name__}) -- "
+            f"run: aws sso login --profile {profile}"
+        )
+    # Private attribute, so tolerate its absence rather than depending on it.
+    expiry = getattr(credentials, "_expiry_time", None)
+    window = f", creds expire {expiry:%H:%M UTC}" if expiry else ""
+    note = "" if region else " -- WARNING: AWS_REGION is unset"
+    return bool(region), f"profile {profile!r} live, auto-refreshing{window}{note}"
 
 
 def _docker_ok() -> bool:
