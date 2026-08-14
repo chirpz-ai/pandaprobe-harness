@@ -10,7 +10,7 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 - **Credentials** (put in `benchmarks/.env`; see `.env.example`):
   - Vertex AI: `gcloud auth application-default login` + `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`
   - OpenAI: `OPENAI_API_KEY`
-  - Claude via Bedrock (default): `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION`
+  - Claude via Bedrock (default): `AWS_PROFILE_NAME` + `AWS_REGION`
   - Claude via Anthropic (optional fallback): `ANTHROPIC_API_KEY`
   - `PANDAPROBE_API_KEY` (required for the `harness` arm)
 - **Docker** running — Terminal-Bench only.
@@ -69,8 +69,6 @@ so a rule can be promoted mid-run; a single settlement at the **end of the run**
 then waits (within `settle_timeout_s`) for outstanding evals and in-flight
 validation before the workspace is archived, and logs a warning if it could not.
 
-
-
 ## 2. Smoke test (pipeline check, no external harnesses)
 
 ```bash
@@ -96,7 +94,7 @@ Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
 | `SEED`     | shuffles task order (same order in both arms); run several (1, 2, 3) as replicates   | `1`                                               |
 | `K`        | trials per task — `pass@1` = first trial passed, `pass^k` = all K passed             | `4`                                               |
 | `DATASET`  | override the configured task universe (for example, Terminal-Bench's 10-task sample) | benchmark config                                  |
-| `LIMIT`    | run only the **first N tasks** of the dataset; **omit to run all of it**              | unset (all)                                       |
+| `LIMIT`    | run only the **first N tasks** of the dataset; **omit to run all of it**             | unset (all)                                       |
 | `MAXTURNS` | per-task **agent-turn cap** (how long the agent works on one task)                   | `study.yaml` `max_turns` (100 for all benchmarks) |
 | `BACKEND`  | **Claude only**: `bedrock` or `anthropic`                                            | `bedrock`                                         |
 
@@ -121,7 +119,7 @@ Generate it for the same region as `AWS_REGION`, and refresh it before long runs
 catalog's underlying `anthropic.*` foundation-model IDs identify the model but
 reject on-demand invocation; the profile IDs are the callable on-demand targets.
 - Verify Bedrock specifically before spending on a benchmark:
-  `PANDABENCH_PING_MODEL=claude-sonnet-5 uv run pandabench-run --preflight`.
+`PANDABENCH_PING_MODEL=claude-sonnet-5 uv run pandabench-run --preflight`.
 - The third configured model is Claude **Haiku 4.5**, not 4.6; both its official
 Anthropic ID and the supplied Bedrock catalog ID identify it as 4.5.
 
@@ -145,13 +143,11 @@ make appworld ARM=harness MODEL=gpt-5.6-terra DATASET=dev SEED=1 K=1 LIMIT=5
 | `test_normal`    | 168   | Normal test split       |
 | `test_challenge` | 417   | Challenge test split    |
 
+
 The selected split is run **whole** — PandaBench never re-partitions one, so results
 for a split stay comparable to published AppWorld numbers for it. `dev` is the
 default; `test_normal` gives ~3× the tasks, hence more in-session learning runway and
 more statistical power, at ~3× the spend.
-
-
-
 
 ### Terminal-Bench (Harbor)
 
@@ -283,3 +279,4 @@ so a long study can be interrupted and continued. Budget deliberately: this is
 no API calls) to validate wiring.
 - **Everything is a plain CLI command** — the Makefile is sugar over
 `uv run pandabench-run …` / `pandabench-report` / `pandabench-calibrate`.
+
