@@ -12,6 +12,7 @@
 #   DATASET  dataset override (unset = the benchmark's configured dataset)
 #   MAXTURNS per-task agent-turn cap (unset = study.yaml max_turns, 100 for all benchmarks)
 #   BACKEND  Claude only: bedrock | anthropic (default: bedrock)
+#   RUN_ID   reuse an existing run id to RESUME it (skips completed task-trials)
 ARM      ?= baseline
 MODEL    ?= gemini-3.1-flash-lite
 SEED     ?= 1
@@ -22,10 +23,12 @@ DATASET  ?=
 MAXTURNS ?=
 BENCH    ?= appworld
 BENCHMARK ?= $(BENCH)
+RUN_ID   ?=
 LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
 DATASET_FLAG := $(if $(DATASET),--dataset $(DATASET),)
 MAXTURNS_FLAG := $(if $(MAXTURNS),--max-turns $(MAXTURNS),)
 BACKEND_FLAG := $(if $(BACKEND),--backend $(BACKEND),)
+RUN_ID_FLAG := $(if $(RUN_ID),--run-id $(RUN_ID),)
 
 .PHONY: help setup sync smoke run appworld terminal terminal_bench tau2 matrix report calibrate check lint typecheck test preflight
 
@@ -46,15 +49,15 @@ preflight: ## Validate Docker, CLIs, credentials, and a 1-token ping per provide
 smoke: ## 2 tasks x 1 trial x both arms x cheap model, all benchmarks (< ~10 min)
 	uv run pandabench-run --smoke
 
-run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=] [DATASET=] [MAXTURNS=])
+run: ## Run one arm of one benchmark (BENCHMARK= ARM= MODEL= SEED= [BACKEND=] [K=] [LIMIT=] [DATASET=] [MAXTURNS=] [RUN_ID=])
 	uv run pandabench-run --benchmark $(BENCHMARK) --arm $(ARM) --model $(MODEL) \
-		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(DATASET_FLAG) $(MAXTURNS_FLAG)
+		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(DATASET_FLAG) $(MAXTURNS_FLAG) $(RUN_ID_FLAG)
 
 # The `terminal` target keeps its short name but must pass the CLI's actual
 # choice, `terminal_bench` — `--benchmark terminal` is rejected.
-appworld terminal_bench tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/DATASET/MAXTURNS
+appworld terminal_bench tau2: ## Run one benchmark (target name = benchmark); honors ARM/MODEL/SEED/K/LIMIT/DATASET/MAXTURNS/RUN_ID
 	uv run pandabench-run --benchmark $@ --arm $(ARM) --model $(MODEL) \
-		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(DATASET_FLAG) $(MAXTURNS_FLAG)
+		--seed $(SEED) $(BACKEND_FLAG) -k $(K) $(LIMIT_FLAG) $(DATASET_FLAG) $(MAXTURNS_FLAG) $(RUN_ID_FLAG)
 
 terminal: terminal_bench ## Alias for terminal_bench
 
