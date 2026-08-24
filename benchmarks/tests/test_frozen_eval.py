@@ -14,6 +14,7 @@ from pandabench.agents.frozen_wiring import FrozenEvalWiring
 from pandabench.config import HarnessKnobs, load_study
 from pandabench.frozen_rules import FrozenRulesSnapshot
 from pandabench.harness_glue import build_harness_config
+from pandabench.providers.models import load_registry
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 BENCH_ROOT = CONFIGS.parent
@@ -104,7 +105,9 @@ def test_benchmark_installs_the_released_harness_from_pypi() -> None:
 def test_study_can_select_a_dedicated_repair_model(tmp_path: Path) -> None:
     path = tmp_path / "study.yaml"
     path.write_text(
-        "harness:\n  repair_model: anthropic/test-repair\n",
+        "harness:\n"
+        "  repair_model: anthropic/test-repair\n"
+        "  repair_reasoning_effort: none\n",
         encoding="utf-8",
     )
     study = load_study(path)
@@ -114,8 +117,40 @@ def test_study_can_select_a_dedicated_repair_model(tmp_path: Path) -> None:
         study=study,
         benchmark="appworld",
         repair_model="openai/task-model",
+        repair_overrides={"reasoning_effort": None, "max_turns": 12},
     )
     assert cfg.repair_model == "anthropic/test-repair"
+    assert cfg.repair_reasoning_effort == "none"
+    assert cfg.repair_max_turns == 6
+
+
+@pytest.mark.parametrize(
+    ("model_key", "expected_reasoning", "expected_turns"),
+    [
+        ("gpt-oss-20b", None, 12),
+        ("gpt-oss-120b", None, 12),
+        ("qwen3-coder-30b-a3b", "none", 12),
+        ("nemotron-3-super-120b", "none", 12),
+    ],
+)
+def test_model_managed_repair_overrides_are_effective(
+    tmp_path: Path,
+    model_key: str,
+    expected_reasoning: str | None,
+    expected_turns: int,
+) -> None:
+    study = load_study(CONFIGS / "study.yaml")
+    model = load_registry(CONFIGS / "models.yaml").resolve(model_key)
+    cfg = build_harness_config(
+        harness_root=tmp_path / model_key,
+        capture=True,
+        study=study,
+        benchmark="appworld",
+        repair_model=model.litellm_model,
+        repair_overrides=model.repair_overrides,
+    )
+    assert cfg.repair_reasoning_effort == expected_reasoning
+    assert cfg.repair_max_turns == expected_turns
 
 
 def test_study_gate_window_can_be_explicitly_overridden(tmp_path: Path) -> None:

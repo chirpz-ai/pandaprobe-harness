@@ -1,18 +1,18 @@
 """Model registry: resolve a study model key to a LiteLLM model string.
 
 The study's provider-routing constraints (Gemini via Vertex; OpenAI via OpenAI's
-API; Claude switchable across AWS Bedrock and Anthropic API) are
-encoded entirely in ``configs/models.yaml`` — switching a model or backend is a
-config change, never a code change. This module turns a config key + optional
-backend into a fully-resolved :class:`ResolvedModel` that the LiteLLM wrapper
-consumes.
+API; open-weight models via Bedrock; Claude switchable across AWS Bedrock and
+Anthropic API) are encoded entirely in ``configs/models.yaml`` — switching a
+model or backend is a config change, never a code change. This module turns a
+config key + optional backend into a fully-resolved :class:`ResolvedModel` that
+the LiteLLM wrapper consumes.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,10 @@ class ResolvedModel:
     price_per_mtok: dict[str, float] | None
     """Fallback USD price per 1M tokens ``{input, output}`` when
     ``litellm.completion_cost`` lacks a price."""
+    default_max_tokens: int | None = None
+    """Per-model task/replay output budget, or the client's default when unset."""
+    repair_overrides: dict[str, Any] = field(default_factory=dict)
+    """Managed-repair settings used when this task model is also the repair model."""
     is_mock: bool = False
     """True for the dry-run pseudo-model (no real API calls)."""
 
@@ -89,11 +93,13 @@ class _ModelSpec:
     param_allowlist: frozenset[str]
     default_params: dict[str, Any]
     price_per_mtok: dict[str, float] | None
+    default_max_tokens: int | None
+    repair_overrides: dict[str, Any]
     is_mock: bool
 
 
 class ModelRegistry:
-    """Parsed ``models.yaml``: model specs + named roles (user simulator, etc.)."""
+    """Parsed ``models.yaml``: model specs plus named operational roles."""
 
     def __init__(self, specs: Mapping[str, _ModelSpec], roles: Mapping[str, str]) -> None:
         self._specs = dict(specs)
@@ -103,7 +109,7 @@ class ModelRegistry:
         return list(self._specs)
 
     def role(self, name: str) -> str:
-        """The model key bound to a role (e.g. ``user_simulator``, ``dry_run``)."""
+        """The model key bound to a role (for example ``dry_run`` or ``smoke``)."""
 
         try:
             return self._roles[name]
@@ -161,6 +167,8 @@ class ModelRegistry:
             param_allowlist=spec.param_allowlist,
             default_params=dict(spec.default_params),
             price_per_mtok=spec.price_per_mtok,
+            default_max_tokens=spec.default_max_tokens,
+            repair_overrides=dict(spec.repair_overrides),
             is_mock=spec.is_mock,
         )
 
@@ -168,6 +176,49 @@ class ModelRegistry:
 def _parse_spec(key: str, raw: Mapping[str, Any]) -> _ModelSpec:
     backends = dict(raw.get("backends") or {})
     price = raw.get("price_per_mtok")
+    default_max_tokens_raw = raw.get("default_max_tokens")
+    default_max_tokens = (
+        int(default_max_tokens_raw) if default_max_tokens_raw is not None else None
+    )
+    if default_max_tokens is not None and default_max_tokens <= 0:
+        raise ValueError(f"model {key!r}: default_max_tokens must be positive")
+
+    repair_raw = raw.get("repair_overrides") or {}
+    if not isinstance(repair_raw, Mapping):
+        raise ValueError(f"model {key!r}: repair_overrides must be a mapping")
+    allowed_repair_keys = {
+        "timeout_s",
+        "max_turns",
+        "max_tokens",
+        "temperature",
+        "reasoning_effort",
+    }
+    unknown_repair_keys = set(repair_raw) - allowed_repair_keys
+    if unknown_repair_keys:
+        raise ValueError(
+            f"model {key!r}: unknown repair_overrides keys: "
+            f"{sorted(unknown_repair_keys)}"
+        )
+    repair_overrides = {str(k): v for k, v in repair_raw.items()}
+    for name in ("max_turns", "max_tokens"):
+        value = repair_overrides.get(name)
+        if value is not None and (isinstance(value, bool) or int(value) <= 0):
+            raise ValueError(f"model {key!r}: repair_overrides.{name} must be positive")
+        if value is not None:
+            repair_overrides[name] = int(value)
+    if repair_overrides.get("timeout_s") is not None:
+        timeout_s = float(repair_overrides["timeout_s"])
+        if timeout_s <= 0:
+            raise ValueError(
+                f"model {key!r}: repair_overrides.timeout_s must be positive"
+            )
+        repair_overrides["timeout_s"] = timeout_s
+    if repair_overrides.get("temperature") is not None:
+        repair_overrides["temperature"] = float(repair_overrides["temperature"])
+    if repair_overrides.get("reasoning_effort") is not None:
+        repair_overrides["reasoning_effort"] = str(
+            repair_overrides["reasoning_effort"]
+        )
     return _ModelSpec(
         key=key,
         provider_family=str(raw.get("provider_family", "")),
@@ -177,6 +228,8 @@ def _parse_spec(key: str, raw: Mapping[str, Any]) -> _ModelSpec:
         param_allowlist=frozenset(raw.get("param_allowlist") or ()),
         default_params=dict(raw.get("default_params") or {}),
         price_per_mtok={str(k): float(v) for k, v in price.items()} if price else None,
+        default_max_tokens=default_max_tokens,
+        repair_overrides=repair_overrides,
         is_mock=bool(raw.get("mock", False)),
     )
 
