@@ -288,6 +288,30 @@ async def test_both_arms_dry_run_pipeline(tmp_path):
         assert (run_dir / "records.jsonl").exists()
 
 
+async def test_tau2_manifest_records_user_model_and_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, MockTaskRunner("tau2", tasks=1))
+    monkeypatch.setattr(runner, "_make_client", lambda arm, dry_run: MockClient())
+
+    run_dir = await runner.run(
+        arm="baseline",
+        model_key="claude-sonnet-5",
+        backend="anthropic",
+        seed=1,
+        k=1,
+        dry_run=False,
+        run_id="tau2-same-user-model",
+    )
+
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    resolved = manifest["resolved_config"]
+    assert resolved["user_simulator_policy"] == "same_as_agent"
+    assert resolved["user_simulator_model"] == "claude-sonnet-5"
+    assert resolved["user_simulator_resolved_model"] == "anthropic/claude-sonnet-5"
+    assert resolved["user_simulator_backend"] == "anthropic"
+
+
 async def test_task_order_is_seeded_deterministic_and_arm_independent(tmp_path):
     """Order decides what has been learned by task N, so it must be reproducible."""
 
@@ -381,6 +405,7 @@ async def test_harness_is_live_for_every_task_in_one_pass(
     assert resolved["gate_window"] == 10
     assert resolved["repair_model"] == "mock/mock"
     assert resolved["repair_reasoning_effort"] == "none"
+    assert resolved["task_default_max_tokens"] == 4096
     assert resolved["managed_repair"] is True
     assert resolved["trace_repair_agent"] is True
     assert resolved["n_tasks"] == 3
