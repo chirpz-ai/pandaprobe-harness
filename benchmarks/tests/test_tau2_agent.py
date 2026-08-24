@@ -195,7 +195,9 @@ async def test_runner_selects_tasks_and_environment_for_every_domain(
 
     assert len(task_ids) == task_count
     assert orchestrator.domain == domain
+    assert orchestrator.user.llm == mock_model.litellm_model
     assert orchestrator.user.llm_args["temperature"] == 1.0
+    assert orchestrator.user._model is mock_model
     assert str(task.id) == task_ids[0]
 
 
