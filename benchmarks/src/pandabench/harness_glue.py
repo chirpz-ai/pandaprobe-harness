@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 __all__ = [
     "OutcomeGrader",
     "ReplayRunner",
+    "RepairSettings",
     "build_harness",
     "build_harness_config",
     "harness_root_for",
@@ -34,6 +36,7 @@ __all__ = [
     "make_session_id",
     "make_verifier_fn",
     "new_session_namespace",
+    "resolve_repair_settings",
     "sanitize_component",
 ]
 
@@ -48,6 +51,78 @@ OutcomeGrader = Callable[[str, str], "float | None"]
 
 _UNSAFE = re.compile(r"[^a-z0-9._-]+")
 _SESSION_ID_MAX_LENGTH = 255
+
+
+@dataclass(frozen=True, slots=True)
+class RepairSettings:
+    """Effective managed-repair settings recorded and passed to the package."""
+
+    model: str
+    timeout_s: float
+    max_turns: int
+    max_tokens: int
+    temperature: float | None
+    reasoning_effort: str | None
+
+    def to_manifest(self) -> dict[str, Any]:
+        """Use the established manifest field names."""
+
+        return {
+            "repair_model": self.model,
+            "repair_timeout_s": self.timeout_s,
+            "repair_max_turns": self.max_turns,
+            "repair_max_tokens": self.max_tokens,
+            "repair_temperature": self.temperature,
+            "repair_reasoning_effort": self.reasoning_effort,
+        }
+
+
+def resolve_repair_settings(
+    *,
+    study: StudyConfig,
+    repair_model: str,
+    repair_overrides: Mapping[str, Any] | None = None,
+) -> RepairSettings:
+    """Resolve study defaults plus per-model managed-repair compatibility knobs.
+
+    Per-model overrides apply only while the task model itself is the repair
+    model. An explicit study-level ``repair_model`` selects a different model,
+    so its study-level settings remain authoritative.
+    """
+
+    overrides = (
+        dict(repair_overrides or {})
+        if study.harness.repair_model is None
+        else {}
+    )
+    allowed = {
+        "timeout_s",
+        "max_turns",
+        "max_tokens",
+        "temperature",
+        "reasoning_effort",
+    }
+    unknown = set(overrides) - allowed
+    if unknown:
+        raise ValueError(f"unknown repair override(s): {sorted(unknown)}")
+
+    def chosen(name: str, default: Any) -> Any:
+        return overrides[name] if name in overrides else default
+
+    temperature = chosen("temperature", study.harness.repair_temperature)
+    reasoning_effort = chosen(
+        "reasoning_effort", study.harness.repair_reasoning_effort
+    )
+    return RepairSettings(
+        model=study.harness.repair_model or repair_model,
+        timeout_s=float(chosen("timeout_s", study.harness.repair_timeout_s)),
+        max_turns=int(chosen("max_turns", study.harness.repair_max_turns)),
+        max_tokens=int(chosen("max_tokens", study.harness.repair_max_tokens)),
+        temperature=float(temperature) if temperature is not None else None,
+        reasoning_effort=(
+            str(reasoning_effort) if reasoning_effort is not None else None
+        ),
+    )
 
 
 def sanitize_component(value: str) -> str:
@@ -119,6 +194,7 @@ def build_harness_config(
     study: StudyConfig,
     benchmark: str,
     repair_model: str,
+    repair_overrides: Mapping[str, Any] | None = None,
     health_check: bool = True,
 ) -> HarnessConfig:
     """Resolve a HarnessConfig for one run.
@@ -135,6 +211,11 @@ def build_harness_config(
     """
 
     threshold = study.breach_threshold(benchmark)
+    repair = resolve_repair_settings(
+        study=study,
+        repair_model=repair_model,
+        repair_overrides=repair_overrides,
+    )
     benchmark_config = study.benchmarks.get(benchmark)
     benchmark_policy = (
         benchmark_config.extra.get("domain_policy") if benchmark_config is not None else None
@@ -162,12 +243,12 @@ def build_harness_config(
         enable_tier3=study.harness.enable_tier3,
         barrier_timeout_s=study.harness.barrier_timeout_s,
         outcome_threshold=study.harness.outcome_threshold,
-        repair_model=study.harness.repair_model or repair_model,
-        repair_timeout_s=study.harness.repair_timeout_s,
-        repair_max_turns=study.harness.repair_max_turns,
-        repair_max_tokens=study.harness.repair_max_tokens,
-        repair_temperature=study.harness.repair_temperature,
-        repair_reasoning_effort=study.harness.repair_reasoning_effort,
+        repair_model=repair.model,
+        repair_timeout_s=repair.timeout_s,
+        repair_max_turns=repair.max_turns,
+        repair_max_tokens=repair.max_tokens,
+        repair_temperature=repair.temperature,
+        repair_reasoning_effort=repair.reasoning_effort,
         trace_repair_agent=study.harness.trace_repair_agent,
         domain_policy=str(benchmark_policy) if benchmark_policy is not None else None,
     )
