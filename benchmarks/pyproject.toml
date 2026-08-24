@@ -23,8 +23,8 @@ dependencies = [
     # The single LLM provider layer for the entire study. The [google] extra
     # pulls google-auth so LiteLLM can use Vertex AI via ADC.
     "litellm[google]>=1.55",
-    # LiteLLM's Bedrock transport imports botocore even when requests authenticate
-    # with the simpler AWS_BEARER_TOKEN_BEDROCK short-term API key.
+    # LiteLLM's Bedrock transport uses boto3/botocore to resolve the configured
+    # auto-refreshing AWS_PROFILE_NAME credentials.
     "boto3>=1.43.1,<2.0",
     # HTTP client for driving the isolated AppWorld environment server.
     "httpx>=0.27",

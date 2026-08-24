@@ -10,7 +10,7 @@ arms — `baseline` (no harness) and `harness` — over the same tasks/models.
 - **Credentials** (put in `benchmarks/.env`; see `.env.example`):
   - Vertex AI: `gcloud auth application-default login` + `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`
   - OpenAI: `OPENAI_API_KEY`
-  - Claude via Bedrock (default): `AWS_PROFILE_NAME` + `AWS_REGION`
+  - Bedrock (Claude default plus open-weight models): `AWS_PROFILE_NAME` + `AWS_REGION`
   - Claude via Anthropic (optional fallback): `ANTHROPIC_API_KEY`
   - `PANDAPROBE_API_KEY` (required for the `harness` arm)
 - **Docker** running — Terminal-Bench only.
@@ -48,8 +48,12 @@ what has been learned by the time task N runs.
 Harness runs use package-owned managed repair. By default PandaBench reuses
 the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
 which current OpenAI reasoning models require when using function tools through
-the PandaProbe-wrapped LiteLLM chat-completions API. Choose another current
-LiteLLM model deliberately when needed. The task agent sees only a stable
+the PandaProbe-wrapped LiteLLM chat-completions API. Model entries may override
+that compatibility setting, the repair turn limit, or related repair budgets
+when the task model is also the repair model; an explicitly configured dedicated
+repair model keeps the study-level settings. The effective values are stamped in
+`manifest.json`. Choose another current LiteLLM model deliberately when needed.
+The task agent sees only a stable
 capability note and four read-only rule tools. Rule bodies and the expanded scope
 index are never force-injected; list/read/search/status happen only if the task
 model chooses them. Listing returns the canonical `rules.md` and generated
@@ -80,9 +84,15 @@ make report       # regenerate results/summary/
 
 ## 3. Run a benchmark
 
-Model keys: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`,
-`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `claude-opus-5`,
-`claude-sonnet-5`, `claude-haiku-4-5`.
+Model keys by route:
+
+- Vertex: `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro`.
+- OpenAI API: `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`.
+- Claude, Bedrock by default with an Anthropic fallback: `claude-opus-5`,
+  `claude-sonnet-5`, `claude-haiku-4-5`.
+- Open weights on Bedrock: `gpt-oss-120b`, `gpt-oss-20b`, `qwen3-32b`,
+  `qwen3-coder-30b-a3b`, `qwen3-235b-a22b-2507`, `qwen3-next-80b-a3b`,
+  `nemotron-3-super-120b`, `kimi-k2.5`, `llama-4-scout-17b`.
 
 **Knobs:**
 
@@ -109,17 +119,38 @@ per arm. On the raw CLI, use the equivalent `--limit 5`.
 - For a paired A/B comparison, keep `MODEL`, `DATASET`, `SEED`, `K`, `LIMIT`, and
 `MAXTURNS` identical; change only `ARM`. Both arms then run the same tasks in the
 same order, which the paired statistics require.
-- **OpenAI / Gemini route automatically** by their `models.yaml` prefix
-(`openai/…` → OpenAI API via `OPENAI_API_KEY`; `vertex_ai/…` → Vertex). Claude
-defaults to Bedrock; use `BACKEND=anthropic` only when intentionally falling back
-to the direct Anthropic API. Passing `BACKEND` to an OpenAI/Gemini model errors.
-- Bedrock's short-term API key is region-bound and expires after at most 12 hours.
-Generate it for the same region as `AWS_REGION`, and refresh it before long runs.
+- **OpenAI / Gemini / Bedrock route automatically** by their `models.yaml` prefix
+  (`openai/…` → OpenAI API, `vertex_ai/…` → Vertex, `bedrock/…` → AWS). Claude
+  defaults to Bedrock; use `BACKEND=anthropic` only when intentionally falling back
+  to the direct Anthropic API. Passing `BACKEND` to an OpenAI, Gemini, or open-weight
+  model errors because those entries are single-backend.
+- Use the auto-refreshing `AWS_PROFILE_NAME` path for Bedrock.
+  `AWS_BEARER_TOKEN_BEDROCK` is unsupported: LiteLLM gives it precedence over the
+  profile and an expired token can turn the rest of a long run into errors. Both
+  normal live launches and preflight reject it; dry-run remains credential-free.
+- `AWS_REGION` already exported by the parent shell takes precedence over `.env`.
+  Preflight prints the effective region; confirm it is the region where the selected
+  models are enabled (`us-west-2` for the registry entries verified here).
 - Bedrock routes Claude through AWS's `global.*` system inference profiles. The
-catalog's underlying `anthropic.*` foundation-model IDs identify the model but
-reject on-demand invocation; the profile IDs are the callable on-demand targets.
+  catalog's underlying `anthropic.*` foundation-model IDs identify the model but
+  reject on-demand invocation; the profile IDs are the callable on-demand targets.
+- Llama 4 Scout likewise requires its `us.meta.llama4-*` cross-region inference
+  profile. Its bare `meta.llama4-*` foundation-model ID rejects on-demand invocation.
+- The nine open-weight entries use a conservative `max_tokens`-only parameter policy.
+  LiteLLM 1.91.1 reports no temperature-support metadata for them. Most retain the
+  4,096-token client fallback (exactly Scout's 4k ceiling); gpt-oss-20b and Qwen3
+  Next use model-configured 8,192-token task/replay budgets because live pipeline
+  runs showed internal reasoning could consume 4,096 tokens before a tool call.
+- Managed repair omits the global `reasoning_effort: "none"` for both gpt-oss
+  models because Bedrock Harmony rejects that value. Both gpt-oss models, Qwen3
+  Coder, and Nemotron use a 12-turn repair protocol budget after six turns proved
+  too short to complete the package-owned rule lifecycle. These are registry
+  settings, not model-name branches in the runner.
+- gpt-oss uses Bedrock. OpenAI does not offer gpt-oss through its first-party API, so
+  there is no `openai/gpt-oss-*` route to select. Other third-party hosts would require
+  separate credentials and pricing and are not configured here.
 - Verify Bedrock specifically before spending on a benchmark:
-`PANDABENCH_PING_MODEL=claude-sonnet-5 uv run pandabench-run --preflight`.
+  `PANDABENCH_PING_MODEL=gpt-oss-20b uv run pandabench-run --preflight`.
 - The third configured model is Claude **Haiku 4.5**, not 4.6; both its official
 Anthropic ID and the supplied Bedrock catalog ID identify it as 4.5.
 
@@ -193,6 +224,17 @@ evaluator together. Run the baseline/harness pair once for each table row to ben
 all three official domains. `telecom-workflow` is an upstream policy-format ablation,
 not a fourth leaderboard domain, and is intentionally excluded.
 
+The simulated user uses the same resolved model and backend as `MODEL` (including a
+Claude `BACKEND=` selection). It goes through PandaBench's parameter policy but uses a
+separate trace session, so its calls cannot enter the task agent's harness trajectory.
+Its cost is available as `native_metrics.user_cost`; headline task usage remains agent
+usage only. This makes comparisons matched within each model's baseline/harness pair,
+but τ² episodes are no longer driven by one common user model across different models.
+Reasoning-capable models must emit a visible customer message after private reasoning.
+If a provider returns a stop with reasoning only, the adapter retries once with a
+protocol reminder; both attempts are included in `user_cost`, and a second empty turn
+is recorded as a trial error rather than silently treated as user output.
+
 All three domains, paired at the same settings:
 
 ```bash
@@ -256,7 +298,7 @@ commands (edit the lists to your models/seeds/benchmarks):
 
 ```bash
 for bench in appworld terminal tau2; do
-  for model in claude-sonnet-5 gpt-5.6-terra gemini-3.1-pro; do
+  for model in claude-sonnet-5 gpt-5.6-terra gemini-3.1-pro gpt-oss-120b; do
     for seed in 1 2 3; do
       for arm in baseline harness; do
         make $bench ARM=$arm MODEL=$model SEED=$seed K=4
@@ -279,4 +321,3 @@ so a long study can be interrupted and continued. Budget deliberately: this is
 no API calls) to validate wiring.
 - **Everything is a plain CLI command** — the Makefile is sugar over
 `uv run pandabench-run …` / `pandabench-report` / `pandabench-calibrate`.
-

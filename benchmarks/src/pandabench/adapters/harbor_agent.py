@@ -112,6 +112,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             cfg = build_harness_config(
                 harness_root=Path(harness_root), capture=capture, study=_load_study(),
                 benchmark="terminal_bench", repair_model=self._model.litellm_model,
+                repair_overrides=self._model.repair_overrides,
             )
             self._harness = build_harness(cfg=cfg)
 

@@ -19,6 +19,45 @@ from pandabench.providers.tracing import PandaTracer
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
+OPEN_WEIGHT_MODELS = [
+    ("gpt-oss-120b", "openai.gpt-oss-120b-1:0", 0.15, 0.60),
+    ("gpt-oss-20b", "openai.gpt-oss-20b-1:0", 0.07, 0.30),
+    ("qwen3-32b", "qwen.qwen3-32b-v1:0", 0.15, 0.60),
+    (
+        "qwen3-coder-30b-a3b",
+        "qwen.qwen3-coder-30b-a3b-v1:0",
+        0.15,
+        0.60,
+    ),
+    (
+        "qwen3-235b-a22b-2507",
+        "qwen.qwen3-235b-a22b-2507-v1:0",
+        0.22,
+        0.88,
+    ),
+    ("qwen3-next-80b-a3b", "qwen.qwen3-next-80b-a3b", 0.15, 1.20),
+    ("nemotron-3-super-120b", "nvidia.nemotron-super-3-120b", 0.15, 0.65),
+    ("kimi-k2.5", "moonshotai.kimi-k2.5", 0.60, 3.00),
+    (
+        "llama-4-scout-17b",
+        "us.meta.llama4-scout-17b-instruct-v1:0",
+        0.17,
+        0.66,
+    ),
+]
+
+OPEN_WEIGHT_DEFAULT_MAX_TOKENS = {
+    "gpt-oss-20b": 8192,
+    "qwen3-next-80b-a3b": 8192,
+}
+
+OPEN_WEIGHT_REPAIR_OVERRIDES = {
+    "gpt-oss-120b": {"reasoning_effort": None, "max_turns": 12},
+    "gpt-oss-20b": {"reasoning_effort": None, "max_turns": 12},
+    "qwen3-coder-30b-a3b": {"max_turns": 12},
+    "nemotron-3-super-120b": {"max_turns": 12},
+}
+
 
 @pytest.fixture
 def registry():
@@ -34,6 +73,32 @@ def test_single_backend_resolution(registry):
     assert m.provider == "vertex"
     assert m.backend is None
     assert "temperature" in m.param_allowlist
+
+
+@pytest.mark.parametrize(
+    ("key", "model_id", "input_price", "output_price"), OPEN_WEIGHT_MODELS
+)
+def test_open_weight_models_resolve_to_single_bedrock_backend(
+    registry,
+    key: str,
+    model_id: str,
+    input_price: float,
+    output_price: float,
+):
+    model = registry.resolve(key, env={"CLAUDE_BACKEND": "anthropic"})
+    assert model.litellm_model == f"bedrock/{model_id}"
+    assert model.provider == "bedrock"
+    assert model.backend is None
+    assert model.param_allowlist == frozenset({"max_tokens"})
+    assert model.default_params == {}
+    assert model.price_per_mtok == {"input": input_price, "output": output_price}
+    assert model.default_max_tokens == OPEN_WEIGHT_DEFAULT_MAX_TOKENS.get(key)
+    assert model.repair_overrides == OPEN_WEIGHT_REPAIR_OVERRIDES.get(key, {})
+
+    # Open-weight routing is fixed to Bedrock and cannot inherit Claude's
+    # environment override or accept a per-run backend switch.
+    with pytest.raises(ValueError, match="single-backend"):
+        registry.resolve(key, backend="anthropic", env={})
 
 
 @pytest.mark.parametrize(
@@ -110,8 +175,10 @@ def test_unknown_backend_raises(registry):
 
 
 def test_roles(registry):
-    assert registry.role("user_simulator") == "gemini-3.1-flash-lite"
     assert registry.resolve(registry.role("dry_run")).is_mock is True
+    assert registry.role("smoke") == "gemini-3.1-flash-lite"
+    with pytest.raises(KeyError):
+        registry.role("user_simulator")
     with pytest.raises(KeyError):
         registry.role("does-not-exist")
 
@@ -140,6 +207,35 @@ def test_param_allowlist_keeps_temperature_for_gemini(registry):
     params = client._call_params(gemini, max_tokens=None, extra={"temperature": 0.5})
     assert params["temperature"] == 0.5
     assert "max_tokens" in params  # default applied
+
+
+@pytest.mark.parametrize(("key", "_model_id", "_in", "_out"), OPEN_WEIGHT_MODELS)
+def test_open_weight_param_policy_is_max_tokens_only(
+    registry,
+    key: str,
+    _model_id: str,
+    _in: float,
+    _out: float,
+):
+    client = LiteLLMClient(tracer=PandaTracer.disabled())
+    model = registry.resolve(key)
+    params = client._call_params(
+        model,
+        max_tokens=None,
+        extra={"temperature": 0.2, "top_p": 0.9, "tool_choice": "auto"},
+    )
+    assert params == {
+        "max_tokens": OPEN_WEIGHT_DEFAULT_MAX_TOKENS.get(key, 4096)
+    }
+
+
+@pytest.mark.parametrize("key", OPEN_WEIGHT_DEFAULT_MAX_TOKENS)
+def test_explicit_call_budget_beats_open_weight_model_default(registry, key: str):
+    client = LiteLLMClient(tracer=PandaTracer.disabled())
+    params = client._call_params(
+        registry.resolve(key), max_tokens=2048, extra=None
+    )
+    assert params == {"max_tokens": 2048}
 
 
 # -- response parsing ---------------------------------------------------------

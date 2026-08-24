@@ -39,6 +39,7 @@ from ..harness_glue import (
     make_session_id,
     make_verifier_fn,
     new_session_namespace,
+    resolve_repair_settings,
 )
 from ..providers.litellm_client import ChatClient, LiteLLMClient, MockClient, Usage
 from ..providers.models import ModelRegistry, ResolvedModel
@@ -398,6 +399,7 @@ class BenchmarkRunner:
         cfg = build_harness_config(
             harness_root=harness_root, capture=True, study=self._study,
             benchmark=benchmark, repair_model=model.litellm_model,
+            repair_overrides=model.repair_overrides,
             health_check=not bulk,
         )
         return build_harness(
@@ -521,6 +523,11 @@ class BenchmarkRunner:
         arm: str, seed: int, backend: str | None, rules_outcome: str | None,
         k: int, dry_run: bool, dataset: str, n_tasks: int,
     ) -> None:
+        repair = resolve_repair_settings(
+            study=self._study,
+            repair_model=model.litellm_model,
+            repair_overrides=model.repair_overrides,
+        )
         manifest = RunManifest(
             run_id=run_id, benchmark=benchmark, model=model.key, arm=arm, seed=seed,
             backend=model.backend, started_at=datetime.now(UTC).isoformat(),
@@ -531,17 +538,21 @@ class BenchmarkRunner:
                 "resolved_model": model.litellm_model, "provider": model.provider,
                 "dataset": dataset, "k": k, "dry_run": dry_run,
                 "n_tasks": n_tasks,
+                "task_default_max_tokens": model.default_max_tokens or 4096,
+                **(
+                    {
+                        "user_simulator_policy": "same_as_agent",
+                        "user_simulator_model": model.key,
+                        "user_simulator_resolved_model": model.litellm_model,
+                        "user_simulator_backend": model.backend,
+                    }
+                    if benchmark == "tau2"
+                    else {}
+                ),
                 "breach_threshold": self._study.breach_threshold(benchmark),
                 "rule_trial_min_sessions": self._study.harness.rule_trial_min_sessions,
                 "gate_window": self._study.harness.gate_window,
-                "repair_model": self._study.harness.repair_model or model.litellm_model,
-                "repair_timeout_s": self._study.harness.repair_timeout_s,
-                "repair_max_turns": self._study.harness.repair_max_turns,
-                "repair_max_tokens": self._study.harness.repair_max_tokens,
-                "repair_temperature": self._study.harness.repair_temperature,
-                "repair_reasoning_effort": (
-                    self._study.harness.repair_reasoning_effort
-                ),
+                **repair.to_manifest(),
                 "trace_repair_agent": self._study.harness.trace_repair_agent,
                 "managed_repair": True,
                 "harness_policy": (

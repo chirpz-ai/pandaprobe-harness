@@ -8,14 +8,30 @@
 #   * Claude models default to AWS Bedrock, with Anthropic API as a fallback.
 #     They are switchable per run via `--backend`,
 #     `CLAUDE_BACKEND`, or the per-model `default_backend` below.
+#   * Open-weight models use AWS Bedrock as a single backend. `--backend` is not
+#     applicable to them; gpt-oss is not served by OpenAI's first-party API.
 #
 # `param_allowlist` gates which sampler params LiteLLM may forward. The study
-# intentionally fixes Claude to max_tokens only; GPT-5.x also omits unsupported
-# sampler params, while Gemini accepts them. `price_per_mtok` is a fallback used
-# when litellm.completion_cost has no price for a model. Claude calls use Bedrock
-# global inference profiles: the underlying foundation-model IDs reject
-# on-demand invocation, while global profiles support it without the 10%
-# regional-routing premium. Verify model availability and pricing at run time.
+# intentionally fixes Claude and the Bedrock open-weight models to max_tokens
+# only; GPT-5.x also omits unsupported sampler params, while Gemini accepts
+# them. LiteLLM 1.91.1 reports no temperature-support metadata for these nine
+# open-weight models, so max_tokens is the conservative shared policy. The
+# client normally budgets 4,096 output tokens; `default_max_tokens` raises that
+# task/replay fallback for models whose internal reasoning exhausted it before
+# a tool call. An explicit per-call budget still wins. No open-weight model
+# requires a `default_params` constant for task tool calling.
+#
+# `repair_overrides` contains model-compatibility settings for managed repair
+# when the task model is reused as the repair model. It does not apply if the
+# study selects a dedicated repair model. A null reasoning_effort deliberately
+# omits the global study value; larger max_turns accommodates models that need
+# more protocol steps, without changing the task agent's turn budget.
+# `price_per_mtok` is a fallback used when litellm.completion_cost has no price.
+#
+# Some Bedrock models require inference profiles rather than bare foundation
+# model IDs. Claude uses global profiles because its bare IDs reject on-demand
+# invocation; Llama 4 Scout similarly requires the `us.` cross-region profile.
+# Verify model availability and pricing at run time.
 # Claude rates are from:
 # https://platform.claude.com/docs/en/about-claude/pricing
 # =============================================================================
@@ -60,6 +76,72 @@ models:
     default_params: {reasoning_effort: none}
     price_per_mtok: {input: 5.00, output: 30.00}
 
+  # Open-weight Bedrock models. All nine use LiteLLM's Bedrock Converse path
+  # and have been verified to return native structured tool calls.
+  gpt-oss-120b:
+    provider_family: gpt-oss
+    litellm_model: "bedrock/openai.gpt-oss-120b-1:0"
+    param_allowlist: [max_tokens]
+    # Bedrock Harmony rejects the study's reasoning_effort="none".
+    repair_overrides: {reasoning_effort: null, max_turns: 12}
+    price_per_mtok: {input: 0.15, output: 0.60}
+
+  gpt-oss-20b:
+    provider_family: gpt-oss
+    litellm_model: "bedrock/openai.gpt-oss-20b-1:0"
+    param_allowlist: [max_tokens]
+    default_max_tokens: 8192
+    # Bedrock Harmony rejects the study's reasoning_effort="none".
+    repair_overrides: {reasoning_effort: null, max_turns: 12}
+    price_per_mtok: {input: 0.07, output: 0.30}
+
+  qwen3-32b:
+    provider_family: qwen
+    litellm_model: "bedrock/qwen.qwen3-32b-v1:0"
+    param_allowlist: [max_tokens]  # 16k output ceiling; client defaults to 4,096
+    price_per_mtok: {input: 0.15, output: 0.60}
+
+  qwen3-coder-30b-a3b:
+    provider_family: qwen
+    litellm_model: "bedrock/qwen.qwen3-coder-30b-a3b-v1:0"
+    param_allowlist: [max_tokens]
+    repair_overrides: {max_turns: 12}
+    price_per_mtok: {input: 0.15, output: 0.60}
+
+  qwen3-235b-a22b-2507:
+    provider_family: qwen
+    litellm_model: "bedrock/qwen.qwen3-235b-a22b-2507-v1:0"
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 0.22, output: 0.88}
+
+  qwen3-next-80b-a3b:
+    provider_family: qwen
+    litellm_model: "bedrock/qwen.qwen3-next-80b-a3b"
+    param_allowlist: [max_tokens]
+    default_max_tokens: 8192  # its 8k ceiling; 4,096 ended before a tool call
+    price_per_mtok: {input: 0.15, output: 1.20}
+
+  nemotron-3-super-120b:
+    provider_family: nemotron
+    litellm_model: "bedrock/nvidia.nemotron-super-3-120b"
+    param_allowlist: [max_tokens]
+    repair_overrides: {max_turns: 12}
+    price_per_mtok: {input: 0.15, output: 0.65}
+
+  kimi-k2.5:
+    provider_family: kimi
+    litellm_model: "bedrock/moonshotai.kimi-k2.5"
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 0.60, output: 3.00}
+
+  llama-4-scout-17b:
+    provider_family: llama
+    # Bedrock exposes Scout through an inference profile only. The bare
+    # meta.llama4-* ID rejects on-demand invocation; the `us.` prefix is required.
+    litellm_model: "bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
+    param_allowlist: [max_tokens]  # 4k output ceiling = client's 4,096 default
+    price_per_mtok: {input: 0.17, output: 0.66}
+
   claude-opus-5:
     provider_family: claude
     backends:
@@ -94,8 +176,8 @@ models:
     mock: true
     param_allowlist: [max_tokens]
 
-# Named roles used by the runners.
+# Named operational roles. tau2 deliberately has no user-simulator role: its
+# simulated user inherits the task agent's resolved model and backend per run.
 roles:
-  user_simulator: gemini-3.1-flash-lite   # tau2 user simulator: cheap, fixed across arms
   dry_run: mock
   smoke: gemini-3.1-flash-lite             # the cheap model used by `make smoke`
