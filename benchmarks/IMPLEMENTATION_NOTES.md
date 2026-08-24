@@ -81,7 +81,12 @@ sharp edges found while building. Read alongside `RUNNING.md`.
 11. **Managed repair uses the root package's PandaProbe LiteLLM path.** The benchmark
    implements no repair loop. Null reuses the resolved task model; the study sets
    `repair_reasoning_effort: "none"` so current OpenAI models accept function tools on
-   the wrapped chat-completions contract. Repair tracing keeps a distinct
+   the wrapped chat-completions contract. `models.yaml` can declaratively override
+   compatibility settings while a task model repairs itself: both gpt-oss models omit
+   that reasoning value because Bedrock Harmony rejects `none`; they, Qwen3 Coder, and
+   Nemotron get 12 turns because six ended mid-protocol in live pipeline runs. A
+   dedicated study repair model intentionally ignores task-model overrides. Effective
+   settings are stamped in each manifest. Repair tracing keeps a distinct
    `repair-<task-session>-<episode>` identity owned by the package.
 
 12. **Scope is a repair-model decision; benchmarks only supply context.** Repair picks
@@ -129,9 +134,15 @@ sharp edges found while building. Read alongside `RUNNING.md`.
 - **AppWorld port defaults differ** between CLI `serve` and `run()`; always pass `--port`.
 - **AppWorld holds one active world per server** — tasks run serially; concurrency needs
   multiple ports.
-- **Claude is fixed to `max_tokens` only; GPT-5 rejects several sampler params** —
-  `models.yaml` per-model `param_allowlist` drops them explicitly, not via
-  `litellm.drop_params`.
+- **Claude and Bedrock open weights are fixed to `max_tokens` only; GPT-5 rejects
+  several sampler params** — `models.yaml` per-model `param_allowlist` drops them
+  explicitly, not via `litellm.drop_params`. LiteLLM 1.91.1 reports no
+  `supports_temperature` metadata for any of the nine open weights, so unsupported
+  sampling controls are not guessed. Their smallest output ceiling is Llama 4 Scout's
+  4k, which matches the normal 4,096-token fallback. Live runs found that gpt-oss-20b
+  and Qwen3 Next could spend all 4,096 tokens on internal reasoning before emitting a
+  structured tool call, so their registry entries set an 8,192-token task/replay
+  fallback (Qwen3 Next's full output ceiling). Caller-supplied budgets still win.
 - **`tau2` on PyPI is a decoy** (a magnetics package). Install the Sierra benchmark from
   the pinned Git tag through the `tau2` extra, never by unqualified PyPI name.
 - **`TAU2_DATA_DIR` must be set before the first tau2 import** — tau2 reads it at import
@@ -143,14 +154,25 @@ sharp edges found while building. Read alongside `RUNNING.md`.
   vars to export (`PANDABENCH_APPWORLD_PYTHON`, `APPWORLD_ROOT`). ~183 MB download.
 - **Terminal-Bench**: needs Docker running; `uv sync` installs Harbor here.
 - **tau2**: `uv sync --extra tau2` and `TAU2_DATA_DIR=<clone>/data`.
-- **Providers**: `VERTEXAI_PROJECT`/ADC and/or `OPENAI_API_KEY`. Claude defaults to AWS
-  Bedrock (`AWS_PROFILE_NAME` + `AWS_REGION`); `ANTHROPIC_API_KEY` only for the
-  optional `BACKEND=anthropic` fallback. Harness runs also need `PANDAPROBE_API_KEY` and
+- **Providers**: `VERTEXAI_PROJECT`/ADC and/or `OPENAI_API_KEY`. AWS Bedrock hosts both
+  the default Claude route and all nine open-weight models (`AWS_PROFILE_NAME` +
+  `AWS_REGION`); `ANTHROPIC_API_KEY` is only for Claude's optional
+  `BACKEND=anthropic` fallback. Harness runs also need `PANDAPROBE_API_KEY` and
   `PANDAPROBE_PROJECT_NAME`. `uv run pandabench-run --preflight` validates them.
-- **Bedrock on-demand Claude calls require inference profiles.** The catalog's base
-  `anthropic.*` IDs reject on-demand throughput, so the registry calls the corresponding
-  `global.anthropic.*` system inference profiles. Same underlying model versions and
-  base pricing; use geography-specific profiles only for data residency.
+- **Some Bedrock calls require inference profiles.** Claude's base `anthropic.*` IDs
+  reject on-demand throughput, so the registry calls the corresponding
+  `global.anthropic.*` profiles. Llama 4 Scout is `INFERENCE_PROFILE`-only and must use
+  `us.meta.llama4-scout-17b-instruct-v1:0`; its bare ID also rejects on-demand calls.
+- **gpt-oss is Bedrock-only in this registry.** OpenAI does not serve the open weights
+  on its first-party API and LiteLLM has no `openai/gpt-oss-*` entry. Adding a
+  third-party OpenAI-compatible host later would be a separate backend, credential,
+  and pricing decision.
+- **Tool support is a hard integration gate.** Mixtral 8x7B and Gemma 3 27B reject the
+  `tools` parameter. Magistral Small 2509 is more dangerous: it accepts `tools` but
+  emits `[TOOL_CALLS]...` as ordinary text, so a run silently records zero structured
+  calls and misleading near-total failure. None are registered. Supporting Magistral
+  would require text-format parsing, contrary to the client's never-string-match
+  invariant.
 
 ## Benchmark integration recipes
 
@@ -166,8 +188,13 @@ sharp edges found while building. Read alongside `RUNNING.md`.
 
 - **tau2-bench** — custom agent = subclass `tau2.agent.llm_agent.LLMAgent`, overriding
   `generate_next_message`. `run_task` hardcodes the `LLMAgent` constructor, so to attach
-  harness wiring we drive `tau2.orchestrator.Orchestrator` per (task × trial), keeping the
-  user simulator on tau2's stock `generate()` with a fixed arm-independent model.
+  harness wiring we drive `tau2.orchestrator.Orchestrator` per (task × trial). A paired
+  user adapter preserves tau2's prompt/state/tool behavior while routing calls through
+  PandaBench with the task agent's same resolved model and backend. Its distinct trace
+  session prevents simulated-user spans from entering the harness trajectory. Some
+  reasoning models can return `finish_reason=stop` with private reasoning but empty
+  content; the adapter requires a visible customer turn and retries that invalid shape
+  once, accumulating both attempts into tau2's `user_cost`.
   `Orchestrator.run()` does **not** grade (`reward_info=None`) — call
   `evaluate_simulation(..., evaluation_type=EvaluationType.ALL)` separately. Use `ALL`,
   never `ALL_WITH_NL_ASSERTIONS`, which calls an LLM. All three domains grade
