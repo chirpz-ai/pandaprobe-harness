@@ -78,8 +78,8 @@ a record, so additional views cost nothing and require no re-run.
 - The `pandaprobe` CLI on PATH (`curl -fsSL https://cli.pandaprobe.com/install.sh | sh`).
 - LLM credentials for the providers you use (see `.env.example`): Vertex AI ADC
   (`gcloud auth application-default login` + `VERTEXAI_PROJECT`), `OPENAI_API_KEY`, or
-  `AWS_PROFILE_NAME` + `AWS_REGION` for the default Claude backend (any AWS
-  profile; boto3 auto-refreshes it, including SSO).
+  `AWS_PROFILE_NAME` + `AWS_REGION` for Bedrock-hosted Claude and open-weight models
+  (any AWS profile; boto3 auto-refreshes it, including SSO).
   `ANTHROPIC_API_KEY` enables the optional Claude fallback; the harness arm also needs
   `PANDAPROBE_API_KEY`.
 - Docker running (Terminal-Bench only). Harbor is installed with this project.
@@ -99,11 +99,25 @@ uv run pandabench-run --preflight   # validate tools + creds + a 1-token ping
 The benchmark reuses the run's resolved task model for managed repair unless
 `harness.repair_model` selects another. `repair_reasoning_effort: "none"` keeps current
 OpenAI reasoning models on the tool-capable chat-completions path wrapped by
-PandaProbe. Repair is reported separately in harness telemetry.
+PandaProbe. Per-model compatibility overrides in `models.yaml` can omit that value or
+raise the managed-repair turn/token budget when the task model repairs itself; a
+dedicated repair model keeps the study defaults. Effective task and repair budgets are
+recorded in the manifest. Repair is reported separately in harness telemetry.
 
 ## Running
 
 See **[RUNNING.md](RUNNING.md)** for the full command-first, step-by-step guide.
+
+The registry includes Gemini, GPT-5.6, and Claude plus nine Bedrock-hosted open-weight
+models: `gpt-oss-120b`, `gpt-oss-20b`, `qwen3-32b`, `qwen3-coder-30b-a3b`,
+`qwen3-235b-a22b-2507`, `qwen3-next-80b-a3b`, `nemotron-3-super-120b`, `kimi-k2.5`,
+and `llama-4-scout-17b`. All are selected by their key with `MODEL=` / `--model`.
+The open-weight entries are single-backend Bedrock routes, so do not pass `BACKEND`;
+only Claude supports the Bedrock/Anthropic backend switch. In particular, gpt-oss is
+on Bedrock because OpenAI does not serve those open weights through its first-party API.
+For τ², the simulated user inherits the selected task model and its resolved backend;
+the manifest records that binding. A matched baseline/harness pair therefore uses the
+same agent/user model pair.
 
 ```bash
 make smoke                # dry-run pipeline gate: both arms x tiny task set, all benchmarks
