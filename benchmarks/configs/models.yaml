@@ -176,8 +176,8 @@ models:
     mock: true
     param_allowlist: [max_tokens]
 
-# Named roles used by the runners.
+# Named operational roles. tau2 deliberately has no user-simulator role: its
+# simulated user inherits the task agent's resolved model and backend per run.
 roles:
-  user_simulator: gemini-3.1-flash-lite   # tau2 user simulator: cheap, fixed across arms
   dry_run: mock
   smoke: gemini-3.1-flash-lite             # the cheap model used by `make smoke`
