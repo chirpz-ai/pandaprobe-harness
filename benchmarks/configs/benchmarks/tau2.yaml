@@ -1,6 +1,6 @@
 # tau2-bench config. Merged into study.yaml (study.yaml keys win).
 # Real runs drive tau2's Orchestrator with pandabench.adapters.tau2_agent
-# (`uv sync --extra tau2`); user simulator on a fixed cheap model.
+# (`uv sync --extra tau2`); user simulator inherits the agent model/backend.
 # See IMPLEMENTATION_NOTES.md for the install + TAU2_DATA_DIR prerequisites.
 dataset: airline             # default; DATASET may be airline, retail, or telecom
 # Maps to tau2 max_steps. A tau2 "step" is one message hop (agent->env, env->agent,
@@ -13,5 +13,5 @@ domain_policy: >-
   The tau2 domain policy and environment tool contracts are authoritative. Diagnose
   whether the task agent followed that policy without inventing permissions or
   restrictions beyond the simulated domain.
-# The user simulator model is a fixed role in configs/models.yaml (roles.user_simulator),
-# identical across arms and independent of the agent model.
+# The user simulator inherits each run's resolved agent model and backend. Matched
+# baseline/harness cells therefore still use the same simulator configuration.

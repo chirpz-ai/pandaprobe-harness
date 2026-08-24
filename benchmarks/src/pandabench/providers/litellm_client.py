@@ -31,7 +31,8 @@ __all__ = [
 ]
 
 # Sampler params we may set; each is forwarded only if the model's allowlist
-# permits it (the study fixes Claude to max_tokens only; GPT-5 also omits them).
+# permits it (the study fixes Claude and Bedrock open weights to max_tokens only;
+# GPT-5 also omits them).
 _SAMPLER_PARAMS = ("temperature", "top_p", "top_k")
 
 
@@ -131,7 +132,11 @@ class LiteLLMClient:
         # same name still wins.
         params: dict[str, Any] = dict(model.default_params)
         if "max_tokens" in model.param_allowlist:
-            params["max_tokens"] = max_tokens or self._default_max_tokens
+            params["max_tokens"] = (
+                max_tokens
+                if max_tokens is not None
+                else model.default_max_tokens or self._default_max_tokens
+            )
         for name in _SAMPLER_PARAMS:
             if name in model.param_allowlist and extra and name in extra:
                 params[name] = extra[name]

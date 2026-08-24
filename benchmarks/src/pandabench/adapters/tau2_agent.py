@@ -4,8 +4,8 @@ tau2's orchestrator drives an agent incrementally: given one inbound message
 (user/tool) + opaque state, ``generate_next_message`` returns the next
 ``AssistantMessage`` + state. We subclass ``LLMAgent`` and override that method to
 call OUR wrapper (uniform usage/cost/tracing + model routing) instead of tau2's
-own ``generate()``, keeping the user simulator on tau2's stock path so its model
-stays fixed and independent across arms.
+own ``generate()``. The paired user adapter uses that same resolved model and
+backend in a separate trace session.
 
 Harness wiring keeps the developer-owned tau2 agent on domain work. The task
 model sees a stable capability note plus optional read-only rule tools alongside
@@ -78,8 +78,7 @@ class PandaBenchTau2Agent(LLMAgent):  # type: ignore[misc]
         implementation raises ``ValueError("LLM is not set")`` because we
         deliberately never set ``self.llm`` — we route generation through our own
         client instead. Sampling determinism therefore comes from whatever the
-        provider honours (GPT-5.x accepts no sampler params at all); tau2's user
-        simulator is seeded independently on its own stock path.
+        provider honours (GPT-5.x accepts no sampler params at all).
         """
 
         self._seed = seed

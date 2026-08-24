@@ -29,6 +29,12 @@ RUN_ROOT = BENCH_ROOT / "results" / "runs"
 LOCK_PATH = BENCH_ROOT / "uv.lock"
 
 _BENCHMARKS = ("appworld", "terminal_bench", "tau2")
+_BEDROCK_BEARER_ENV = "AWS_BEARER_TOKEN_BEDROCK"
+_BEDROCK_BEARER_ERROR = (
+    "AWS_BEARER_TOKEN_BEDROCK is unsupported by PandaBench because it overrides "
+    "the auto-refreshing AWS_PROFILE_NAME credentials and can expire mid-run; "
+    "unset it before launching"
+)
 
 
 def _load_dotenv() -> None:
@@ -117,6 +123,8 @@ def run_main(argv: list[str] | None = None) -> int:
         return _matrix(Path(args.matrix))
     if not args.benchmark:
         parser.error("--benchmark is required (or use --smoke / --preflight / --matrix)")
+    if not args.dry_run and os.environ.get(_BEDROCK_BEARER_ENV):
+        parser.error(_BEDROCK_BEARER_ERROR)
 
     study, registry = _load()
     runner = _make_runner(args.benchmark, study, registry, dry_run=args.dry_run)
@@ -178,6 +186,7 @@ def preflight() -> int:
 
     _load_dotenv()
     checks: list[tuple[str, bool, str]] = []
+    bearer_unset = not bool(os.environ.get(_BEDROCK_BEARER_ENV))
 
     checks.append(("pandaprobe CLI", shutil.which("pandaprobe") is not None, "on PATH"))
     harbor_cli = Path(sys.executable).with_name("harbor")
@@ -196,6 +205,13 @@ def preflight() -> int:
         "PANDAPROBE_API_KEY",
     ):
         checks.append((var, bool(os.environ.get(var)), "set"))
+    checks.append(
+        (
+            "Bedrock bearer token",
+            bearer_unset,
+            "unset (unsupported)" if bearer_unset else _BEDROCK_BEARER_ERROR,
+        )
+    )
     bedrock_ok, bedrock_detail = _bedrock_auth()
     checks.append(("Bedrock auth", bedrock_ok, bedrock_detail))
 
@@ -214,7 +230,7 @@ def preflight() -> int:
         or os.environ.get("ANTHROPIC_API_KEY")
         or bedrock_ok
     )
-    hard_ok = shutil.which("pandaprobe") is not None and provider_ok
+    hard_ok = shutil.which("pandaprobe") is not None and provider_ok and bearer_unset
     print("\npreflight:", "PASS" if hard_ok else "FAIL (need pandaprobe CLI + >=1 provider)")
     return 0 if hard_ok else 1
 
@@ -227,22 +243,18 @@ def _bedrock_auth() -> tuple[bool, str]:
     cache the profile path, so every call re-resolves through boto3 and picks up a
     refreshed SSO token from disk mid-run.
 
-    A short-term ``AWS_BEARER_TOKEN_BEDROCK`` also works in LiteLLM and takes
-    precedence over everything, but the suite no longer documents it: one expired
-    partway through a multi-hour run and produced 409 useless trials that the run
-    still reported as "complete". If it is set in the environment it silently wins
-    over the profile, so this warns about it rather than staying quiet.
+    PandaBench does not support ``AWS_BEARER_TOKEN_BEDROCK``. LiteLLM gives it
+    precedence over the profile, and one expired partway through a multi-hour run,
+    producing 409 useless trials that still looked complete. Both normal launches
+    and preflight reject it.
     """
 
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_REGION_NAME")
     profile = os.environ.get("AWS_PROFILE_NAME")
-    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-        return False, (
-            "AWS_BEARER_TOKEN_BEDROCK is set and SILENTLY OVERRIDES the profile; "
-            "unset it and use AWS_PROFILE_NAME (it expires mid-run)"
-        )
+    if os.environ.get(_BEDROCK_BEARER_ENV):
+        return False, _BEDROCK_BEARER_ERROR
     if not profile:
-        return False, "AWS_PROFILE_NAME is unset (needed for the Claude/bedrock backend)"
+        return False, "AWS_PROFILE_NAME is unset (needed for Bedrock models)"
     return _sso_profile_ok(profile, region)
 
 
@@ -268,7 +280,10 @@ def _sso_profile_ok(profile: str, region: str | None) -> tuple[bool, str]:
     expiry = getattr(credentials, "_expiry_time", None)
     window = f", creds expire {expiry:%H:%M UTC}" if expiry else ""
     note = "" if region else " -- WARNING: AWS_REGION is unset"
-    return bool(region), f"profile {profile!r} live, auto-refreshing{window}{note}"
+    region_label = region or "unset"
+    return bool(region), (
+        f"profile {profile!r} live, auto-refreshing{window}, region {region_label}{note}"
+    )
 
 
 def _docker_ok() -> bool:
