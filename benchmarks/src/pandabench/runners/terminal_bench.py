@@ -368,15 +368,19 @@ def _record_from_result(
     if arm != "harness" or not isinstance(harness, dict):
         harness = None
 
+    stopped_reason = metadata.get("stopped_reason")
     error = _exception_message(payload.get("exception_info"))
+    if error is None and stopped_reason == "error":
+        detail = str(metadata.get("error") or "unknown provider/tool error")
+        error = f"AgentLoopError: {detail}"
     if reward is None and error is None:
         error = "Harbor result has no verifier reward"
-    passed = bool(reward is not None and reward >= 1.0 - 1e-6)
+    passed = bool(error is None and reward is not None and reward >= 1.0 - 1e-6)
     native = {
         "reward": reward,
         "rewards": rewards if isinstance(rewards, dict) else {},
         "harbor_trial_name": payload.get("trial_name") or source.parent.name,
-        "stopped_reason": metadata.get("stopped_reason"),
+        "stopped_reason": stopped_reason,
     }
     return TrialRecord(
         run_id=run_id,
