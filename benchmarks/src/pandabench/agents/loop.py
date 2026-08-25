@@ -53,6 +53,7 @@ async def run_agent_loop(
     max_turns: int,
     wiring: AgentWiring | None = None,
     max_tokens: int | None = None,
+    max_input_chars: int | None = None,
 ) -> LoopResult:
     """Drive one task-trial to completion (final answer, cap, or error).
 
@@ -82,7 +83,12 @@ async def run_agent_loop(
             system = system_prompt
             call_tools = list(tools)
 
-        call_messages = [{"role": "system", "content": system}, *convo]
+        call_messages = _bounded_call_messages(
+            system=system,
+            convo=convo,
+            preserved_prefix=len(initial_messages),
+            max_chars=max_input_chars,
+        )
 
         try:
             result = await client.chat(
@@ -160,3 +166,76 @@ def _as_tool_content(output: Any) -> str:
         return json.dumps(output)
     except (TypeError, ValueError):
         return str(output)
+
+
+def _bounded_call_messages(
+    *,
+    system: str,
+    convo: Sequence[dict[str, Any]],
+    preserved_prefix: int,
+    max_chars: int | None,
+) -> list[dict[str, Any]]:
+    """Keep a bounded, protocol-valid suffix for providers with finite context.
+
+    The system prompt and original benchmark request are always retained. Older
+    assistant turns are removed as whole blocks together with their tool results,
+    so a Bedrock Converse request can never begin with an orphaned ``role=tool``
+    message. ``convo`` itself stays complete for tracing and returned diagnostics;
+    only the next provider request is compacted.
+
+    The bound is deliberately in serialized characters rather than guessed model
+    tokens. Terminal output includes code, logs, and binary-ish text whose token
+    ratio varies substantially; a conservative character ceiling is predictable
+    and provider-independent.
+    """
+
+    system_message: dict[str, Any] = {"role": "system", "content": system}
+    if max_chars is None:
+        return [system_message, *convo]
+    if max_chars <= 0:
+        raise ValueError("max_input_chars must be positive")
+
+    prefix = [dict(message) for message in convo[:preserved_prefix]]
+    blocks = _conversation_blocks(convo[preserved_prefix:])
+    base_size = _messages_size([system_message, *prefix])
+    remaining = max(0, max_chars - base_size)
+    kept_reversed: list[list[dict[str, Any]]] = []
+    omitted = 0
+    for index in range(len(blocks) - 1, -1, -1):
+        block = blocks[index]
+        block_size = _messages_size(block)
+        if block_size > remaining:
+            omitted = index + 1
+            break
+        kept_reversed.append(block)
+        remaining -= block_size
+
+    if omitted:
+        system_message["content"] = (
+            f"{system}\n\n[Context notice: {omitted} older terminal turn(s) were "
+            "omitted to stay within the model context window. Re-inspect any "
+            "state you still need.]"
+        )
+        logger.info("compacted %d older conversation block(s)", omitted)
+
+    kept = [message for block in reversed(kept_reversed) for message in block]
+    return [system_message, *prefix, *kept]
+
+
+def _conversation_blocks(
+    messages: Sequence[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    """Group each assistant message with all tool results that answer it."""
+
+    blocks: list[list[dict[str, Any]]] = []
+    for original in messages:
+        message = dict(original)
+        if message.get("role") == "tool" and blocks:
+            blocks[-1].append(message)
+        else:
+            blocks.append([message])
+    return blocks
+
+
+def _messages_size(messages: Sequence[dict[str, Any]]) -> int:
+    return sum(len(json.dumps(message, ensure_ascii=False, default=str)) for message in messages)

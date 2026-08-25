@@ -67,6 +67,8 @@ class ResolvedModel:
     """Per-model task/replay output budget, or the client's default when unset."""
     repair_overrides: dict[str, Any] = field(default_factory=dict)
     """Managed-repair settings used when this task model is also the repair model."""
+    terminal_overrides: dict[str, int] = field(default_factory=dict)
+    """Terminal-Bench message-history bounds; empty preserves established behavior."""
     is_mock: bool = False
     """True for the dry-run pseudo-model (no real API calls)."""
 
@@ -95,6 +97,7 @@ class _ModelSpec:
     price_per_mtok: dict[str, float] | None
     default_max_tokens: int | None
     repair_overrides: dict[str, Any]
+    terminal_overrides: dict[str, int]
     is_mock: bool
 
 
@@ -169,6 +172,7 @@ class ModelRegistry:
             price_per_mtok=spec.price_per_mtok,
             default_max_tokens=spec.default_max_tokens,
             repair_overrides=dict(spec.repair_overrides),
+            terminal_overrides=dict(spec.terminal_overrides),
             is_mock=spec.is_mock,
         )
 
@@ -219,6 +223,24 @@ def _parse_spec(key: str, raw: Mapping[str, Any]) -> _ModelSpec:
         repair_overrides["reasoning_effort"] = str(
             repair_overrides["reasoning_effort"]
         )
+
+    terminal_raw = raw.get("terminal_overrides") or {}
+    if not isinstance(terminal_raw, Mapping):
+        raise ValueError(f"model {key!r}: terminal_overrides must be a mapping")
+    allowed_terminal_keys = {"max_input_chars"}
+    unknown_terminal_keys = set(terminal_raw) - allowed_terminal_keys
+    if unknown_terminal_keys:
+        raise ValueError(
+            f"model {key!r}: unknown terminal_overrides keys: "
+            f"{sorted(unknown_terminal_keys)}"
+        )
+    terminal_overrides: dict[str, int] = {}
+    for name, value in terminal_raw.items():
+        if isinstance(value, bool) or int(value) <= 0:
+            raise ValueError(
+                f"model {key!r}: terminal_overrides.{name} must be positive"
+            )
+        terminal_overrides[str(name)] = int(value)
     return _ModelSpec(
         key=key,
         provider_family=str(raw.get("provider_family", "")),
@@ -230,6 +252,7 @@ def _parse_spec(key: str, raw: Mapping[str, Any]) -> _ModelSpec:
         price_per_mtok={str(k): float(v) for k, v in price.items()} if price else None,
         default_max_tokens=default_max_tokens,
         repair_overrides=repair_overrides,
+        terminal_overrides=terminal_overrides,
         is_mock=bool(raw.get("mock", False)),
     )
 
