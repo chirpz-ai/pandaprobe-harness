@@ -115,9 +115,9 @@ and `llama-4-scout-17b`. All are selected by their key with `MODEL=` / `--model`
 The open-weight entries are single-backend Bedrock routes, so do not pass `BACKEND`;
 only Claude supports the Bedrock/Anthropic backend switch. In particular, gpt-oss is
 on Bedrock because OpenAI does not serve those open weights through its first-party API.
-For τ², the simulated user inherits the selected task model and its resolved backend;
-the manifest records that binding. A matched baseline/harness pair therefore uses the
-same agent/user model pair.
+For τ², the simulated user stays fixed on `gemini-3.1-flash-lite` through the
+`user_simulator` registry role, independent of the selected task model and backend.
+This keeps the user side identical across models and matched baseline/harness arms.
 
 ```bash
 make smoke                # dry-run pipeline gate: both arms x tiny task set, all benchmarks
@@ -139,7 +139,9 @@ the same targets are `make bench-setup`, `make bench-smoke`, `make bench-report`
 `make bench-check`.
 
 Runs are **resumable**: rerun with the same `--run-id` (or `make ... RUN_ID=...`) and
-task-trials already in `records.jsonl` are skipped.
+task-trials already in `records.jsonl` are skipped. Error records count as recorded;
+after an integration or infrastructure fix, use a new run ID for the complete study
+cell rather than mixing code versions in one result.
 
 ## Outputs
 
