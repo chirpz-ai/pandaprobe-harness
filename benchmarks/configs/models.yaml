@@ -26,6 +26,9 @@
 # study selects a dedicated repair model. A null reasoning_effort deliberately
 # omits the global study value; larger max_turns accommodates models that need
 # more protocol steps, without changing the task agent's turn budget.
+# `terminal_overrides` bounds only the provider message history for open weights.
+# Terminal command execution and stdout/stderr remain unchanged. Existing closed
+# models omit it and retain their established Terminal-Bench behavior.
 # `price_per_mtok` is a fallback used when litellm.completion_cost has no price.
 #
 # Some Bedrock models require inference profiles rather than bare foundation
@@ -84,6 +87,7 @@ models:
     param_allowlist: [max_tokens]
     # Bedrock Harmony rejects the study's reasoning_effort="none".
     repair_overrides: {reasoning_effort: null, max_turns: 12}
+    terminal_overrides: &terminal_128k {max_input_chars: 120000}
     price_per_mtok: {input: 0.15, output: 0.60}
 
   gpt-oss-20b:
@@ -93,12 +97,14 @@ models:
     default_max_tokens: 8192
     # Bedrock Harmony rejects the study's reasoning_effort="none".
     repair_overrides: {reasoning_effort: null, max_turns: 12}
+    terminal_overrides: *terminal_128k
     price_per_mtok: {input: 0.07, output: 0.30}
 
   qwen3-32b:
     provider_family: qwen
     litellm_model: "bedrock/qwen.qwen3-32b-v1:0"
     param_allowlist: [max_tokens]  # 16k output ceiling; client defaults to 4,096
+    terminal_overrides: *terminal_128k
     price_per_mtok: {input: 0.15, output: 0.60}
 
   qwen3-coder-30b-a3b:
@@ -106,12 +112,14 @@ models:
     litellm_model: "bedrock/qwen.qwen3-coder-30b-a3b-v1:0"
     param_allowlist: [max_tokens]
     repair_overrides: {max_turns: 12}
+    terminal_overrides: &terminal_256k {max_input_chars: 240000}
     price_per_mtok: {input: 0.15, output: 0.60}
 
   qwen3-235b-a22b-2507:
     provider_family: qwen
     litellm_model: "bedrock/qwen.qwen3-235b-a22b-2507-v1:0"
     param_allowlist: [max_tokens]
+    terminal_overrides: *terminal_256k
     price_per_mtok: {input: 0.22, output: 0.88}
 
   qwen3-next-80b-a3b:
@@ -119,6 +127,7 @@ models:
     litellm_model: "bedrock/qwen.qwen3-next-80b-a3b"
     param_allowlist: [max_tokens]
     default_max_tokens: 8192  # its 8k ceiling; 4,096 ended before a tool call
+    terminal_overrides: *terminal_128k
     price_per_mtok: {input: 0.15, output: 1.20}
 
   nemotron-3-super-120b:
@@ -126,12 +135,14 @@ models:
     litellm_model: "bedrock/nvidia.nemotron-super-3-120b"
     param_allowlist: [max_tokens]
     repair_overrides: {max_turns: 12}
+    terminal_overrides: *terminal_256k
     price_per_mtok: {input: 0.15, output: 0.65}
 
   kimi-k2.5:
     provider_family: kimi
     litellm_model: "bedrock/moonshotai.kimi-k2.5"
     param_allowlist: [max_tokens]
+    terminal_overrides: *terminal_256k
     price_per_mtok: {input: 0.60, output: 3.00}
 
   llama-4-scout-17b:
@@ -140,6 +151,7 @@ models:
     # meta.llama4-* ID rejects on-demand invocation; the `us.` prefix is required.
     litellm_model: "bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
     param_allowlist: [max_tokens]  # 4k output ceiling = client's 4,096 default
+    terminal_overrides: *terminal_128k
     price_per_mtok: {input: 0.17, output: 0.66}
 
   claude-opus-5:
@@ -176,8 +188,8 @@ models:
     mock: true
     param_allowlist: [max_tokens]
 
-# Named operational roles. tau2 deliberately has no user-simulator role: its
-# simulated user inherits the task agent's resolved model and backend per run.
+# Named roles used by the runners.
 roles:
+  user_simulator: gemini-3.1-flash-lite   # tau2 user simulator: cheap, fixed across arms
   dry_run: mock
   smoke: gemini-3.1-flash-lite             # the cheap model used by `make smoke`
