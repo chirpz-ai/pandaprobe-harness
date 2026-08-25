@@ -143,6 +143,14 @@ sharp edges found while building. Read alongside `RUNNING.md`.
   and Qwen3 Next could spend all 4,096 tokens on internal reasoning before emitting a
   structured tool call, so their registry entries set an 8,192-token task/replay
   fallback (Qwen3 Next's full output ceiling). Caller-supplied budgets still win.
+- **Terminal history needs a bound for open weights.** Real
+  gpt-oss sample runs reached 162,251 and 211,387 input tokens against a 131,072-token
+  limit, and Harbor still ran the verifier after the agent loop stopped. Open entries
+  therefore declare `terminal_overrides.max_input_chars`, which removes only complete
+  old assistant/tool blocks. Terminal output and command timeouts remain unchanged.
+  The importer promotes
+  `stopped_reason=error` to `TrialRecord.error` and cannot count its reward as a pass.
+  Closed entries omit these settings and retain their prior behavior.
 - **`tau2` on PyPI is a decoy** (a magnetics package). Install the Sierra benchmark from
   the pinned Git tag through the `tau2` extra, never by unqualified PyPI name.
 - **`TAU2_DATA_DIR` must be set before the first tau2 import** — tau2 reads it at import
@@ -188,13 +196,9 @@ sharp edges found while building. Read alongside `RUNNING.md`.
 
 - **tau2-bench** — custom agent = subclass `tau2.agent.llm_agent.LLMAgent`, overriding
   `generate_next_message`. `run_task` hardcodes the `LLMAgent` constructor, so to attach
-  harness wiring we drive `tau2.orchestrator.Orchestrator` per (task × trial). A paired
-  user adapter preserves tau2's prompt/state/tool behavior while routing calls through
-  PandaBench with the task agent's same resolved model and backend. Its distinct trace
-  session prevents simulated-user spans from entering the harness trajectory. Some
-  reasoning models can return `finish_reason=stop` with private reasoning but empty
-  content; the adapter requires a visible customer turn and retries that invalid shape
-  once, accumulating both attempts into tau2's `user_cost`.
+  harness wiring we drive `tau2.orchestrator.Orchestrator` per (task × trial), keeping the
+  user simulator on tau2's stock `generate()` with the fixed, arm-independent
+  `roles.user_simulator` model (`gemini-3.1-flash-lite`).
   `Orchestrator.run()` does **not** grade (`reward_info=None`) — call
   `evaluate_simulation(..., evaluation_type=EvaluationType.ALL)` separately. Use `ALL`,
   never `ALL_WITH_NL_ASSERTIONS`, which calls an LLM. All three domains grade
