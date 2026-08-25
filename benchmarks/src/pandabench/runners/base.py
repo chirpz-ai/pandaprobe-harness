@@ -540,13 +540,8 @@ class BenchmarkRunner:
                 "n_tasks": n_tasks,
                 "task_default_max_tokens": model.default_max_tokens or 4096,
                 **(
-                    {
-                        "user_simulator_policy": "same_as_agent",
-                        "user_simulator_model": model.key,
-                        "user_simulator_resolved_model": model.litellm_model,
-                        "user_simulator_backend": model.backend,
-                    }
-                    if benchmark == "tau2"
+                    {"terminal_overrides": dict(model.terminal_overrides)}
+                    if benchmark == "terminal_bench" and model.terminal_overrides
                     else {}
                 ),
                 "breach_threshold": self._study.breach_threshold(benchmark),

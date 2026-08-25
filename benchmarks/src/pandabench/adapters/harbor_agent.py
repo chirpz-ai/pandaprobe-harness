@@ -103,6 +103,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
         self._model = registry.resolve(
             model_key or model_name or "gemini-3.1-flash-lite", backend=backend
         )
+        self._terminal_overrides = self._model.terminal_overrides
         tracer = PandaTracer.from_env() if arm == "harness" else PandaTracer.disabled()
         self._client = LiteLLMClient(tracer=tracer)
         self._harness = None
@@ -165,6 +166,7 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
             system_prompt=TB_SYSTEM, tools=[_BASH_TOOL], tool_executor=executor,
             initial_messages=[{"role": "user", "content": instruction}],
             max_turns=self._max_turns, wiring=wiring,
+            max_input_chars=self._terminal_overrides.get("max_input_chars"),
         )
 
         telemetry: dict[str, Any] | None = None
@@ -194,12 +196,12 @@ class PandaBenchAgent(BaseAgent):  # type: ignore[misc]
                 "task_id": self._task_id,
                 "session_id": session_id,
                 "stopped_reason": result.stopped_reason,
+                "error": result.error,
                 "turns": result.turns,
                 "harness": telemetry,
             }
         except Exception as exc:  # noqa: BLE001
             logger.debug("could not populate Harbor context: %s", exc)
-
 
 def _load_study() -> Any:
     from ..config import load_study

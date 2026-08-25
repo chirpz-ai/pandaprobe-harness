@@ -13,12 +13,9 @@ Two things about tau2 shape this module:
 * ``Orchestrator.run()`` does **not** grade: it returns a ``SimulationRun`` with
   ``reward_info=None``. Grading is a separate ``evaluate_simulation`` call.
 
-The user simulator uses the same resolved model and backend as the task agent.
-It keeps tau2's stock prompt/state/tool behavior, but its model calls go through
-PandaBench's provider wrapper so per-model compatibility settings still apply.
-Matched arms therefore use the same user, while different study models no
-longer share a fixed Gemini user. User spend is recorded in native metrics but
-excluded from the task agent's usage total.
+The user simulator stays on tau2's stock ``generate()`` path with a fixed model
+(``roles.user_simulator``), so it is identical across arms and cannot bias the
+comparison. Its spend is therefore excluded from the trial's usage.
 
 tau2's data tree is not shipped: ``TAU2_DATA_DIR`` must point at a clone's
 ``data/`` **before the first tau2 import** (tau2 reads it at import time).
@@ -36,7 +33,7 @@ from pandaprobe_harness import RuleScopeHint
 
 from ..agents.harness_wiring import AgentWiring
 from ..providers.litellm_client import ChatClient, Usage
-from ..providers.models import ResolvedModel
+from ..providers.models import ModelRegistry, ResolvedModel, load_registry
 from .base import SingleTaskRunner, TaskOutcome
 from .mock import MockTaskRunner
 
@@ -84,10 +81,20 @@ class Tau2Runner(SingleTaskRunner):
         # The three benchmark domains use DB/communicate, env-assertion, and/or
         # action criteria, all handled deterministically by EvaluationType.ALL.
         self._outcomes: dict[str, float] = {}
+        self._models: ModelRegistry | None = None
         self._domain = "retail"
         self._workflow_hints: dict[str, tuple[RuleScopeHint, ...]] = {}
         self._task_summaries: dict[str, str] = {}
         self.configure_dataset(domain)
+
+    def _registry(self) -> ModelRegistry:
+        """The model registry, loaded once (the user-simulator role lives here)."""
+
+        if self._models is None:
+            from ..cli import CONFIGS
+
+            self._models = load_registry(CONFIGS / "models.yaml")
+        return self._models
 
     # -- SingleTaskRunner -----------------------------------------------------
 
@@ -224,9 +231,9 @@ class Tau2Runner(SingleTaskRunner):
         from tau2.orchestrator.orchestrator import Orchestrator
         from tau2.registry import registry
         from tau2.run import load_tasks
+        from tau2.user.user_simulator import UserSimulator
 
         from ..adapters.tau2_agent import PandaBenchTau2Agent
-        from ..adapters.tau2_user import PandaBenchTau2User
 
         tasks = {str(t.id): t for t in load_tasks(self._domain)}
         try:
@@ -256,13 +263,13 @@ class Tau2Runner(SingleTaskRunner):
         except Exception:  # noqa: BLE001 - "User tools not available" is normal
             user_tools = None
 
-        user = PandaBenchTau2User(
+        registry_cfg = self._registry()
+        simulator_model = registry_cfg.resolve(registry_cfg.role("user_simulator"))
+        user = UserSimulator(
             tools=user_tools,
             instructions=str(task.user_scenario),
-            client=client,
-            model=model,
-            session_id=session_id,
-            loop=asyncio.get_running_loop(),
+            llm=simulator_model.litellm_model,
+            llm_args={"temperature": 1.0},
         )
 
         orchestrator = Orchestrator(
@@ -352,9 +359,9 @@ def _safe_task_summary(task: Any, *, domain: str) -> str:
 def _agent_usage(simulation: Any) -> Usage:
     """Token/cost totals for the AGENT only.
 
-    Matched arms use the same agent/user model pair. Charging simulated-user
-    spend to the task agent would still obscure the harness's own overhead;
-    tau2 records it separately as ``native_metrics.user_cost``.
+    The user simulator runs on a fixed model that is identical across arms, so
+    charging its spend to the trial would inflate both arms equally and obscure
+    the harness's own overhead.
     """
 
     from tau2.data_model.message import AssistantMessage

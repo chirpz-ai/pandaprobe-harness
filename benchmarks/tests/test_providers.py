@@ -58,6 +58,18 @@ OPEN_WEIGHT_REPAIR_OVERRIDES = {
     "nemotron-3-super-120b": {"max_turns": 12},
 }
 
+OPEN_WEIGHT_TERMINAL_INPUT_CHARS = {
+    "gpt-oss-120b": 120_000,
+    "gpt-oss-20b": 120_000,
+    "qwen3-32b": 120_000,
+    "qwen3-coder-30b-a3b": 240_000,
+    "qwen3-235b-a22b-2507": 240_000,
+    "qwen3-next-80b-a3b": 120_000,
+    "nemotron-3-super-120b": 240_000,
+    "kimi-k2.5": 240_000,
+    "llama-4-scout-17b": 120_000,
+}
+
 
 @pytest.fixture
 def registry():
@@ -94,6 +106,9 @@ def test_open_weight_models_resolve_to_single_bedrock_backend(
     assert model.price_per_mtok == {"input": input_price, "output": output_price}
     assert model.default_max_tokens == OPEN_WEIGHT_DEFAULT_MAX_TOKENS.get(key)
     assert model.repair_overrides == OPEN_WEIGHT_REPAIR_OVERRIDES.get(key, {})
+    assert model.terminal_overrides == {
+        "max_input_chars": OPEN_WEIGHT_TERMINAL_INPUT_CHARS[key],
+    }
 
     # Open-weight routing is fixed to Bedrock and cannot inherit Claude's
     # environment override or accept a per-run backend switch.
@@ -137,6 +152,7 @@ def test_claude_models_default_to_bedrock(
     assert m.backend == "bedrock"
     assert m.price_per_mtok == prices
     assert "temperature" not in m.param_allowlist
+    assert m.terminal_overrides == {}
 
     fallback = registry.resolve(key, backend="anthropic", env={})
     assert fallback.litellm_model == f"anthropic/{anthropic_id}"
@@ -177,8 +193,7 @@ def test_unknown_backend_raises(registry):
 def test_roles(registry):
     assert registry.resolve(registry.role("dry_run")).is_mock is True
     assert registry.role("smoke") == "gemini-3.1-flash-lite"
-    with pytest.raises(KeyError):
-        registry.role("user_simulator")
+    assert registry.role("user_simulator") == "gemini-3.1-flash-lite"
     with pytest.raises(KeyError):
         registry.role("does-not-exist")
 

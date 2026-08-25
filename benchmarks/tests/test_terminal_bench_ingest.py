@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from pandabench.adapters import harbor_agent
+from pandabench.agents.loop import _bounded_call_messages
 from pandabench.providers.litellm_client import ChatResult, MockClient, ToolCall, Usage
 from pandabench.providers.models import load_registry
 from pandabench.results import RecordWriter, TrialRecord
@@ -31,6 +32,8 @@ def _payload(
     turns: int,
     cost: float,
     exception: dict[str, Any] | None = None,
+    stopped_reason: str = "final",
+    agent_error: str | None = None,
 ) -> dict[str, Any]:
     return {
         "task_name": task,
@@ -46,7 +49,8 @@ def _payload(
                 "arm": "harness",
                 "seed": 3,
                 "turns": turns,
-                "stopped_reason": "final",
+                "stopped_reason": stopped_reason,
+                "error": agent_error,
                 "harness": {
                     "session_id": f"session-{trial_name}",
                     "breached": True,
@@ -196,6 +200,84 @@ def test_ingest_exception_and_synthetic_error_record(tmp_path):
     assert missing.native_metrics == {"harbor_exit_code": 2}
 
 
+def test_ingest_agent_loop_error_cannot_be_counted_as_a_pass(tmp_path: Path) -> None:
+    model = load_registry(CONFIGS / "models.yaml").resolve("mock")
+    job_dir = tmp_path / "raw" / "live"
+    _write_result(
+        job_dir,
+        "task-error__aaaaaaa",
+        _payload(
+            task="task-error",
+            trial_name="task-error__aaaaaaa",
+            started_at="2026-07-30T12:00:01+00:00",
+            rewards={"reward": 1.0},
+            turns=19,
+            cost=0.03,
+            stopped_reason="error",
+            agent_error="provider timed out",
+        ),
+    )
+    records_path = tmp_path / "records.jsonl"
+
+    _ingest_results(
+        job_dir=job_dir,
+        tasks=["task-error"],
+        k=1,
+        arm="baseline",
+        model=model,
+        phase="live",
+        writer=RecordWriter(records_path),
+        run_id="run-error",
+        seed=1,
+        benchmark="terminal_bench",
+    )
+
+    record = TrialRecord.from_json(json.loads(records_path.read_text(encoding="utf-8")))
+    assert record.passed is False
+    assert record.error == "AgentLoopError: provider timed out"
+    assert record.native_metrics["reward"] == 1.0
+
+
+def test_terminal_model_context_removes_old_turns_without_orphaned_tools() -> None:
+    old_assistant = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "old",
+            "type": "function",
+            "function": {"name": "bash", "arguments": '{"command":"cat huge"}'},
+        }],
+    }
+    recent_assistant = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "recent",
+            "type": "function",
+            "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+        }],
+    }
+    messages = _bounded_call_messages(
+        system="work carefully",
+        convo=[
+            {"role": "user", "content": "fix the project"},
+            old_assistant,
+            {"role": "tool", "tool_call_id": "old", "content": "x" * 4_000},
+            recent_assistant,
+            {"role": "tool", "tool_call_id": "recent", "content": "/app"},
+        ],
+        preserved_prefix=1,
+        max_chars=1_000,
+    )
+
+    assert [message["role"] for message in messages] == [
+        "system", "user", "assistant", "tool"
+    ]
+    assert messages[-1]["tool_call_id"] == "recent"
+    assert all(message.get("tool_call_id") != "old" for message in messages)
+    assert "older terminal turn(s) were omitted" in str(messages[0]["content"])
+
+
 def test_harbor_harness_argv_is_serial_and_requests_managed_harness(tmp_path):
     model = load_registry(CONFIGS / "models.yaml").resolve("mock")
     argv = _harbor_argv(
@@ -280,6 +362,47 @@ class RecordingHarborClient(MockClient):
         self.flushes += 1
 
 
+class BashHarborClient(RecordingHarborClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._scripted = [
+            ChatResult(
+                assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "bash-1",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": '{"command":"print a lot"}',
+                        },
+                    }],
+                },
+                tool_calls=[ToolCall("bash-1", "bash", {"command": "print a lot"})],
+                usage=Usage(),
+                finish_reason="tool_calls",
+                resolved_model="mock",
+            ),
+            ChatResult(
+                assistant_message={"role": "assistant", "content": "done"},
+                tool_calls=[],
+                usage=Usage(),
+                finish_reason="stop",
+                resolved_model="mock",
+            ),
+        ]
+
+
+class RecordingEnvironment:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def exec(self, command: str, **kwargs: Any) -> Any:
+        self.calls.append((command, kwargs))
+        return SimpleNamespace(stdout="x" * 20_000, stderr="", return_code=0)
+
+
 async def test_baseline_harbor_agent_builds_no_harness_and_offers_no_rule_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -314,3 +437,34 @@ async def test_baseline_harbor_agent_builds_no_harness_and_offers_no_rule_tools(
     assert all(tools == ["bash"] for tools in client.tool_names)
     assert client.flushes == 1
     assert context.metadata["harness"] is None
+    assert client.messages[0][0]["content"] == harbor_agent.TB_SYSTEM
+
+
+async def test_open_weight_harbor_agent_keeps_original_command_and_output_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = BashHarborClient()
+    monkeypatch.setattr(harbor_agent, "LiteLLMClient", lambda **kwargs: client)
+    monkeypatch.setattr(
+        harbor_agent.PandaTracer, "from_env", classmethod(lambda cls: cls.disabled()),
+    )
+    logs_dir = tmp_path / "task-a__trial" / "agent"
+    logs_dir.mkdir(parents=True)
+    agent = harbor_agent.PandaBenchAgent(
+        logs_dir,
+        arm="baseline",
+        seed=1,
+        model_key="gpt-oss-20b",
+        phase="live",
+        harness_root=str(tmp_path / "live-root"),
+        max_turns=3,
+    )
+    environment = RecordingEnvironment()
+
+    await agent.run("complete the task", environment, SimpleNamespace())
+
+    assert environment.calls == [("print a lot", {})]
+    assert client.messages[0][0]["content"] == harbor_agent.TB_SYSTEM
+    tool_result = str(client.messages[1][-1]["content"])
+    assert "x" * 20_000 in tool_result
+    assert "truncated" not in tool_result
