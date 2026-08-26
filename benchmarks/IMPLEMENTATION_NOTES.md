@@ -198,7 +198,11 @@ sharp edges found while building. Read alongside `RUNNING.md`.
   `generate_next_message`. `run_task` hardcodes the `LLMAgent` constructor, so to attach
   harness wiring we drive `tau2.orchestrator.Orchestrator` per (task × trial), keeping the
   user simulator on tau2's stock `generate()` with the fixed, arm-independent
-  `roles.user_simulator` model (`gemini-3.1-flash-lite`).
+  `roles.user_simulator` model (`nova-lite`, on Bedrock). tau2 builds its own LiteLLM
+  call for the user and passes `temperature=1.0`, which bypasses `param_allowlist`, so
+  the simulator model must accept `temperature`; it must also emit native tool calls,
+  because dual-control telecom passes it real user tools while retail and airline pass
+  `None`.
   `Orchestrator.run()` does **not** grade (`reward_info=None`) — call
   `evaluate_simulation(..., evaluation_type=EvaluationType.ALL)` separately. Use `ALL`,
   never `ALL_WITH_NL_ASSERTIONS`, which calls an LLM. All three domains grade

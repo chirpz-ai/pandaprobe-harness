@@ -115,9 +115,11 @@ and `llama-4-scout-17b`. All are selected by their key with `MODEL=` / `--model`
 The open-weight entries are single-backend Bedrock routes, so do not pass `BACKEND`;
 only Claude supports the Bedrock/Anthropic backend switch. In particular, gpt-oss is
 on Bedrock because OpenAI does not serve those open weights through its first-party API.
-For τ², the simulated user stays fixed on `gemini-3.1-flash-lite` through the
-`user_simulator` registry role, independent of the selected task model and backend.
-This keeps the user side identical across models and matched baseline/harness arms.
+For τ², the simulated user stays fixed on `nova-lite` through the `user_simulator`
+registry role, independent of the selected task model and backend. This keeps the user
+side identical across models and matched baseline/harness arms. It runs on Bedrock so
+the simulator shares the agent's auto-refreshing SSO credential, and it is deliberately
+a vendor the study never benchmarks, so the same weights never play both sides.
 
 ```bash
 make smoke                # dry-run pipeline gate: both arms x tiny task set, all benchmarks
