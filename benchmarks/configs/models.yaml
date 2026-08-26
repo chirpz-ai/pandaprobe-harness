@@ -181,6 +181,12 @@ models:
     param_allowlist: [max_tokens]
     price_per_mtok: {input: 1.0, output: 5.0}
 
+  nova-lite:
+    provider_family: nova
+    litellm_model: "bedrock/amazon.nova-lite-v1:0"
+    param_allowlist: [max_tokens]
+    price_per_mtok: {input: 0.06, output: 0.24}
+
   # Dry-run pseudo-model: no real API calls (the MockClient is used instead).
   mock:
     provider_family: mock
@@ -190,6 +196,6 @@ models:
 
 # Named roles used by the runners.
 roles:
-  user_simulator: gemini-3.1-flash-lite   # tau2 user simulator: cheap, fixed across arms
+  user_simulator: nova-lite                # tau2 user simulator: cheap, fixed across arms
   dry_run: mock
   smoke: gemini-3.1-flash-lite             # the cheap model used by `make smoke`

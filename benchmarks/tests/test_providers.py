@@ -193,9 +193,44 @@ def test_unknown_backend_raises(registry):
 def test_roles(registry):
     assert registry.resolve(registry.role("dry_run")).is_mock is True
     assert registry.role("smoke") == "gemini-3.1-flash-lite"
-    assert registry.role("user_simulator") == "gemini-3.1-flash-lite"
+    assert registry.role("user_simulator") == "nova-lite"
     with pytest.raises(KeyError):
         registry.role("does-not-exist")
+
+
+def _bedrock_vendor(litellm_model: str) -> str | None:
+    """The vendor segment of a Bedrock id, e.g. ``bedrock/us.meta.llama4-x`` -> ``meta``."""
+
+    if not litellm_model.startswith("bedrock/"):
+        return None
+    ident = litellm_model.removeprefix("bedrock/")
+    for profile in ("us.", "eu.", "apac.", "global."):
+        ident = ident.removeprefix(profile)
+    return ident.split(".", 1)[0] if "." in ident else None
+
+
+def test_user_simulator_is_bedrock_and_shares_no_vendor_with_a_study_model(registry):
+    """The simulated user must not use Vertex, nor any vendor the study benchmarks.
+
+    Vertex: user-based ADC expires on an org Google Cloud session policy whose
+    reauth cannot be satisfied non-interactively, which killed four multi-hour tau2
+    runs mid-flight. Vendor: if the simulator shared weights with a model under
+    test, the same model would play both sides of the conversation.
+    """
+
+    sim = registry.resolve(registry.role("user_simulator"))
+    assert sim.provider == "bedrock", "simulator must not depend on Vertex ADC"
+
+    sim_vendor = _bedrock_vendor(sim.litellm_model)
+    assert sim_vendor is not None
+    others = {
+        _bedrock_vendor(registry.resolve(key).litellm_model)
+        for key in registry.keys()
+        if key != sim.key and not registry.resolve(key).is_mock
+    }
+    assert sim_vendor not in others - {None}, (
+        f"simulator vendor {sim_vendor!r} is also a benchmarked vendor"
+    )
 
 
 def test_provider_of():

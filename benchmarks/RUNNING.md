@@ -93,6 +93,7 @@ Model keys by route:
 - Open weights on Bedrock: `gpt-oss-120b`, `gpt-oss-20b`, `qwen3-32b`,
   `qwen3-coder-30b-a3b`, `qwen3-235b-a22b-2507`, `qwen3-next-80b-a3b`,
   `nemotron-3-super-120b`, `kimi-k2.5`, `llama-4-scout-17b`.
+- Bedrock, τ² simulated user only (not a task model): `nova-lite`.
 
 **Knobs:**
 
@@ -238,13 +239,20 @@ evaluator together. Run the baseline/harness pair once for each table row to ben
 all three official domains. `telecom-workflow` is an upstream policy-format ablation,
 not a fourth leaderboard domain, and is intentionally excluded.
 
-The simulated user is fixed on `gemini-3.1-flash-lite`, selected by the
-`roles.user_simulator` entry in `models.yaml`, regardless of `MODEL` or `BACKEND`.
-It uses τ²'s stock `UserSimulator` path with its original temperature setting. This
-holds the user side constant across study models and across matched baseline/harness
-arms. Its cost is available as `native_metrics.user_cost`; headline task usage remains
-agent usage only. Vertex AI credentials are therefore required for every live τ² run,
-even when the task agent itself runs through Bedrock, OpenAI, or Anthropic.
+The simulated user is fixed on `nova-lite`, selected by the `roles.user_simulator`
+entry in `models.yaml`, regardless of `MODEL` or `BACKEND`. It uses τ²'s stock
+`UserSimulator` path with its original temperature setting. This holds the user side
+constant across study models and across matched baseline/harness arms. Its cost is
+available as `native_metrics.user_cost`; headline task usage remains agent usage only.
+
+The simulator runs on **Bedrock**, so a live τ² run needs only the AWS profile — no
+Vertex credentials. It was moved off `gemini-3.1-flash-lite` because user-based Vertex
+ADC expires on the org's Google Cloud session policy, whose reauth cannot be satisfied
+non-interactively; that killed four multi-hour τ² runs mid-flight, and re-authenticating
+on disk does not rescue a running process whose in-memory refresh token was already
+invalidated. τ² numbers produced with the `nova-lite` simulator are internally paired
+and unbiased, but are **not** directly comparable to rows recorded under the earlier
+Gemini simulator, since the user side changed.
 
 All three domains, paired at the same settings:
 
