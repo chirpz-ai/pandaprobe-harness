@@ -26,12 +26,14 @@ DEFAULT_RELAX = 0.10
 RELAX_SWEEP = (0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.34, 0.5)
 
 
-def load_records(runs_dir: Path) -> pd.DataFrame:
-    """Flatten every runs/*/records.jsonl into one DataFrame."""
+def load_records(runs_dir: Path, *, run_ids: set[str] | None = None) -> pd.DataFrame:
+    """Flatten selected runs/*/records.jsonl files into one DataFrame."""
 
     rows: list[dict[str, Any]] = []
     for records_file in sorted(runs_dir.glob("*/records.jsonl")):
         run_dir = records_file.parent
+        if run_ids is not None and run_dir.name not in run_ids:
+            continue
         dataset = _manifest_dataset(run_dir / "manifest.json")
         harbor = _harbor_test_counts(run_dir)
         for line in records_file.read_text(encoding="utf-8").splitlines():
@@ -468,18 +470,25 @@ def _plot_learning_curve(df: pd.DataFrame, out_dir: Path) -> None:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        fig, ax = plt.subplots(figsize=(7, 4))
-        for (benchmark, dataset), group in learn.groupby(["benchmark", "dataset"]):
-            ordered = group.sort_values(["seed", "task_id", "trial"]).reset_index(drop=True)
-            cumulative = ordered["passed"].astype(float).expanding().mean()
-            ax.plot(
-                range(len(cumulative)), cumulative, marker="o",
-                label=f"{benchmark}/{dataset}",
-            )
-        ax.set_xlabel("task-trial index (run order)")
-        ax.set_ylabel("cumulative pass rate (arm B)")
-        ax.set_title("In-session pass rate (harness arm, live throughout)")
-        ax.legend()
+        panels = list(learn.groupby(["benchmark", "dataset"]))
+        fig, axes = plt.subplots(len(panels), 1, figsize=(9, 3 * len(panels)))
+        if len(panels) == 1:
+            axes = [axes]
+        for ax, ((benchmark, dataset), group) in zip(axes, panels, strict=True):
+            for (model, seed, _run_id), run in group.groupby(["model", "seed", "run_id"]):
+                # load_records preserves JSONL order within each run. Sorting by
+                # task_id would erase the actual in-session learning sequence.
+                cumulative = run["passed"].astype(float).expanding().mean()
+                ax.plot(
+                    range(1, len(cumulative) + 1), cumulative.to_numpy(),
+                    label=f"{model} (seed {seed})",
+                )
+            ax.set_title(f"{benchmark} / {dataset}")
+            ax.set_xlabel("task-trial index (recorded run order)")
+            ax.set_ylabel("cumulative pass rate (harness)")
+            ax.set_ylim(-0.02, 1.02)
+            ax.legend(fontsize="small")
+        fig.suptitle("In-session pass rate (harness arm)")
         fig.tight_layout()
         fig.savefig(out_dir / "learning_curve.png", dpi=120)
         plt.close(fig)
@@ -491,16 +500,27 @@ def _write_report_md(
     out_dir: Path, headline: pd.DataFrame, telemetry: pd.DataFrame,
     deltas: list[dict[str, Any]], df: pd.DataFrame, relax: float,
     sweep_table: pd.DataFrame,
+    *,
+    title: str = "PandaBench results",
+    headline_note: str | None = None,
+    overview: list[str] | None = None,
+    overhead: pd.DataFrame | None = None,
+    extra_sections: list[str] | None = None,
+    methodology_notes: list[str] | None = None,
 ) -> None:
-    lines = ["# PandaBench results", ""]
+    lines = [f"# {title}", ""]
+    if overview:
+        lines += overview
     lines += [
         "## Headline (whole run)",
         "",
-        "`pass_at_1` / `pass_hat_k` are the **benchmark's own** all-or-nothing "
-        "verdict and the only figures comparable to published results. "
-        "`pass_any_k`, `pass_at_1_relaxed` / `pass_hat_k_relaxed` "
-        f"(at `relax={relax}`) and `mean_score` are **ours** — see the "
-        "relaxed-metric note below.",
+        headline_note or (
+            "`pass_at_1` / `pass_hat_k` are the **benchmark's own** all-or-nothing "
+            "verdict and the only figures comparable to published results. "
+            "`pass_any_k`, `pass_at_1_relaxed` / `pass_hat_k_relaxed` "
+            f"(at `relax={relax}`) and `mean_score` are **ours** — see the "
+            "relaxed-metric note below."
+        ),
         "",
         _md_table(headline),
         "",
@@ -534,11 +554,12 @@ def _write_report_md(
     ]
 
     lines += ["## Harness telemetry", "", _md_table(telemetry), ""]
-    lines += ["## Cost / overhead", "", _md_table(_overhead(df)), ""]
+    lines += ["## Cost / overhead", "",
+              _md_table(_overhead(df) if overhead is None else overhead), ""]
+    if extra_sections:
+        lines += extra_sections
 
-    lines += [
-        "## Methodology notes",
-        "",
+    default_methodology_notes = [
         "- **Harness live throughout.** The harness arm runs the complete "
         "evaluation and repair loop — notices, package-owned managed repair, and "
         "candidate validation — across the benchmark's whole dataset in one "
@@ -561,8 +582,10 @@ def _write_report_md(
         "- **Checkpoints.** Checkpoint 1 (metric<->failure calibration) and "
         "Checkpoint 2 (rule promotion; `rules_outcome` in each manifest) gate "
         "the full matrix; see IMPLEMENTATION_NOTES.md.",
-        "",
     ]
+    lines += ["## Methodology notes", "",
+              *(default_methodology_notes if methodology_notes is None else methodology_notes),
+              ""]
     (out_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -595,6 +618,7 @@ def _md_table(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return "_(none)_"
     try:
-        return str(df.to_markdown(index=False))
+        display = df.astype(object).where(pd.notna(df), "")
+        return str(display.to_markdown(index=False))
     except Exception:  # noqa: BLE001 - tabulate may be absent
         return "```\n" + str(df.to_string(index=False)) + "\n```"
