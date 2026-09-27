@@ -41,9 +41,10 @@ and run `uv lock && uv sync --all-extras --group dev`, then re-record affected
 runs — `manifest.json` stamps `pandaprobe_harness_version` per run.
 
 The `harness` arm is **live for the benchmark's whole dataset** — one continuous
-pass, no learning/eval split, no frozen ruleset. Task order is a pure function of
-`(dataset, seed)` and identical in both arms, and it is load-bearing: it decides
-what has been learned by the time task N runs.
+pass, no learning/eval split, no frozen ruleset. Task order is intended to be a
+pure function of `(dataset, seed)` shared by both arms, and it is load-bearing:
+it decides what has been learned by the time task N runs. Verify recorded order
+when interpreting a pair.
 
 Harness runs use package-owned managed repair. By default PandaBench reuses
 the resolved task model and explicitly sets `repair_reasoning_effort: "none"`,
@@ -77,7 +78,7 @@ validation before the workspace is archived, and logs a warning if it could not.
 
 ```bash
 make smoke        # 2 tasks x 1 trial x both arms, all benchmarks, dry-run (mock model)
-make report       # regenerate results/summary/
+make report       # regenerate results/summary/all_runs/
 ```
 
 
@@ -102,7 +103,7 @@ Model keys by route:
 | ---------- | ------------------------------------------------------------------------------------ | ------------------------------------------------- |
 | `ARM`      | `baseline` (no harness) or `harness`                                                 | `baseline`                                        |
 | `MODEL`    | a model key from the list above                                                      | `gemini-3.1-flash-lite`                           |
-| `SEED`     | shuffles task order (same order in both arms); run several (1, 2, 3) as replicates   | `1`                                               |
+| `SEED`     | shuffles task order; verify recorded order across arms; run several replicates       | `1`                                               |
 | `K`        | trials per task — `pass@1` = first trial passed, `pass^k` = all K passed             | `4`                                               |
 | `DATASET`  | override the configured task universe (for example, Terminal-Bench's 10-task sample) | benchmark config                                  |
 | `LIMIT`    | run only the **first N tasks** of the dataset; **omit to run all of it**             | unset (all)                                       |
@@ -118,8 +119,9 @@ per arm. On the raw CLI, use the equivalent `--limit 5`.
 - `LIMIT` **≠ task length.** To make each task run longer, raise `MAXTURNS`, e.g.
 `MAXTURNS=60`, or bump `max_turns` in `configs/study.yaml` for that benchmark.
 - For a paired A/B comparison, keep `MODEL`, `DATASET`, `SEED`, `K`, `LIMIT`, and
-`MAXTURNS` identical; change only `ARM`. Both arms then run the same tasks in the
-same order, which the paired statistics require.
+`MAXTURNS` identical; change only `ARM`. Both arms should run the same tasks in
+the same order. Paired statistics match task IDs, while any ordering difference
+can complicate attribution when the harness learns during a run.
 - **OpenAI / Gemini / Bedrock route automatically** by their `models.yaml` prefix
   (`openai/…` → OpenAI API, `vertex_ai/…` → Vertex, `bedrock/…` → AWS). Claude
   defaults to Bedrock; use `BACKEND=anthropic` only when intentionally falling back
@@ -265,14 +267,16 @@ for dataset in airline retail telecom; do make tau2 ARM=baseline MODEL=gpt-5.6-t
 ## 4. Report — aggregate results into paper-ready tables
 
 `make report` is pure post-processing (no API calls). It reads **every**
-`results/runs/*/records.jsonl` already on disk and (re)writes `results/summary/`.
-Run your benchmark commands first, then report — re-run it any time to refresh.
+`results/runs/*/records.jsonl` already on disk and (re)writes
+`results/summary/all_runs/`. Run your benchmark commands first, then report —
+re-run it any time to refresh. `REPORT_OUT=` overrides the destination.
 
 ```bash
 make report
+make report-openweight  # audited openweight runs, including blank missing-arm rows
 ```
 
-Produces in `results/summary/`:
+Each report produces these files in its own directory under `results/summary/`:
 
 - `all_records.csv` — every task-trial row, flattened.
 - `headline.csv` — benchmark × dataset × model × arm over the **whole run**, strictest
@@ -280,11 +284,22 @@ metric first: `pass@1`/`pass^k`, then `pass_any_k`, `pass_at_1_relaxed`/`pass_ha
 force, and `mean_score` (**ours**), plus mean cost and tokens.
 - `relax_sweep.csv` — both arms' paired `pass@1` across a range of tolerances.
 - `harness_telemetry.csv` — rules active/candidate/retired, notices, breach rate (arm B).
-- `report.md` — headline table + harness-vs-baseline paired delta on **all three**
-- `learning_curve.png` — arm-B cumulative pass rate across the run in task order. With
+- `report.md` — headline table + harness-vs-baseline paired delta for strict,
+  relaxed, and any-of-k metrics.
+- `learning_curve.png` — arm-B cumulative pass rate in recorded run order. With
 the harness live throughout, this is a genuine in-session learning curve.
 
 With no records yet it writes an empty summary — that's expected before any run.
+
+The pre-openweight snapshot is archived in `results/summary/previous/`.
+`make report-openweight` writes `results/summary/openweight/` from explicit run IDs
+in `scripts/report_openweight.py`, so pilots or later reruns do not silently change
+it. It also writes `run_inventory.csv` with run provenance, error counts, and
+pairing checks. This report includes blank rows for missing arms. The
+`gpt-oss-20b` airline simulated-user and telecom ordering differences are
+included in paired statistics and documented in the report. Its headline
+relaxation is `relax=0.20`: harness trials with score at least 0.80 count as
+relaxed passes; baseline verdicts remain strict.
 
 ## 5. Calibrate — Checkpoint 1 (metric ↔ failure correlation)
 
@@ -346,5 +361,6 @@ so a long study can be interrupted and continued. Budget deliberately: this is
   the continuous learned-rule state from the original task order.
 - **Dry-run anything:** append `--dry-run` to any `uv run pandabench-run …` (mock model,
 no API calls) to validate wiring.
-- **Everything is a plain CLI command** — the Makefile is sugar over
-`uv run pandabench-run …` / `pandabench-report` / `pandabench-calibrate`.
+- **Everything is a plain CLI command** — run targets invoke
+  `uv run pandabench-run …`; report targets invoke the installed `.venv/bin/`
+  commands; calibration invokes `pandabench-calibrate`.
