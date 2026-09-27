@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 COMPOSE_TEST := $(COMPOSE) -f docker-compose.test.yml
 
-.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e test-contract example bench-setup bench-smoke bench-run bench-report bench-check
+.PHONY: help install up down clean logs build harness-shell lint typecheck test test-unit test-e2e test-contract example bench-setup bench-smoke bench-run bench-report bench-report-openweight bench-check
 
 # Benchmark sub-project lives in ./benchmarks (its own uv project). These are
 # thin delegators; all logic is in benchmarks/Makefile.
@@ -64,8 +64,11 @@ bench-smoke: ## Run the benchmark smoke test (cheap, both arms, all benchmarks)
 bench-run: ## Run one benchmark arm (pass BENCHMARK= ARM= MODEL= SEED= ...)
 	$(MAKE_BENCH) run BENCHMARK=$(BENCHMARK) ARM=$(ARM) MODEL=$(MODEL) SEED=$(SEED) BACKEND=$(BACKEND) K=$(K) LIMIT=$(LIMIT)
 
-bench-report: ## Regenerate the benchmark summary/ artifacts
+bench-report: ## Regenerate the all-runs benchmark summary
 	$(MAKE_BENCH) report
+
+bench-report-openweight: ## Regenerate the audited openweight benchmark report
+	$(MAKE_BENCH) report-openweight
 
 bench-check: ## Lint + typecheck + unit-test the benchmarks/ code
 	$(MAKE_BENCH) check
