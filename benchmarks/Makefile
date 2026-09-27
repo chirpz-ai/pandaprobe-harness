@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
-# Every target is sugar over a documented `uv run pandabench-*` command; the
-# Makefile carries no logic of its own.
+# Targets invoke the documented benchmark CLIs. Post-processing uses the
+# installed .venv directly so reporting does not touch the uv package cache.
 
 # Per-run knobs (overridable): make appworld ARM=harness MODEL=claude-sonnet-5 SEED=1 K=4 LIMIT=2
 #   ARM      baseline | harness
@@ -24,13 +24,14 @@ MAXTURNS ?=
 BENCH    ?= appworld
 BENCHMARK ?= $(BENCH)
 RUN_ID   ?=
+REPORT_OUT ?= results/summary/all_runs
 LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
 DATASET_FLAG := $(if $(DATASET),--dataset $(DATASET),)
 MAXTURNS_FLAG := $(if $(MAXTURNS),--max-turns $(MAXTURNS),)
 BACKEND_FLAG := $(if $(BACKEND),--backend $(BACKEND),)
 RUN_ID_FLAG := $(if $(RUN_ID),--run-id $(RUN_ID),)
 
-.PHONY: help setup sync smoke run appworld terminal terminal_bench tau2 matrix report calibrate check lint typecheck test preflight
+.PHONY: help setup sync smoke run appworld terminal terminal_bench tau2 matrix report report-openweight calibrate check lint typecheck test preflight
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -64,8 +65,13 @@ terminal: terminal_bench ## Alias for terminal_bench
 matrix: ## Full study matrix — NOT yet wired; prints how to run per-arm loops (see RUNNING.md §6)
 	uv run pandabench-run --matrix configs/study.yaml
 
-report: ## Regenerate summary/ from runs/
-	uv run pandabench-report $(if $(RELAX),--relax $(RELAX),)
+report: ## Regenerate summary/all_runs/ from every run (REPORT_OUT= to override)
+	MPLCONFIGDIR=results/summary/.matplotlib XDG_CACHE_HOME=results/summary/.cache \
+		.venv/bin/pandabench-report --out $(REPORT_OUT) $(if $(RELAX),--relax $(RELAX),)
+
+report-openweight: ## Regenerate summary/openweight/ from the audited openweight runs
+	MPLCONFIGDIR=results/summary/.matplotlib XDG_CACHE_HOME=results/summary/.cache \
+		.venv/bin/python scripts/report_openweight.py
 
 calibrate: ## Checkpoint 1: metric<->failure calibration for one benchmark (BENCH=appworld)
 	uv run pandabench-calibrate --benchmark $(BENCH)
