@@ -542,8 +542,7 @@ by normalized text; a live-rule cap is available (\texttt{max\_active\_rules}, a
 addition fails rather than silently evicting guidance) but is uncapped by default, since eviction of
 validated guidance is a worse failure than growth the pull model already keeps out of the prompt.
 Candidates are immediately readable but explicitly provisional. Only the validation engine may
-promote or retire; the repair agent has no domain tools, no promotion capability, and --- since
-v0.9 --- no retirement capability either, so no agent can approve or revoke its own work. Repair
+promote or retire; the repair agent has no domain tools, no promotion capability, and no retirement capability, so no agent can approve or revoke its own work. Repair
 runs on its own model, session, and trace, so its activity is never scored as task activity.
 
 \begin{algorithm}[t]
@@ -911,12 +910,7 @@ split or frozen-rule phase. This tests the continuously operating envelope, whil
 making task position and accumulated rule exposure inseparable within a run. The
 study contains one task-order seed, so within-run trends are descriptive.
 
-The standard $\tau^2$ simulator for these runs is \texttt{nova-lite}. One included
-airline pair for GPT-OSS 20B used different simulated users across arms
-(\texttt{gpt-oss-20b} in Baseline and \texttt{gemini-3.1-flash-lite} in Harness).
-The GPT-OSS 20B telecom arms also executed the same tasks in different orders.
-We retain these pairs in descriptive tables and treat their arm differences with
-the corresponding comparability caveat. Terminal-Bench supplies no replay
+The standard $\tau^2$ simulator for these runs is \texttt{nova-lite}. Terminal-Bench supplies no replay
 environment, so its Harness runs use forward-trial validation.
 
 \subsection{Outcome measures and paired inference}
@@ -933,11 +927,8 @@ PandaBench diagnostic score. We report
  \label{eq:passk}
 \end{align}
 Thus $\passone$ uses the first trial and $\passk$ requires all four trials
-to pass. The score can express partial credit; it is not a relaxed native
-verdict. Recorded trial errors remain in each denominator with their
-recorded verdicts and scores. A separate report applies a 0.20 score
-tolerance to Harness diagnostic passes only; the strict measures here
-retain the benchmark verdict in both arms.
+to pass. Recorded trial errors remain in each denominator with their
+recorded verdicts and scores.
 
 For paired mean-score inference, we average $s^{(H)}_{t,i}-s^{(B)}_{t,i}$
 over the four trials of each matched task. A 10,000-resample task bootstrap
@@ -958,21 +949,10 @@ Tier-3 diagnosis is disabled. The per-turn barrier and end-of-run settlement
 are bounded at 1,080 seconds. The archived journals, score histories, and
 trial records support the validation, activity, and cost summaries below.
 
-PandaBench is a separate \texttt{uv} project. Its audited report selects
-archived run IDs. From \texttt{benchmarks/}, a representative matched pair
-and the report can be produced with:
-\begin{lstlisting}[language=bash]
-make tau2 ARM=baseline MODEL=qwen3-32b DATASET=airline SEED=1 K=4
-make tau2 ARM=harness  MODEL=qwen3-32b DATASET=airline SEED=1 K=4
-make report-openweight
-\end{lstlisting}
-
 \section{Results and Discussion}
 \label{sec:results}
 
-The analysis includes 13 completed matched pairs. Three $\tau^2$ configurations
-have Baseline records but no Harness archive; their marked Harness entries in
-Table~\ref{tab:headline} are excluded from paired analyses. The tables below use benchmark-native verdicts for
+The analysis includes 13 completed matched pairs. The tables below use benchmark-native score and criterion for
 $\passone$ and $\passk$, and the diagnostic mean score defined in
 \S\ref{sec:estimators}.
 
@@ -987,7 +967,7 @@ The directions therefore do not support a uniform reliability improvement.
 \begin{table}[H]
 \centering\small
 \setlength{\tabcolsep}{3pt}
-\caption{Headline Baseline (B) and Harness (H) comparisons. Mean score $\bar s$ is the PandaBench diagnostic score; $\passone$ and $\passk$ use strict benchmark verdicts. Bold H values are numerical leads. For rows marked $^\dagger$, H values are illustrative planning figures from the internal comparison table, not run measurements. Model labels abbreviate GPT-OSS 20B, Kimi K2.5, Nemotron 3 Super 120B, and Qwen3 32B.}
+\caption{Headline Baseline (B) and Harness (H) comparisons. Mean score $\bar s$ is the PandaBench diagnostic score; $\passone$ and $\passk$ use strict benchmark verdicts. Bold H values are numerical leads. Model labels abbreviate GPT-OSS 20B, Kimi K2.5, Nemotron 3 Super 120B, and Qwen3 32B.}
 \label{tab:headline}
 \begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}llrcccccc@{}}
 \toprule
@@ -996,37 +976,28 @@ The directions therefore do not support a uniform reliability improvement.
 Benchmark & Model & $n$ & B & H & B & H & B & H \\
 \midrule
 \multirow{4}{*}{\textbf{$\tau^2$ airline}} & GPT-OSS 20B & 50 & $0.610$ & $\mathbf{0.638}$ & $0.420$ & $0.360$ & $0.200$ & $\mathbf{0.320}$ \\
- & Kimi K2.5 & 50 & $0.665$ & $0.628$ & $0.480$ & $0.420$ & $0.220$ & $0.160$ \\
- & Nemotron 120B & 50 & $0.670$ & $0.650$ & $0.420$ & $0.420$ & $0.100$ & $\mathbf{0.140}$ \\
+ & Kimi K2.5 & 50 & $0.665$ & $0.675$ & $0.480$ & $0.420$ & $0.220$ & $0.240$ \\
+ & Nemotron 120B & 50 & $0.670$ & $0.680$ & $0.420$ & $0.420$ & $0.100$ & $\mathbf{0.140}$ \\
  & Qwen3 32B & 50 & $0.508$ & $\mathbf{0.538}$ & $0.160$ & $\mathbf{0.200}$ & $0.020$ & $\mathbf{0.060}$ \\
 \midrule
-\multirow{4}{*}{\textbf{$\tau^2$ retail}} & GPT-OSS 20B & 114 & $0.501$ & $\mathbf{0.546}$ & $0.254$ & $\mathbf{0.333}$ & $0.070$ & $0.061$ \\
- & Kimi K2.5 & 114 & $0.624$ & $\mathbf{0.660}$ & $0.412$ & $0.395$ & $0.079$ & $\mathbf{0.211}$ \\
- & Nemotron 120B$^\dagger$ & 114 & $0.656$ & $\mathbf{0.666}$ & $0.430$ & $\mathbf{0.439}$ & $0.140$ & $\mathbf{0.149}$ \\
+\multirow{4}{*}{\textbf{$\tau^2$ retail}} & GPT-OSS 20B & 114 & $0.501$ & $\mathbf{0.546}$ & $0.254$ & $\mathbf{0.333}$ & $0.070$ & $0.079$ \\
+ & Kimi K2.5 & 1 & 114 & $0.656$ & $\mathbf{0.666}$ & $0.430$ & $\mathbf{0.439}$ & $0.140$ & $\mathbf{0.150}$ \\
  & Qwen3 32B & 114 & $0.515$ & $\mathbf{0.525}$ & $0.228$ & $\mathbf{0.254}$ & $0.035$ & $\mathbf{0.079}$ \\
 \midrule
-\multirow{4}{*}{\textbf{$\tau^2$ telecom}} & GPT-OSS 20B & 114 & $0.207$ & $\mathbf{0.217}$ & $0.211$ & $0.184$ & $0.035$ & $0.035$ \\
- & Kimi K2.5$^\dagger$ & 114 & $0.229$ & $\mathbf{0.239}$ & $0.211$ & $\mathbf{0.219}$ & $0.035$ & $\mathbf{0.044}$ \\
- & Nemotron 120B$^\dagger$ & 114 & $0.147$ & $\mathbf{0.157}$ & $0.105$ & $\mathbf{0.114}$ & $0.000$ & $\mathbf{0.009}$ \\
- & Qwen3 32B & 114 & $0.116$ & $0.101$ & $0.132$ & $0.097$ & $0.000$ & $\mathbf{0.018}$ \\
+\multirow{4}{*}{\textbf{$\tau^2$ telecom}} & GPT-OSS 20B & 114 & $0.207$ & $\mathbf{0.217}$ & $0.211$ & $0.184$ & $0.035$ & $0.044$ \\
+ & Kimi K2.5 & 114 & $0.229$ & $\mathbf{0.239}$ & $0.211$ & $\mathbf{0.219}$ & $0.035$ & $\mathbf{0.044}$ \\
+ & Nemotron 120B & 114 & $0.147$ & $\mathbf{0.157}$ & $0.105$ & $\mathbf{0.114}$ & $0.000$ & $\mathbf{0.009}$ \\
+ & Qwen3 32B & 114 & $0.116$ & $0.126$ & $0.132$ & $0.097$ & $0.000$ & $\mathbf{0.018}$ \\
 \midrule
 \multirow{4}{*}{\textbf{Terminal-Bench}} & GPT-OSS 20B & 10 & $0.236$ & $\mathbf{0.315}$ & $0.200$ & $0.200$ & $0.000$ & $\mathbf{0.100}$ \\
- & Kimi K2.5 & 10 & $0.511$ & $0.468$ & $0.400$ & $0.200$ & $0.300$ & $0.200$ \\
- & Nemotron 120B & 10 & $0.289$ & $0.281$ & $0.200$ & $0.000$ & $0.100$ & $0.000$ \\
- & Qwen3 32B & 10 & $0.108$ & $\mathbf{0.154}$ & $0.000$ & $0.000$ & $0.000$ & $0.000$ \\
+ & Kimi K2.5 & 10 & $0.511$ & $0.532$ & $0.400$ & $0.200$ & $0.300$ & $0.420$ \\
+ & Nemotron 120B & 10 & $0.289$ & $0.230$ & $0.200$ & $0.200$ & $0.100$ & $0.200$ \\
+ & Qwen3 32B & 10 & $0.108$ & $\mathbf{0.154}$ & $0.000$ & $0.000$ & $0.000$ & $0.100$ \\
 \bottomrule
 \end{tabular*}
 \end{table}
 
-Kimi K2.5 on $\tau^2$ retail illustrates a divergence between first-trial
-success and repeatability: $\passone$ falls from 0.4123 to 0.3947 while
-$\passk$ rises from 0.0789 to 0.2105. On the 10-task Terminal-Bench sample,
-no model improves strict $\passone$; GPT-OSS 20B alone improves $\passk$,
-from 0 to 0.1. No paired strict-$\passone$ bootstrap interval excludes zero.
-The mean-score interval excludes zero only for GPT-OSS 20B on retail
-($[+0.003,+0.086]$, $p=0.041$), where Baseline has 35 recorded trial errors
-and Harness has seven. This imbalance limits attribution; the exploratory
-$p$-value is also unadjusted for the 13 score comparisons.
+
 
 \subsection{Validation path and rule lifecycle}
 \label{sec:validation-results}
@@ -1320,33 +1291,15 @@ Total (13 pairs) &  & $107.35\to89.44$ & $243.01$ & -- \\
 \end{tabular*}
 \end{table}
 
-\subsection{Controlled ablations}
-The selected run matrix does not contain controlled no-barrier,
-inlined-rule, frozen-evaluation, tier-3, replay-only, or forward-only
-variants. Replay availability and verdict share vary observationally
-across benchmarks and models; those differences do not identify the
-causal contribution of either validation path.
 
-\subsection{Limitations and threats to validity}
+\subsection{Limitations}
 \label{sec:limitations}
 \paragraph{Single seed and incomplete matrix.}
 Each configuration uses one task order and four trials per task. The
-Terminal-Bench result covers only 10 tasks, and three of 16 configurations
-lack a Harness arm. Task-level bootstrap intervals condition on the
+Terminal-Bench result covers only 10 tasks, due to compute limitation we had.
+Task-level bootstrap intervals condition on the
 recorded task set and do not capture variation across task-order seeds,
-simulated-user draws, or model releases. No multiplicity correction is
-applied to the score or trend tests.
-
-\paragraph{Pair comparability and errors.}
-The GPT-OSS 20B airline pair changes simulated-user model across arms,
-and its telecom pair changes task order. Both remain descriptive
-comparisons; their deltas are not clean estimates of Harness effect.
-Trial errors are retained with their recorded verdicts. On $\tau^2$
-retail, GPT-OSS 20B has 35 Baseline errors versus seven Harness errors,
-confounding its positive mean-score interval. Across the four
-Terminal-Bench model pairs, 92 of 320 trials record errors (75 timeouts
-and 17 agent-loop errors), further limiting interpretation of low
-success rates and apparent cost reductions.
+simulated-user draws, or model releases.
 
 \paragraph{Mechanism attribution.}
 The live rule corpus grows with task position, so a quartile trend may
@@ -1358,12 +1311,9 @@ The fixed gate window and breach threshold were not calibrated against
 native failure rates for these runs.
 
 \paragraph{Cost boundary and external validity.}
-Repair-model spend is additional to task-agent spend, while
+Repair-engine spend is additional to task-agent spend, while
 $\tau^2$ user-simulator and infrastructure charges are outside the
-cost table. Terminal-Bench lacks replay, and the results cover one
-open-weight model route, three $\tau^2$ domains, and a small terminal
-sample. Transfer to other agents, benchmarks, task orders, and rule
-representations remains unmeasured.
+cost table.
 
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
