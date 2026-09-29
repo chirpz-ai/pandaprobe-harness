@@ -19,13 +19,13 @@
 ]
 
 % --- Agent side (left) ---
-\node[agent] (agent) {\textbf{Developer task agent}\\[2pt]\footnotesize policy $\pi$\\[2pt]
+\node[agent] (agent) {\textbf{Agent}\\[2pt]\footnotesize policy $\pi$\\[2pt]
                       \footnotesize context $c_0$ (constant)};
 
 % --- Four stages of the loop (right), arranged as a cycle ---
 \node[stage, right=26mm of agent, yshift=15mm] (detect)  {\textbf{Detect}\\[1pt]\scriptsize $E$ scores\\[-1pt]\scriptsize session $s$};
 \node[stage, right=10mm of detect]             (notice)  {\textbf{Notice}\\[1pt]\scriptsize post to\\[-1pt]\scriptsize mailbox};
-\node[stage, below=15mm of notice]             (repair)  {\textbf{Repair}\\[1pt]\scriptsize package agent\\[-1pt]\scriptsize proposes rule};
+\node[stage, below=15mm of notice]             (repair)  {\textbf{Repair}\\[1pt]\scriptsize repair harness\\[-1pt]\scriptsize proposes rule};
 \node[stage, below=15mm of detect]             (validate){\textbf{Validate}\\[1pt]\scriptsize gate rule\\[-1pt]\scriptsize (evidence)};
 
 % Cyclic arrows: Detect -> Notice -> Repair -> Validate -> Detect.
@@ -45,7 +45,7 @@
 \node[store, right=5mm of mailbox]                (journal) {journal};
 \begin{scope}[on background layer]
   \node[draw, dashed, rounded corners, fit=(evalset)(journal),
-        inner sep=3mm, label={[font=\footnotesize\bfseries]below:Workspace (append-only, on disk)}] (ws) {};
+        inner sep=3mm, label={[font=\footnotesize\bfseries]below:Workspace (local)}] (ws) {};
 \end{scope}
 
 % --- Evidence gate state machine (candidate -> active | retired) ---
