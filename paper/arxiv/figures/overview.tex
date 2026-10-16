@@ -18,14 +18,14 @@
     node distance=9mm and 12mm,
 ]
 
-% --- Agent side (left) ---
-\node[agent] (agent) {\textbf{Developer task agent}\\[2pt]\footnotesize policy $\pi$\\[2pt]
+% --- Task harness (left) ---
+\node[agent] (agent) {\textbf{Task harness}\\[2pt]\footnotesize policy $\pi$\\[2pt]
                       \footnotesize context $c_0$ (constant)};
 
 % --- Four stages of the loop (right), arranged as a cycle ---
 \node[stage, right=26mm of agent, yshift=15mm] (detect)  {\textbf{Detect}\\[1pt]\scriptsize $E$ scores\\[-1pt]\scriptsize session $s$};
 \node[stage, right=10mm of detect]             (notice)  {\textbf{Notice}\\[1pt]\scriptsize post to\\[-1pt]\scriptsize mailbox};
-\node[stage, below=15mm of notice]             (repair)  {\textbf{Repair}\\[1pt]\scriptsize package agent\\[-1pt]\scriptsize proposes rule};
+\node[stage, below=15mm of notice]             (repair)  {\textbf{Repair}\\[1pt]\scriptsize repair engine\\[-1pt]\scriptsize proposes rule};
 \node[stage, below=15mm of detect]             (validate){\textbf{Validate}\\[1pt]\scriptsize gate rule\\[-1pt]\scriptsize (evidence)};
 
 % Cyclic arrows: Detect -> Notice -> Repair -> Validate -> Detect.
@@ -45,7 +45,7 @@
 \node[store, right=5mm of mailbox]                (journal) {journal};
 \begin{scope}[on background layer]
   \node[draw, dashed, rounded corners, fit=(evalset)(journal),
-        inner sep=3mm, label={[font=\footnotesize\bfseries]below:Workspace (append-only, on disk)}] (ws) {};
+        inner sep=3mm, label={[font=\footnotesize\bfseries]below:Workspace (local)}] (ws) {};
 \end{scope}
 
 % --- Evidence gate state machine (candidate -> active | retired) ---
@@ -66,7 +66,7 @@
 \draw[dashed, gray] (btop) -- (bbot)
       node[midway, sloped, above, font=\scriptsize\bfseries, gray] {capability boundary};
 
-% The task agent pulls rules from the workspace; nothing is pushed to it.
+% The task harness pulls rules from the workspace; nothing is pushed to it.
 \draw[->, dashed] (ws.west) to[out=180,in=270] node[lbl,below left]{pull: four\\read-only rule tools} (agent.south);
 
 % The loop's stages read/write the workspace (harness side only).
@@ -74,7 +74,7 @@
 \draw[->, dotted] (repair.south) to[out=270,in=90] (rules.north);
 \draw[->, dotted] (notice.east) to[out=0,in=90] (mailbox.north);
 
-% Detect reads the agent's session (the only arrow crossing toward the harness)
+% Detect reads the task harness's session (the only arrow crossing toward the repair loop)
 \draw[->] (agent.north) to[out=90,in=180] node[lbl,above]{task trace $s$} (detect.west);
 
 \end{tikzpicture}
