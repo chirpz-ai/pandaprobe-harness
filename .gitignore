@@ -27,3 +27,5 @@ benchmarks/.env
 *.swp
 .idea/
 .vscode/
+
+/paper/
